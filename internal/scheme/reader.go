@@ -519,24 +519,6 @@ func (r *Reader) readHash() (Value, error) {
 			bv.Bytes[i] = byte(v)
 		}
 		return bv, nil
-	case '!':
-		word, err := r.readToken()
-		if err != nil {
-			return nil, err
-		}
-		switch word {
-		case "eof":
-			return EOFObject, nil
-		case "default", "fold-case":
-			r.FoldCase = true
-			return r.readDatum()
-		case "no-fold-case":
-			r.FoldCase = false
-			return r.readDatum()
-		case "unspecified":
-			return UnspecifiedValue, nil
-		}
-		return nil, r.errf("unknown directive #!%s", word)
 	default:
 		if ch >= '0' && ch <= '9' {
 			// datum label
@@ -957,6 +939,9 @@ func parseReal(s string, radix int, exact byte) (Value, bool) {
 			f = -f
 		}
 		if exact == 'e' {
+			if math.IsInf(f, 0) || math.IsNaN(f) {
+				return nil, false
+			}
 			return Exact(Float(f)), true
 		}
 		return Float(f), true
@@ -1051,6 +1036,11 @@ func parseDecimal(s string) (float64, error) {
 	}
 	f, err := strconv.ParseFloat(norm, 64)
 	if err != nil {
+		if ne, ok := err.(*strconv.NumError); ok && ne.Err == strconv.ErrRange {
+			// Overflow clamps to +/-Inf and underflow to zero or a
+			// denormal; both are acceptable numeric values.
+			return f, nil
+		}
 		return 0, err
 	}
 	return f, nil
