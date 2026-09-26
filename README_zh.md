@@ -42,7 +42,12 @@ git clone https://github.com/MrXie1109/GoScheme.git && cd GoScheme
 make build          # 或者：go build -o .build/goscheme ./cmd/goscheme
 make test           # Go 单元测试 + 两个 Scheme 测试套件
 make dist           # 交叉编译全部目标平台到 dist/
+
+./.build/goscheme -v   # GoScheme 1.2.1 (R7RS)
 ```
+
+版本号来自 `cmd/goscheme/VERSION`，并被内嵌进二进制，因此即使直接用 `go build`
+也能正确报告版本；`make dist` 另外用 `-ldflags "-X main.version=..."` 打戳。
 
 执行程序、求值表达式或进入交互式 REPL：
 
@@ -97,6 +102,8 @@ REPL 会退回到按行读取的实现。
 
 ```
 cmd/goscheme/             命令行入口
+  VERSION                 `-v` 与 REPL banner 使用的版本号
+  version.go              内嵌 VERSION，使任何构建方式都能报告版本
   main.go                 文件执行、-e 求值、REPL 主循环
   lineedit.go             raw 模式行编辑器与 bracketed paste
   term_linux.go           termios raw 模式（Linux）

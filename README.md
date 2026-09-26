@@ -46,7 +46,13 @@ git clone https://github.com/MrXie1109/GoScheme.git && cd GoScheme
 make build          # or: go build -o .build/goscheme ./cmd/goscheme
 make test           # Go unit tests + both Scheme test suites
 make dist           # cross-compile every supported platform into dist/
+
+./.build/goscheme -v   # GoScheme 1.2.1 (R7RS)
 ```
+
+The version comes from `cmd/goscheme/VERSION`, which is embedded in the binary,
+so even a plain `go build` reports it; `make dist` additionally stamps it with
+`-ldflags "-X main.version=..."`.
 
 Run a program, evaluate an expression, or start a REPL:
 
@@ -105,6 +111,8 @@ for an uncaught error.
 
 ```
 cmd/goscheme/             command line driver
+  VERSION                 the version reported by -v and the REPL banner
+  version.go              embeds VERSION so any build reports it
   main.go                 file execution, -e, the REPL loop
   lineedit.go             raw mode line editor and bracketed paste
   term_linux.go           termios raw mode (Linux)

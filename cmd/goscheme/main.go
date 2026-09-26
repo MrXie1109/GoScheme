@@ -25,18 +25,6 @@ import (
 	"goscheme/internal/scheme"
 )
 
-// version is the interpreter version.  It is injected at build time with
-//
-//	-ldflags "-X main.version=1.1"
-//
-// and falls back to "dev" for a plain `go build`.
-var version = "dev"
-
-// release is the R7RS banner suffix.
-const release = "R7RS"
-
-func versionString() string { return "GoScheme " + version + " (" + release + ")" }
-
 func main() {
 	os.Exit(run())
 }

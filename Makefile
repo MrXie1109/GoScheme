@@ -4,7 +4,7 @@ GO      ?= /usr/bin/go
 BIN     ?= goscheme
 BUILD   := .build
 DIST    := dist
-VERSION := $(shell cat VERSION)
+VERSION := $(shell cat cmd/goscheme/VERSION)
 
 # The platforms that `make dist` produces binaries for.
 PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64

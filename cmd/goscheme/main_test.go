@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"io"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -325,5 +326,24 @@ func TestREPLPasteWithCarriageReturnsRendersLines(t *testing.T) {
 	}
 	if !strings.Contains(got, "6\n") {
 		t.Errorf("the pasted form was not evaluated:\n%s", got)
+	}
+}
+
+// A checkout built with a plain `go build` must report the real version, not
+// "dev": the VERSION file is embedded for exactly that reason.
+func TestVersionIsEmbedded(t *testing.T) {
+	if v := strings.TrimSpace(versionFile); v == "" {
+		t.Fatal("the embedded VERSION file is empty")
+	}
+	re := regexp.MustCompile(`^\d+\.\d+\.\d+$`)
+	if v := strings.TrimSpace(versionFile); !re.MatchString(v) {
+		t.Errorf("VERSION = %q, want a x.y.z version", v)
+	}
+	// go test builds without our -ldflags, so this exercises the fallback.
+	if got := versionString(); strings.Contains(got, "dev") || strings.Contains(got, "unknown") {
+		t.Errorf("versionString() = %q; the embedded VERSION was not used", got)
+	}
+	if got := versionString(); !strings.Contains(got, strings.TrimSpace(versionFile)) {
+		t.Errorf("versionString() = %q, want it to contain %q", got, strings.TrimSpace(versionFile))
 	}
 }
