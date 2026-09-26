@@ -4,12 +4,12 @@ GO      ?= /usr/bin/go
 BIN     ?= goscheme
 BUILD   := .build
 DIST    := dist
-VERSION := 1.0
+VERSION := $(shell cat VERSION)
 
 # The platforms that `make dist` produces binaries for.
 PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
-LDFLAGS := -s -w
+LDFLAGS := -s -w -X main.version=$(VERSION)
 GOFLAGS := -trimpath
 
 .PHONY: all build test test-short fmt vet clean dist list-dist repl
@@ -18,7 +18,7 @@ all: build
 
 ## build: compile the interpreter for the host platform
 build:
-	$(GO) build $(GOFLAGS) -o $(BUILD)/$(BIN) ./cmd/goscheme
+	$(GO) build $(GOFLAGS) -ldflags "-X main.version=$(VERSION)" -o $(BUILD)/$(BIN) ./cmd/goscheme
 
 ## test: run the Go unit tests and the Scheme test suites
 test:

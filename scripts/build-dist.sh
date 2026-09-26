@@ -9,6 +9,8 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 DIST="$ROOT/dist"
 
 platforms="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64"
+VERSION=$(cat "$ROOT/VERSION")
+LDFLAGS="-s -w -X main.version=$VERSION"
 
 mkdir -p "$DIST"
 cd "$ROOT"
@@ -19,7 +21,7 @@ for p in $platforms; do
     out="$DIST/goscheme-$os-$arch"
     [ "$os" = "windows" ] && out="$out.exe"
     printf 'building %s ... ' "$(basename "$out")"
-    GOOS=$os GOARCH=$arch CGO_ENABLED=0 "$GO" build -trimpath -ldflags '-s -w' -o "$out" ./cmd/goscheme
+    GOOS=$os GOARCH=$arch CGO_ENABLED=0 "$GO" build -trimpath -ldflags "$LDFLAGS" -o "$out" ./cmd/goscheme
     printf 'ok\n'
 done
 

@@ -25,7 +25,17 @@ import (
 	"goscheme/internal/scheme"
 )
 
-const version = "GoScheme 1.0 (R7RS)"
+// version is the interpreter version.  It is injected at build time with
+//
+//	-ldflags "-X main.version=1.1"
+//
+// and falls back to "dev" for a plain `go build`.
+var version = "dev"
+
+// release is the R7RS banner suffix.
+const release = "R7RS"
+
+func versionString() string { return "GoScheme " + version + " (" + release + ")" }
 
 func main() {
 	os.Exit(run())
@@ -60,7 +70,7 @@ func run() int {
 		case "-q", "--quiet":
 			quiet = true
 		case "-v", "--version":
-			fmt.Println(version)
+			fmt.Println(versionString())
 			return 0
 		case "-h", "--help":
 			usage()
@@ -156,7 +166,7 @@ func reportError(err error) int {
 
 func repl(m *scheme.Machine, quiet bool) {
 	if !quiet {
-		fmt.Printf("%s\n", version)
+		fmt.Println(versionString())
 		fmt.Println("Type (exit) or press Ctrl-D to leave.")
 	}
 	in := bufio.NewReader(os.Stdin)
