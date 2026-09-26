@@ -256,3 +256,74 @@ func TestLineEditorKeepsUnterminatedOutput(t *testing.T) {
 		t.Errorf("the prompt overwrote unterminated output: %q", out.String())
 	}
 }
+
+// Terminals send CR for a pasted newline.  Echoing it verbatim in raw mode
+// would return the cursor to column 0 without a line feed, so the pasted lines
+// would overwrite each other; the editor normalises line endings instead.
+func TestLineEditorPasteLineEndings(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"carriage return", "\x1b[200~(+ 1\r2 3)\x1b[201~", "(+ 1\n2 3)"},
+		{"crlf", "\x1b[200~(+ 1\r\n2 3)\x1b[201~", "(+ 1\n2 3)"},
+		{"line feed", "\x1b[200~(+ 1\n2 3)\x1b[201~", "(+ 1\n2 3)"},
+		{"trailing carriage return", "\x1b[200~(+ 1 2)\r\x1b[201~", "(+ 1 2)\n"},
+	}
+	for _, c := range cases {
+		ed, out := editorFor(c.input)
+		line, err := ed.ReadLine(primaryPrompt)
+		if err != nil {
+			t.Errorf("%s: %v", c.name, err)
+			continue
+		}
+		if line != c.want {
+			t.Errorf("%s: line = %q, want %q", c.name, line, c.want)
+		}
+		// The echo must use real newlines; a bare CR would make the pasted
+		// lines overwrite each other.
+		if !strings.Contains(out.String(), "\n") {
+			t.Errorf("%s: the echo contains no newline: %q", c.name, out.String())
+		}
+		if strings.Contains(out.String(), "2 3)(+ 1") {
+			t.Errorf("%s: the pasted lines overwrote each other: %q", c.name, out.String())
+		}
+	}
+}
+
+// A CRLF split across two reads must not produce two line feeds.
+func TestLineEditorPasteCRLFSplitAcrossReads(t *testing.T) {
+	r := &lineFeeder{lines: []string{"\x1b[200~(+ 1\r", "\n2 3)\x1b[201~"}}
+	var out bytes.Buffer
+	ed := newLineEditor(r, newLineTracker(&out))
+	line, err := ed.ReadLine(primaryPrompt)
+	if err != nil {
+		t.Fatalf("ReadLine: %v", err)
+	}
+	if line != "(+ 1\n2 3)" {
+		t.Errorf("line = %q, want %q", line, "(+ 1\n2 3)")
+	}
+}
+
+// The whole point: a pasted block is echoed on separate lines and evaluated as
+// one unit.
+func TestREPLPasteWithCarriageReturnsRendersLines(t *testing.T) {
+	m := scheme.NewMachine()
+	var out, errOut bytes.Buffer
+	tracker := newLineTracker(&out)
+	m.SetStandardOutput(scheme.NewPortFromFile("stdout", tracker, false, true))
+	ed := newLineEditor(strings.NewReader("\x1b[200~(+ 1\r2 3)\x1b[201~\x04"), tracker)
+	replEdited(m, ed, tracker, &errOut)
+
+	got := out.String()
+	if strings.Contains(got, "2 3)(+ 1") {
+		t.Errorf("the pasted lines overwrote each other:\n%q", got)
+	}
+	if !strings.Contains(got, "(+ 1\n2 3)\n") {
+		t.Errorf("the pasted block was not echoed line by line:\n%s", got)
+	}
+	if !strings.Contains(got, "6\n") {
+		t.Errorf("the pasted form was not evaluated:\n%s", got)
+	}
+}

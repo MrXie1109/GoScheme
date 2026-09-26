@@ -99,9 +99,12 @@ type lineEditor struct {
 	pos  int
 
 	prompt string
-	// echo is disabled while a paste is being consumed: the pasted text is
-	// echoed verbatim instead of being redrawn.
+	// pasting is true while a bracketed paste is being consumed; the pasted
+	// text is echoed as it arrives instead of being redrawn.
 	pasting bool
+	// pasteCR remembers a carriage return that ended a chunk, in case the
+	// following chunk starts with a line feed.
+	pasteCR bool
 }
 
 func newLineEditor(in io.Reader, out *lineTracker) *lineEditor {
@@ -285,6 +288,7 @@ func (e *lineEditor) consumePaste() error {
 		if i := bytes.Index(chunk, end); i >= 0 {
 			e.appendPaste(chunk[:i])
 			_, _ = e.in.Discard(i + len(end))
+			e.flushPaste()
 			return nil
 		}
 		// Hold back a suffix that may be the beginning of the end marker.
@@ -303,14 +307,64 @@ func (e *lineEditor) consumePaste() error {
 }
 
 // appendPaste adds pasted bytes to the line and echoes them.
+//
+// Terminals send a carriage return for a pasted newline, exactly as they do
+// for the Enter key, and raw mode translates nothing: writing that CR back
+// would return the cursor to column 0 without moving to the next line, so the
+// pasted lines would overwrite each other.  Line endings are therefore
+// normalised to LF, which the terminal driver turns back into CR+LF.
 func (e *lineEditor) appendPaste(b []byte) {
+	if e.pasteCR {
+		// The held carriage return becomes a newline either way; when it
+		// turned out to be the CR of a CRLF pair the LF is simply dropped.
+		e.pasteCR = false
+		if len(b) > 0 && b[0] == '\n' {
+			b = b[1:]
+		}
+		e.emitPaste([]byte{'\n'})
+	}
 	if len(b) == 0 {
 		return
 	}
-	text := string(b)
-	e.line = append(e.line, []rune(text)...)
+	norm := make([]byte, 0, len(b)+1)
+	for i := 0; i < len(b); i++ {
+		switch b[i] {
+		case '\r':
+			if i == len(b)-1 {
+				// Might be the CR of a CRLF split across chunks.
+				e.pasteCR = true
+				continue
+			}
+			if b[i+1] == '\n' {
+				i++
+			}
+			norm = append(norm, '\n')
+		case '\n':
+			norm = append(norm, '\n')
+		default:
+			norm = append(norm, b[i])
+		}
+	}
+	e.emitPaste(norm)
+}
+
+// emitPaste appends normalised bytes to the line and echoes them.
+func (e *lineEditor) emitPaste(b []byte) {
+	if len(b) == 0 {
+		return
+	}
+	e.line = append(e.line, []rune(string(b))...)
 	e.pos = len(e.line)
-	_, _ = io.WriteString(e.out, text)
+	_, _ = e.out.Write(b)
+}
+
+// flushPaste emits a carriage return that was held back at the very end of a
+// paste.
+func (e *lineEditor) flushPaste() {
+	if e.pasteCR {
+		e.pasteCR = false
+		e.emitPaste([]byte{'\n'})
+	}
 }
 
 // partialSuffixLen returns the length of the longest suffix of b that is a

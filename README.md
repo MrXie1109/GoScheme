@@ -79,7 +79,9 @@ backspace and delete, Ctrl-U/K/W, Ctrl-L to clear the screen, Ctrl-C to abandon
 the line, Ctrl-D to leave, and history via the up/down arrows.  It also enables
 **bracketed paste**, so the terminal itself marks where a paste begins and ends
 and the pasted block is executed as one unit — a prompt is never wedged between
-the pasted lines, and newlines inside a paste do not submit anything early:
+the pasted lines, and newlines inside a paste do not submit anything early.
+Clipboard line endings (CR, CRLF or LF) are all normalised, so pasted lines are
+echoed on separate lines rather than overwriting one another:
 
 ```text
 >>> (define (f x)
