@@ -1,0 +1,11 @@
+# transient build artifacts (dist/ is a tracked deliverable and NOT ignored)
+*.test
+*.out
+/tmp/
+/build/
+
+# editor
+.idea/
+.vscode/
+*.swp
+.gocache/
