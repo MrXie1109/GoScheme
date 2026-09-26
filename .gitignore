@@ -1,9 +1,13 @@
-# transient build artifacts (dist/ is a tracked deliverable and NOT ignored)
+# Transient build artifacts.  dist/ holds the cross-compiled release
+# binaries: it is produced by `make dist` and attached to GitHub Releases,
+# so it is deliberately not tracked by git.
 *.test
 *.out
 /tmp/
 /build/
 /.build/
+/dist/
+*.bundle
 
 # editor
 .idea/

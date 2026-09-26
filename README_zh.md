@@ -103,7 +103,8 @@ test/scheme/              Scheme 层测试
   chibi/test.scm          测试套件使用的 (chibi test) 兼容层
   run-r7rs.scm            驱动：goscheme run-r7rs.scm
   run-goscheme.scm
-dist/                     交叉编译产物
+dist/                     `make dist` 的产物：发布用二进制，只挂在 GitHub
+                          Release 上，不纳入 git 跟踪
 scripts/build-dist.sh     `make dist` 使用的交叉编译脚本
 Makefile                 构建、测试与打包目标
 ```

@@ -109,7 +109,8 @@ test/scheme/              Scheme level tests
   chibi/test.scm          (chibi test) compatibility shim used by the suites
   run-r7rs.scm            drivers: goscheme run-r7rs.scm
   run-goscheme.scm
-dist/                     cross-compiled release binaries
+dist/                     `make dist` output: the release binaries, which are
+                          attached to GitHub Releases and not tracked by git
 scripts/build-dist.sh     cross-compilation script used by `make dist`
 Makefile                  build, test and dist targets
 ```
