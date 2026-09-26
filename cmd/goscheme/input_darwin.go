@@ -17,6 +17,11 @@ func inputPending(f *os.File) bool {
 	var fds syscall.FdSet
 	fds.Bits[fd/32] |= 1 << (uint(fd) % 32)
 	tv := syscall.Timeval{}
-	n, err := syscall.Select(fd+1, &fds, nil, nil, &tv)
-	return err == nil && n > 0
+	// On the BSDs select reports readiness through the descriptor set and
+	// only returns an error, unlike the Linux signature which also counts the
+	// ready descriptors.
+	if err := syscall.Select(fd+1, &fds, nil, nil, &tv); err != nil {
+		return false
+	}
+	return fds.Bits[fd/32]&(1<<(uint(fd)%32)) != 0
 }
