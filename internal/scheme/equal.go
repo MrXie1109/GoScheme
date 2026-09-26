@@ -147,16 +147,8 @@ func equalRec(a, b Value, seen map[[2]Value]bool) bool {
 		}
 		return true
 	case *Record:
-		y, ok := b.(*Record)
-		if !ok || x.Type != y.Type {
-			return false
-		}
-		for i := range x.Fields {
-			if !equalRec(x.Fields[i], y.Fields[i], seen) {
-				return false
-			}
-		}
-		return true
+		// R7RS: records are equal? only when they are eqv?.
+		return a == b
 	case *Symbol:
 		y, ok := b.(*Symbol)
 		return ok && x.Name == y.Name

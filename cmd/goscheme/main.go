@@ -108,10 +108,8 @@ func evalString(m *scheme.Machine, src, name string) int {
 		fmt.Fprintf(os.Stderr, "goscheme: %v\n", err)
 		return 1
 	}
-	for _, f := range forms {
-		if _, err := m.Run(f, m.Global); err != nil {
-			return reportError(err)
-		}
+	if _, err := m.RunForms(forms, m.Global); err != nil {
+		return reportError(err)
 	}
 	return 0
 }
@@ -134,10 +132,8 @@ func loadFile(m *scheme.Machine, path string) int {
 		return 1
 	}
 	m.AddLoadPath(filepath.Dir(abs))
-	for _, f := range forms {
-		if _, err := m.Run(f, m.Global); err != nil {
-			return reportError(err)
-		}
+	if _, err := m.RunForms(forms, m.Global); err != nil {
+		return reportError(err)
 	}
 	return 0
 }

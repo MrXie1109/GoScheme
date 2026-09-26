@@ -469,6 +469,39 @@ func (f *fDynamicWindPush) resume(m *Machine, _ Value) {
 // Evaluation entry points used by primitives
 // ---------------------------------------------------------------------------
 
+// EvalString reads every datum in src and evaluates it in the global
+// environment, returning the value of the last one.  It is a convenience for
+// tests and for embedding the interpreter.
+func (m *Machine) EvalString(src string) (Value, error) {
+	forms, err := NewStringReader(src).ReadAll()
+	if err != nil {
+		return nil, err
+	}
+	var last Value = UnspecifiedValue
+	for _, f := range forms {
+		v, err := m.Run(f, m.Global)
+		if err != nil {
+			return nil, err
+		}
+		last = v
+	}
+	return last, nil
+}
+
+// RunForms evaluates a sequence of top level forms as a single unit, so that
+// a continuation captured by one form remains valid for the forms that follow
+// it (the same extent a file has).
+func (m *Machine) RunForms(forms []Value, env *Env) (Value, error) {
+	switch len(forms) {
+	case 0:
+		return UnspecifiedValue, nil
+	case 1:
+		return m.Run(forms[0], env)
+	}
+	body := append([]Value{Intern("begin")}, forms...)
+	return m.Run(List(body...), env)
+}
+
 // AddLoadPath pushes a directory used to resolve include / load.
 func (m *Machine) AddLoadPath(dir string) { m.LoadPath = append(m.LoadPath, dir) }
 

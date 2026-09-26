@@ -682,7 +682,9 @@ func evalLetStarValues(m *Machine, form Value, env *Env) {
 	evalLetValuesCommon(m, form, env, true)
 }
 
-// let-values is expanded into nested call-with-values forms.
+// let-values evaluates every producer in the outer environment and then binds
+// all the formals; let*-values is expanded into nested call-with-values forms
+// so that later producers see the earlier bindings.
 func evalLetValuesCommon(m *Machine, form Value, env *Env, sequential bool) {
 	args := formArgs(form)
 	if len(args) == 0 {
@@ -694,53 +696,111 @@ func evalLetValuesCommon(m *Machine, form Value, env *Env, sequential bool) {
 		m.Raise(NewError("let-values: malformed bindings", args[0]))
 		return
 	}
-	body := listFromSlice(args[1:])
 	if len(bindings) == 0 {
 		m.EvalSeq(args[1:], NewEnv(env))
 		return
 	}
-	// Build nested call-with-values.
-	var build func(i int, inner Value) Value
-	build = func(i int, inner Value) Value {
-		if i < 0 {
-			return inner
+	if sequential {
+		var buildStar func(i int) Value
+		buildStar = func(i int) Value {
+			if i >= len(bindings) {
+				return Cons(Intern("begin"), listFromSlice(args[1:]))
+			}
+			b, ok := bindings[i].(*Pair)
+			if !ok {
+				m.Raise(NewError("let*-values: malformed binding", bindings[i]))
+				return Nil
+			}
+			var producer Value = UnspecifiedValue
+			if _, isNil := b.Cdr.(Empty); !isNil {
+				producer = cadr(b)
+			}
+			consumer := Cons(Intern("lambda"), Cons(b.Car, List(buildStar(i+1))))
+			return List(Intern("call-with-values"), List(Intern("lambda"), Nil, producer), consumer)
 		}
-		b, ok := bindings[i].(*Pair)
-		if !ok {
-			return inner
-		}
-		formals := b.Car
-		var producer Value = UnspecifiedValue
-		if _, isNil := b.Cdr.(Empty); !isNil {
-			producer = cadr(b)
-		}
-		consumer := Cons(Intern("lambda"), Cons(formals, List(inner)))
-		return List(Intern("call-with-values"), List(Intern("lambda"), Nil, producer), consumer)
-	}
-	expr := build(len(bindings)-1, body)
-	if !sequential {
-		m.Eval(expr, env)
+		m.Eval(buildStar(0), env)
 		return
 	}
-	// let*-values: each binding sees the previous ones.
-	var buildStar func(i int) Value
-	buildStar = func(i int) Value {
-		if i >= len(bindings) {
-			return Cons(Intern("begin"), body)
-		}
-		b, ok := bindings[i].(*Pair)
+	var formalsList []Value
+	var producers []Value
+	for _, b := range bindings {
+		p, ok := b.(*Pair)
 		if !ok {
-			m.Raise(NewError("let*-values: malformed binding", bindings[i]))
-			return Nil
+			m.Raise(NewError("let-values: malformed binding", b))
+			return
 		}
-		var producer Value = UnspecifiedValue
-		if _, isNil := b.Cdr.(Empty); !isNil {
-			producer = cadr(b)
+		formalsList = append(formalsList, p.Car)
+		if _, isNil := p.Cdr.(Empty); isNil {
+			producers = append(producers, UnspecifiedValue)
+		} else {
+			producers = append(producers, cadr(p))
 		}
-		consumer := Cons(Intern("lambda"), Cons(b.Car, List(buildStar(i+1))))
-		return List(Intern("call-with-values"), List(Intern("lambda"), Nil, producer), consumer)
 	}
-	m.Eval(buildStar(0), env)
+	results := make([][]Value, len(producers))
+	i := 0
+	var step func()
+	step = func() {
+		if i >= len(producers) {
+			newEnv := NewEnv(env)
+			for j, formals := range formalsList {
+				if err := bindFormals(newEnv, formals, results[j]); err != nil {
+					m.RaiseError(err)
+					return
+				}
+			}
+			m.EvalSeq(args[1:], newEnv)
+			return
+		}
+		j := i
+		i++
+		m.EvalWith(producers[j], env, func(m *Machine, v Value) {
+			results[j] = valueList(v)
+			step()
+		})
+	}
+	step()
+}
+
+// bindFormals binds a lambda-style formal list to already evaluated values.
+func bindFormals(env *Env, formals Value, vals []Value) error {
+	switch f := formals.(type) {
+	case *Symbol:
+		env.Define(f, List(vals...))
+		return nil
+	case Empty:
+		return nil
+	case *Pair:
+		cur := Value(f)
+		i := 0
+		for {
+			p, ok := cur.(*Pair)
+			if !ok {
+				break
+			}
+			s, ok := p.Car.(*Symbol)
+			if !ok {
+				return NewError("binding name is not an identifier", p.Car)
+			}
+			if i < len(vals) {
+				env.Define(s, vals[i])
+			} else {
+				env.Define(s, UnspecifiedValue)
+			}
+			i++
+			cur = p.Cdr
+		}
+		if s, ok := cur.(*Symbol); ok {
+			if i <= len(vals) {
+				env.Define(s, List(vals[i:]...))
+			} else {
+				env.Define(s, Nil)
+			}
+		} else if _, isNil := cur.(Empty); !isNil {
+			return NewError("malformed formals", formals)
+		}
+		return nil
+	}
+	return NewError("malformed formals", formals)
 }
 
 func evalDefineValues(m *Machine, form Value, env *Env) {
@@ -751,42 +811,8 @@ func evalDefineValues(m *Machine, form Value, env *Env) {
 	}
 	formals := args[0]
 	m.EvalWith(args[1], env, func(m *Machine, v Value) {
-		vals := valueList(v)
-		switch f := formals.(type) {
-		case *Symbol:
-			env.Define(f, List(vals...))
-		case Empty:
-			// no bindings
-		case *Pair:
-			cur := Value(f)
-			i := 0
-			for {
-				p, ok := cur.(*Pair)
-				if !ok {
-					break
-				}
-				s, ok := p.Car.(*Symbol)
-				if !ok {
-					m.Raise(NewError("define-values: bad formals", formals))
-					return
-				}
-				if i < len(vals) {
-					env.Define(s, vals[i])
-				} else {
-					env.Define(s, UnspecifiedValue)
-				}
-				i++
-				cur = p.Cdr
-			}
-			if s, ok := cur.(*Symbol); ok {
-				if i <= len(vals) {
-					env.Define(s, List(vals[i:]...))
-				} else {
-					env.Define(s, Nil)
-				}
-			}
-		default:
-			m.Raise(NewError("define-values: bad formals", formals))
+		if err := bindFormals(env, formals, valueList(v)); err != nil {
+			m.RaiseError(err)
 			return
 		}
 		m.Return(UnspecifiedValue)
@@ -1566,9 +1592,6 @@ func (m *Machine) Features() []string {
 		"full-unicode", "goscheme",
 	}
 	feats = append(feats, platformFeatures()...)
-	for name := range m.Libraries {
-		feats = append(feats, name)
-	}
 	return feats
 }
 
@@ -1725,8 +1748,18 @@ func evalDefineLibrary(m *Machine, form Value, env *Env) {
 				}
 				lib.Exports[s] = val
 			case *Pair:
-				internal, ok1 := s.Car.(*Symbol)
-				external, ok2 := cadr(s).(*Symbol)
+				// (rename <internal> <external>)
+				items := mustSlice(s)
+				if len(items) != 3 {
+					m.Raise(NewError("define-library: malformed rename export", spec))
+					return
+				}
+				if kw, ok := items[0].(*Symbol); !ok || kw.Name != "rename" {
+					m.Raise(NewError("define-library: malformed rename export", spec))
+					return
+				}
+				internal, ok1 := items[1].(*Symbol)
+				external, ok2 := items[2].(*Symbol)
 				if !ok1 || !ok2 {
 					m.Raise(NewError("define-library: malformed rename export", spec))
 					return
