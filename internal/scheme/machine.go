@@ -413,7 +413,17 @@ func (p *Parameter) pop() {
 // Continuations and dynamic-wind
 // ---------------------------------------------------------------------------
 
+// transferTo reinstates a captured continuation, running the dynamic-wind
+// after/before thunks needed to move between the current and target dynamic
+// environments, and then returns v to it.
 func (m *Machine) transferTo(c *Continuation, v Value) {
+	m.transferToWith(c, func(m *Machine) { m.Return(v) })
+}
+
+// transferToWith is transferTo with a custom action performed once the wind
+// transition has completed (used by guard, which continues evaluating rather
+// than returning a value).
+func (m *Machine) transferToWith(c *Continuation, action func(*Machine)) {
 	cur, tgt := m.winds, c.winds
 	p := 0
 	for p < len(cur) && p < len(tgt) && cur[p] == tgt[p] {
@@ -430,14 +440,17 @@ func (m *Machine) transferTo(c *Continuation, v Value) {
 	m.hands = append([]*handlerFrame(nil), c.hands...)
 	m.stack = append([]frame(nil), c.stack...)
 	if len(thunks) == 0 {
-		m.Return(v)
+		action(m)
 		return
 	}
+	// The frames must run in order: after thunks[0] returns the machine pops
+	// the top frame, so thunks[1]'s frame has to be pushed last and the final
+	// action first (it is reached only after every thunk has run).
+	m.stack = append(m.stack, &fGeneric{fn: func(m *Machine, _ Value) { action(m) }})
 	for i := len(thunks) - 1; i >= 1; i-- {
 		th := thunks[i]
 		m.stack = append(m.stack, &fGeneric{fn: func(m *Machine, _ Value) { m.apply(th, nil) }})
 	}
-	m.stack = append(m.stack, &fGeneric{fn: func(m *Machine, _ Value) { m.Return(v) }})
 	m.apply(thunks[0], nil)
 }
 

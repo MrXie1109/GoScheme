@@ -98,6 +98,31 @@
 ;; dynamic-wind passes through the value of its thunk.
 (test 42 (dynamic-wind (lambda () #f) (lambda () 42) (lambda () #f)))
 
+;; Escaping nested dynamic-winds through a continuation runs every after
+;; thunk, innermost first.
+(define dw-log '())
+(test 'escaped
+      (call/cc (lambda (k)
+                 (dynamic-wind
+                  (lambda () (set! dw-log (cons 'in1 dw-log)))
+                  (lambda ()
+                    (dynamic-wind
+                     (lambda () (set! dw-log (cons 'in2 dw-log)))
+                     (lambda () (k 'escaped))
+                     (lambda () (set! dw-log (cons 'out2 dw-log)))))
+                  (lambda () (set! dw-log (cons 'out1 dw-log)))))))
+(test '(out1 out2 in2 in1) dw-log)
+
+;; guard must unwind dynamic-wind too.
+(define g-log '())
+(test 'caught
+      (guard (e (#t 'caught))
+        (dynamic-wind
+         (lambda () (set! g-log (cons 'in g-log)))
+         (lambda () (raise 'x))
+         (lambda () (set! g-log (cons 'out g-log))))))
+(test '(out in) g-log)
+
 (test-end)
 
 ;; ------------------------------------------------------------- multiple values

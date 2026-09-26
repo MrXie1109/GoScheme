@@ -1183,12 +1183,18 @@ func evalGuard(m *Machine, form Value, env *Env) {
 
 	handler := &Primitive{Name: "guard", MinArgs: 1, MaxArgs: 1, Fn: func(m *Machine, hargs []Value) {
 		cond := hargs[0]
-		m.winds = append([]*windFrame(nil), guardWinds...)
-		m.hands = append([]*handlerFrame(nil), guardHands...)
-		m.stack = append([]frame(nil), guardStack...)
-		clauseEnv := NewEnv(env)
-		clauseEnv.Define(varSym, cond)
-		m.evalGuardClauses(clauses, clauseEnv, cond)
+		// Escaping from the guard's body must run the dynamic-wind after
+		// thunks of every wind frame that is being left.
+		target := &Continuation{
+			stack: append([]frame(nil), guardStack...),
+			winds: append([]*windFrame(nil), guardWinds...),
+			hands: append([]*handlerFrame(nil), guardHands...),
+		}
+		m.transferToWith(target, func(m *Machine) {
+			clauseEnv := NewEnv(env)
+			clauseEnv.Define(varSym, cond)
+			m.evalGuardClauses(clauses, clauseEnv, cond)
+		})
 	}}
 	m.hands = append(m.hands, &handlerFrame{proc: handler})
 	savedLen := len(m.hands)
