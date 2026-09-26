@@ -78,7 +78,15 @@ func run() int {
 	}
 
 	m := scheme.NewMachine()
-	m.Args = append([]string{"goscheme"}, append(append([]string{}, files...), rest...)...)
+	// R7RS 6.14: the first element of (command-line) is the name of the
+	// command, i.e. whatever the operating system passed as argv[0]; the
+	// second is the script (if any) and the remaining elements are its
+	// arguments.
+	prog := "goscheme"
+	if len(os.Args) > 0 && os.Args[0] != "" {
+		prog = os.Args[0]
+	}
+	m.Args = append([]string{prog}, append(append([]string{}, files...), rest...)...)
 
 	for _, e := range exprs {
 		if code := evalString(m, e, "(command line)"); code != 0 {
