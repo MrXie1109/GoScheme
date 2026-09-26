@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // RuneScanner is the minimal input abstraction used by the reader; *Port
@@ -329,7 +330,7 @@ func (r *Reader) readList(close rune) (Value, error) {
 		if err != nil {
 			return nil, err
 		}
-		cell := &Pair{Car: v}
+		cell := &Pair{Car: v, Cdr: Nil}
 		if head == nil {
 			head = cell
 		} else {
@@ -457,6 +458,16 @@ func (r *Reader) readHash() (Value, error) {
 			return nil, err
 		}
 		return False, nil
+	case 'T':
+		if err := r.expectDelimiterOrWord("rue"); err != nil {
+			return nil, err
+		}
+		return True, nil
+	case 'F':
+		if err := r.expectDelimiterOrWord("alse"); err != nil {
+			return nil, err
+		}
+		return False, nil
 	case '\\':
 		return r.readChar()
 	case '(':
@@ -576,12 +587,21 @@ func (r *Reader) readHash() (Value, error) {
 	}
 }
 
+// expectDelimiterOrWord handles the #t / #true / #f / #false family: the
+// suffix is optional but must be complete if present, and must be followed by
+// a delimiter.
 func (r *Reader) expectDelimiterOrWord(rest string) error {
+	consumed := 0
 	for _, want := range rest {
-		c, ok := r.readRune()
-		if !ok || (c != want && c != []rune(strings.ToUpper(string(want)))[0]) {
-			return r.errf("bad # syntax")
+		c, ok := r.peekRune()
+		if !ok || unicode.ToLower(c) != want {
+			break
 		}
+		r.readRune()
+		consumed++
+	}
+	if consumed != 0 && consumed != len(rest) {
+		return r.errf("bad # syntax")
 	}
 	if c, ok := r.peekRune(); ok && !isDelimiter(c) {
 		return r.errf("bad # syntax")
@@ -807,47 +827,50 @@ func ParseNumber(s string, radix int) (Value, bool) {
 	}
 	// Complex with trailing i
 	if strings.HasSuffix(body, "i") || strings.HasSuffix(body, "I") {
-		body = body[:len(body)-1]
+		inner := body[:len(body)-1]
 		split := -1
-		for j := 1; j < len(body); j++ {
-			c := body[j]
-			if (c == '+' || c == '-') && body[j-1] != 'e' && body[j-1] != 'E' {
+		for j := 1; j < len(inner); j++ {
+			c := inner[j]
+			if (c == '+' || c == '-') && inner[j-1] != 'e' && inner[j-1] != 'E' {
 				split = j
 			}
 		}
-		var reStr, imStr string
-		imStr = body
-		if split > 0 {
-			reStr = body[:split]
-			imStr = body[split:]
-		}
-		var im Value
-		switch imStr {
-		case "", "+":
-			im = Int(1)
-		case "-":
-			im = Int(-1)
-		default:
-			v, ok := parseReal(imStr, radix, exact)
-			if !ok {
-				return nil, false
+		// A bare "i" is an identifier; the imaginary part must be introduced
+		// by a sign.
+		if inner == "+" || inner == "-" || split > 0 {
+			var im Value
+			imStr := inner
+			if split > 0 {
+				imStr = inner[split:]
 			}
-			im = v
-		}
-		if exact == 'e' && IsInexact(im) {
-			im = Exact(im)
-		}
-		var re Value = Int(0)
-		if reStr != "" {
-			v, ok := parseReal(reStr, radix, exact)
-			if !ok {
-				return nil, false
+			switch imStr {
+			case "+", "":
+				im = Int(1)
+			case "-":
+				im = Int(-1)
+			default:
+				v, ok := parseReal(imStr, radix, exact)
+				if !ok {
+					return nil, false
+				}
+				im = v
 			}
-			re = v
-		} else if exact == 'e' {
-			re = Int(0)
+			if exact == 'e' && IsInexact(im) {
+				im = Exact(im)
+			}
+			var re Value = Int(0)
+			if split > 0 {
+				v, ok := parseReal(inner[:split], radix, exact)
+				if !ok {
+					return nil, false
+				}
+				re = v
+			} else if exact == 'e' {
+				re = Int(0)
+			}
+			return NormalizeComplex(re, im), true
 		}
-		return NormalizeComplex(re, im), true
+		return nil, false
 	}
 	// Plain real
 	v, ok := parseReal(body, radix, exact)

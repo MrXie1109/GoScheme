@@ -397,8 +397,7 @@ func evalDefine(m *Machine, form Value, env *Env) {
 			m.Raise(NewError("define: bad procedure name", target))
 			return
 		}
-		lam := Cons(Intern("lambda"), appendToTail(listFromSlice(body), Nil))
-		lam = Cons(Intern("lambda"), Cons(cdrOf(target), listFromSlice(body)))
+		lam := Cons(Intern("lambda"), Cons(target.(*Pair).Cdr, listFromSlice(body)))
 		_ = p
 		expr := lam
 		m.EvalWith(expr, env, func(m *Machine, v Value) {

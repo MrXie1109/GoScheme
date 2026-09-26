@@ -462,11 +462,11 @@ type fDynamicWindPush struct {
 func (f *fDynamicWindPush) resume(m *Machine, _ Value) {
 	w := &windFrame{before: f.before, after: f.after}
 	m.winds = append(m.winds, w)
-	m.stack = append(m.stack, &fGeneric{fn: func(m *Machine, v Value) {
+	m.stack = append(m.stack, &fGeneric{fn: func(m *Machine, thunkVal Value) {
 		if len(m.winds) > 0 && m.winds[len(m.winds)-1] == w {
 			m.winds = m.winds[:len(m.winds)-1]
 		}
-		m.stack = append(m.stack, &fGeneric{fn: func(m *Machine, v Value) { m.Return(v) }})
+		m.stack = append(m.stack, &fGeneric{fn: func(m *Machine, _ Value) { m.Return(thunkVal) }})
 		m.apply(f.after, nil)
 	}})
 	m.apply(f.thunk, nil)
