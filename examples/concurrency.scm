@@ -64,7 +64,10 @@
 ;; ready, like Go's select statement.  Note that (else) never waits, so it is
 ;; only reached when nothing else is ready.
 (define fast (make-channel 1))
-(define slow (make-channel 1))
+;; slow is unbuffered and has no receiver yet, so its send clause is *not*
+;; ready: only one clause can win and the example is deterministic.  (When two
+;; clauses are ready, Go picks one at random.)
+(define slow (make-channel))
 (chan-send! fast 'ready)
 
 (select
