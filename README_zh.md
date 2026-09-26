@@ -37,7 +37,7 @@ $ goscheme -e '(display (map (lambda (x) (* x x)) (list 1 2 3 4))) (newline)'
 ## 快速开始
 
 ```sh
-git clone <本仓库> GoScheme && cd GoScheme
+git clone https://github.com/MrXie1109/GoScheme.git && cd GoScheme
 
 make build          # 或者：go build -o .build/goscheme ./cmd/goscheme
 make test           # Go 单元测试 + 两个 Scheme 测试套件
