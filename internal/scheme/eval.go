@@ -419,7 +419,7 @@ func evalDefine(m *Machine, form Value, env *Env) {
 				c.Name = name.Name
 			}
 			env.Define(name, v)
-			m.Return(v)
+			m.Return(UnspecifiedValue)
 		})
 		return
 	}
@@ -440,7 +440,7 @@ func evalDefine(m *Machine, form Value, env *Env) {
 			c.Name = name.Name
 		}
 		env.Define(name, v)
-		m.Return(v)
+		m.Return(UnspecifiedValue)
 	})
 }
 
