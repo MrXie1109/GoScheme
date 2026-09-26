@@ -50,7 +50,7 @@ dist:
 	  echo "building $$out"; \
 	  GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $$out ./cmd/goscheme; \
 	done
-	@cd $(DIST) && sha256sum * > SHA256SUMS 2>/dev/null || true
+	@cd $(DIST) && rm -f SHA256SUMS && sha256sum ./* > SHA256SUMS
 	@ls -l $(DIST)
 
 ## list-dist: show the platform matrix

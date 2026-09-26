@@ -23,7 +23,9 @@ for p in $platforms; do
     printf 'ok\n'
 done
 
-( cd "$DIST" && sha256sum ./* > SHA256SUMS )
+# Remove the old manifest first: otherwise the shell truncates it before
+# sha256sum reads it, and the file ends up hashing itself.
+( cd "$DIST" && rm -f SHA256SUMS && sha256sum ./* > SHA256SUMS )
 echo
 echo "artifacts in $DIST:"
 ls -l "$DIST"
