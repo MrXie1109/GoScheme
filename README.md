@@ -1,139 +1,273 @@
 # GoScheme
 
-GoScheme 是一个用 **Go** 从零实现的 **R7RS Scheme** 解释器（R7RS-small 全部语言）。
+A complete **R7RS Scheme** interpreter written from scratch in **Go**, with no
+third-party dependencies.
 
-- 求值核心：显式栈的 **CEK 抽象机**，天然支持**真尾调用（proper tail calls）**与**一等续延**（`call/cc` 可多次调用）。
-- 宏系统：**`syntax-rules`**，支持嵌套省略号、尾部模式、自定义省略号、省略号转义、卫生（referential transparency + 不捕获用户绑定）。
-- 数值塔：精确整数（自动 `int64` ↔ `big.Int` 提升）、精确有理数、`float64`、复数，以及完整的精确/非精确传播规则。
-- 库系统：`define-library` / `import`（`only` / `except` / `prefix` / `rename`）、全部标准库 `(scheme *)`。
-- 无第三方依赖，纯标准库实现，可静态交叉编译。
-
-参考 R7RS 测试套件（chibi-scheme 的 `r7rs-tests.scm`，1227 条断言）**全部通过**。
+**English** | [简体中文](README_zh.md)
 
 ```
-== 1227 passed, 0 failed
+$ goscheme -e '(display (map (lambda (x) (* x x)) (list 1 2 3 4))) (newline)'
+(1 4 9 16)
 ```
 
-## 目录结构
+* **Evaluation core** — a CEK-style abstract machine with an explicit
+  continuation stack. Procedure calls never push a return frame, so **proper
+  tail calls** are structural rather than simulated, and `call/cc` is
+  implemented by copying the stack, which makes continuations **multi-shot**.
+* **Macros** — hygienic `syntax-rules`: nested ellipses, tail patterns after an
+  ellipsis, custom ellipsis identifiers, ellipsis escape `(... template)`, and
+  referential transparency for template-introduced identifiers.
+* **Numeric tower** — exact integers (`int64` with automatic promotion to
+  `big.Int`), exact rationals, `float64`, and complex numbers, with full R7RS
+  exactness contagion and transitive comparisons.
+* **Libraries** — `define-library` / `import` with `only`, `except`, `prefix`
+  and `rename`, plus every R7RS-small `(scheme …)` library.
+* **Conformance** — the reference R7RS test suite
+  ([chibi-scheme `r7rs-tests.scm`](test/scheme/r7rs-tests.scm)) passes in full:
+  **1227 assertions, 0 failures**.
 
-```
-cmd/goscheme/          命令行入口（文件执行 / -e 求值 / REPL）
-internal/scheme/       解释器实现
-  value.go             运行时对象（符号、序对、字符串、向量、字节向量、过程、记录…）
-  number.go            数值塔与算术
-  reader.go            词法分析 + 数据读取（S 表达式）
-  printer.go           write / display / write-shared / write-simple
-  env.go               词法环境与卫生标识符解析
-  machine.go           CEK 抽象机、续延、dynamic-wind、异常分发
-  eval.go              特殊形式与派生语法
-  macro.go             syntax-rules 模式匹配与模板实例化
-  equal.go             eq? / eqv? / equal?
-  library.go           R7RS 库与 import set
-  port.go              文本/二进制端口、字符串端口、字节向量端口
-  builtins.go         内建过程注册与参数检查
-  b_number.go         (scheme inexact) (scheme complex) 等
-  b_list.go b_string.go b_vector.go b_control.go b_io.go b_system.go
-test/scheme/           Scheme 测试
-  r7rs-tests.scm       参考 R7RS 测试套件
-  goscheme-tests.scm   本实现的补充测试（TCO、续延、库、端口、记录…）
-  chibi/test.scm       测试框架（(chibi test) 兼容层）
-  run-r7rs.scm run-goscheme.scm  测试驱动
-dist/                  交叉编译产物（6 个平台）
-```
+## Table of contents
 
-## 构建
+- [Quick start](#quick-start)
+- [Command line](#command-line)
+- [Repository layout](#repository-layout)
+- [Language coverage](#language-coverage)
+- [Implementation notes](#implementation-notes)
+- [Testing](#testing)
+- [Cross-compilation](#cross-compilation)
+- [Requirements](#requirements)
+- [Known limitations](#known-limitations)
+
+## Quick start
 
 ```sh
-make build          # 编译到 .build/goscheme
-make test           # Go 单元测试 + 两个 Scheme 测试套件
-make dist           # 交叉编译全部平台到 dist/
+git clone <this repository> GoScheme && cd GoScheme
+
+make build          # or: go build -o .build/goscheme ./cmd/goscheme
+make test           # Go unit tests + both Scheme test suites
+make dist           # cross-compile every supported platform into dist/
 ```
 
-也可以直接使用 Go：
+Run a program, evaluate an expression, or start a REPL:
 
 ```sh
-/usr/bin/go build -o goscheme ./cmd/goscheme
-/usr/bin/go test ./...
+./.build/goscheme program.scm                 # run a file
+./.build/goscheme -e '(display (+ 1 2))'      # evaluate an expression
+./.build/goscheme                             # interactive REPL
+./.build/goscheme -i program.scm              # load, then REPL
 ```
 
-## 使用
+## Command line
 
-```sh
-goscheme                       # 交互式 REPL
-goscheme program.scm           # 执行文件
-goscheme -e '(display (+ 1 2))' -e '(newline)'
-goscheme -i program.scm        # 执行后进入 REPL
-goscheme -q                    # REPL 不打印 banner
-echo '(map (lambda (x) (* x x)) (list 1 2 3))' | goscheme -q
+```
+goscheme [options] [file] [argument ...]
+
+  -e, --eval EXPR     evaluate EXPR (may be repeated, evaluated in order)
+  -i, --interactive   enter the REPL after loading FILE
+  -q, --quiet         do not print the REPL banner
+  -v, --version       print the version and exit
+  -h, --help          print usage
+  --                  end of options; the next argument is the script
 ```
 
-## 语言覆盖
+With neither a file nor `-e`, the interpreter starts a REPL. `(command-line)`
+returns the program name, the script and its arguments.
 
-### 特殊形式
+Exit status: `0` on success, the argument of `(exit n)`, `1` for `(exit #f)` or
+for an uncaught error.
+
+## Repository layout
+
+```
+cmd/goscheme/main.go      command line driver (file / -e / REPL)
+internal/scheme/          the interpreter
+  value.go                runtime objects (symbols, pairs, strings, vectors,
+                          bytevectors, procedures, records, …)
+  number.go               numeric tower and arithmetic
+  reader.go               lexer and datum reader
+  printer.go              write / display / write-shared / write-simple
+  env.go                  lexical environments and hygienic name resolution
+  machine.go              CEK machine, continuations, dynamic-wind, exceptions
+  eval.go                 special forms and derived syntax
+  macro.go                syntax-rules pattern matching and instantiation
+  equal.go                eq? / eqv? / equal?
+  library.go              R7RS libraries and import sets
+  port.go                 textual, binary, string and bytevector ports
+  builtins.go             procedure registration and argument checking
+  b_number.go             numeric procedures
+  b_list.go               pairs and lists
+  b_string.go             strings, characters, symbols
+  b_vector.go             vectors and bytevectors
+  b_control.go            apply, map, continuations, values, promises
+  b_io.go                 ports, read and write
+  b_system.go             files, process context, time, eval and load
+  b_hashtable.go          hash tables (extension)
+  scheme_test.go          Go unit tests and suite drivers
+test/scheme/              Scheme level tests
+  r7rs-tests.scm          the reference R7RS test suite
+  goscheme-tests.scm      regression tests specific to this implementation
+  chibi/test.scm          (chibi test) compatibility shim used by the suites
+  run-r7rs.scm            drivers: goscheme run-r7rs.scm
+  run-goscheme.scm
+dist/                     cross-compiled release binaries
+scripts/build-dist.sh     cross-compilation script used by `make dist`
+Makefile                  build, test and dist targets
+```
+
+## Language coverage
+
+### Syntax
 
 `quote` `quasiquote` `unquote` `unquote-splicing` `if` `define` `set!` `lambda`
-`case-lambda` `begin` `let` `let*` `letrec` `letrec*` `let-values` `let*-values`
-`define-values` `cond` `case` `and` `or` `when` `unless` `do` `delay`
-`delay-force` `parameterize` `guard` `define-record-type` `define-syntax`
-`let-syntax` `letrec-syntax` `syntax-rules` `include` `include-ci`
-`cond-expand` `import` `define-library`
+`case-lambda` `begin` `let` `let*` `letrec` `letrec*` `let-values`
+`let*-values` `define-values` `cond` `case` `and` `or` `when` `unless` `do`
+`delay` `delay-force` `parameterize` `guard` `define-record-type`
+`define-syntax` `let-syntax` `letrec-syntax` `syntax-rules` `include`
+`include-ci` `cond-expand` `import` `define-library`
 
-### 库
+(`else` and `=>` are recognised as auxiliary syntax only when they are not
+shadowed by a variable binding, as the report requires.)
+
+The reader accepts the complete R7RS lexical syntax: block comments `#|…|#`
+(nestable), datum comments `#;`, `#!fold-case` / `#!no-fold-case`, vectors
+`#(…)`, bytevectors `#u8(…)`, datum labels `#0=` / `#0#` (including cycles),
+`|…|` symbols with escapes, all character names plus `#\xHH`, string escapes
+with intraline line continuation, and the full numeric grammar with any
+combination of `#b #o #d #x` and `#e #i` prefixes.
+
+### Libraries
 
 `(scheme base)` `(scheme case-lambda)` `(scheme char)` `(scheme complex)`
 `(scheme cxr)` `(scheme eval)` `(scheme file)` `(scheme inexact)`
 `(scheme lazy)` `(scheme load)` `(scheme process-context)` `(scheme read)`
 `(scheme repl)` `(scheme time)` `(scheme write)` `(scheme r5rs)`
 
-扩展库：`(goscheme hash-table)`（`make-equal-hashtable`、`hash-table-ref`、
-`hash-table-set!`、`hash-table-update!`、`hash-table-walk` 等；R7RS-small
-之外的可选扩展）。
+plus one extension library, `(goscheme hash-table)`.
 
-### 数据类型
+### Data types
 
-布尔、数值（整数 / 有理数 / 浮点 / 复数）、字符（完整 Unicode 大小写映射）、
-字符串、符号、序对与列表、向量、字节向量、过程、续延、参数对象、
-Promise、端口、记录类型、错误对象、`eof`、未指定值。
+Booleans; numbers (exact integers, exact rationals, inexact reals, complex);
+characters with full Unicode case mapping; mutable strings; symbols; pairs and
+lists; vectors; bytevectors; procedures (closures, primitives, continuations,
+parameter objects); promises; records; errors; ports; environments; `eof`; the
+unspecified value; hash tables (extension).
 
-## 实现要点
+### Procedures
 
-### 尾调用优化
+323 bindings are installed in the standard environment (about 250 of them are
+the R7RS-small procedures), and the builtin libraries export 572 names in
+total. Coverage includes the numeric tower (`exact-integer-sqrt`,
+`rationalize`, `floor/`, `truncate/`, `make-polar`, `number->string` with any
+radix, …), list and vector operations, Unicode-aware string and character
+operations, textual and binary I/O, file and process-context procedures,
+`eval` / `load` / `environment`, `dynamic-wind`, `guard`,
+`with-exception-handler`, `parameterize`, promises and `values`.
 
-求值机维护一个显式的续延栈。调用过程**不压入返回帧**，因此尾位置的过程调用
-不会增长栈；循环、相互递归、`cond`/`case`/`and`/`or`/`when`/`begin`/`apply` /
-`call-with-values` / `force` 的尾位置都保持常量栈空间。测试中 `(let loop ((i 0))
-(if (= i 2000000) i (loop (+ i 1))))` 在默认栈下正常运行。
+## Implementation notes
 
-### 一等续延
+### Proper tail calls
 
-`call/cc` 复制当前续延栈、`dynamic-wind` 风栈与异常处理器栈；调用续延时：
+The machine keeps its continuation as an explicit stack of frames. Evaluating a
+combination pushes frames only for the operand expressions that still have to
+be evaluated; **applying a procedure pushes nothing**. The callee therefore
+runs with the caller's continuation, which is exactly a tail call. Tail
+position is preserved through `if`, `cond`, `case`, `and`, `or`, `when`,
+`begin`, `let`/`let*`/`letrec` bodies, `apply`, `call-with-values`, `force`,
+`dynamic-wind`, macro expansion and `guard`.
 
-1. 计算当前风栈与目标风栈的最长公共前缀；
-2. 逆序执行被退出部分的 `after` 过程；
-3. 顺序执行被进入部分的 `before` 过程；
-4. 恢复续延栈 / 风栈 / 处理器栈并返回值。
+```sh
+$ goscheme -e '(let loop ((i 0)) (if (= i 2000000) i (loop (+ i 1))))'
+2000000        # constant stack space
+```
 
-因此续延可多次调用（多发射），并与 `dynamic-wind`、`parameterize`、
-`with-exception-handler` 正确协作。
+Deep *non-tail* recursion also works: continuation frames live on the heap, not
+on the Go call stack.
 
-### 卫生宏
+### First-class continuations
 
-模板中引入的标识符带有一个“标记”，该标记记录了宏定义时的环境。查找变量时先做
-词法查找（保证宏引入的绑定与用户绑定互不干扰），失败后再沿标记的环境解析，从而
-保证引用透明；标记可以复合，因此嵌套宏（宏生成宏）也保持卫生。字面量（literals）
-按标识符身份/绑定比较，而不是简单按名字比较。
+`call/cc` captures the continuation stack together with the `dynamic-wind` wind
+stack and the exception-handler stack, and copies them, so a captured
+continuation may be resumed any number of times. Resuming computes the longest
+common prefix of the current and target wind stacks, runs the `after` thunks of
+the frames being left (innermost first) and the `before` thunks of the frames
+being entered, then reinstates the state. `guard` and `with-exception-handler`
+use the same transition, so unwinding out of nested `dynamic-wind` forms runs
+every `after` thunk exactly once and in the right order.
 
-### 数值
+### Hygienic macros
 
-精确整数在 `int64` 内不分配堆内存，溢出自动提升为 `big.Int`；精确有理数使用
-`big.Rat` 并始终约分。混合精确/非精确比较会把非精确操作数转换为精确值，
-保证 `=` 的传递性（R7RS 6.2.6）。
+Identifiers introduced by a template carry a mark that records the environment
+of the macro definition. Name resolution first searches the lexical
+environment (so a binding introduced by an expansion never captures a user
+binding, and vice versa) and then falls back through the mark chain, which
+provides referential transparency. Marks compose, so macros that expand into
+macro definitions stay hygienic. Literals are compared by identifier identity
+or by binding, not merely by name, which is what R7RS 4.3.2 requires.
 
-## 交叉编译产物
+### Errors and conditions
 
-`dist/` 下为 6 个目标平台的可执行文件（`CGO_ENABLED=0` 静态编译，`-trimpath -ldflags "-s -w"`）：
+Errors raised by primitives and by `error`/`raise` are dispatched to the
+innermost handler. `raise` is non-continuable (a returning handler triggers a
+secondary exception), while `raise-continuable` reinstates the handler stack
+and continues at the `raise` point. `error-object?`, `error-object-message`,
+`error-object-irritants`, `read-error?` and `file-error?` are all supported.
 
-| 文件 | 平台 |
+### Numeric tower
+
+Exact integers stay in a machine word until they overflow and then promote
+automatically to `big.Int`; exact rationals use `big.Rat` and are always kept
+in lowest terms with integral values normalised back to integers. Comparisons
+between an exact and an inexact operand convert the inexact operand to exact
+first, which keeps `=`, `<`, … transitive as R7RS 6.2.6 recommends.
+
+### Extensions
+
+Beyond R7RS-small the interpreter also provides:
+
+* `(goscheme hash-table)` — `make-eq-hashtable`, `make-eqv-hashtable`,
+  `make-equal-hashtable`, `hash-table-ref`, `hash-table-ref/default`,
+  `hash-table-set!`, `hash-table-update!`, `hash-table-delete!`,
+  `hash-table-exists?`, `hash-table-keys`, `hash-table-values`,
+  `hash-table-walk`, `hash-table->alist`, `alist->hash-table`,
+  `hash-table-copy`, `hash-table-clear!`, `hash-table-size`, `hash-table-count`
+  and `hash`.
+* `(assert expr)`, `#!unspecified`, and the alternative exponent markers
+  `s f d l` accepted by the reader.
+
+## Testing
+
+```sh
+make test                                     # everything
+go test ./...                                 # same
+go test -short ./...                          # skip the reference suite
+./.build/goscheme test/scheme/run-r7rs.scm    # reference suite only
+./.build/goscheme test/scheme/run-goscheme.scm
+```
+
+```
+== 1227 passed, 0 failed     reference R7RS suite (test/scheme/r7rs-tests.scm)
+==  135 passed, 0 failed     GoScheme regression suite (test/scheme/goscheme-tests.scm)
+```
+
+* `r7rs-tests.scm` is the suite maintained by chibi-scheme. It exercises
+  sections 4.1–4.3 (primitive, derived and macro syntax) and 6.1–6.14 (all
+  standard procedures), including hygiene corner cases, the numeric grammar,
+  reader syntax and cyclic-output handling. It is run through the bundled
+  `(chibi test)` shim.
+* `goscheme-tests.scm` adds regression coverage for proper tail calls,
+  multi-shot continuations, `dynamic-wind` re-entry and unwinding, library
+  import transformations, records, textual/binary ports, file round-trips,
+  `include` / `cond-expand`, hash tables, exceptions and `eval` / `load`.
+* The Go tests in `internal/scheme/scheme_test.go` drive both suites and also
+  contain direct unit tests for the reader, the numeric tower, tail-call
+  behaviour and error propagation.
+
+## Cross-compilation
+
+`make dist` (or `scripts/build-dist.sh`) builds statically linked binaries for
+every supported target into `dist/`. No cgo, no external toolchain.
+
+| Artifact | Platform |
 |---|---|
 | `goscheme-linux-amd64` | Linux x86-64 |
 | `goscheme-linux-arm64` | Linux AArch64 |
@@ -142,23 +276,24 @@ Promise、端口、记录类型、错误对象、`eof`、未指定值。
 | `goscheme-windows-amd64.exe` | Windows x86-64 |
 | `goscheme-windows-arm64.exe` | Windows on ARM |
 
-`dist/SHA256SUMS` 记录各产物的校验和。
+Build flags: `GOOS=<os> GOARCH=<arch> CGO_ENABLED=0 go build -trimpath -ldflags "-s -w"`.
+`dist/SHA256SUMS` records the checksum of every artifact.
 
-## 测试
+## Requirements
 
-```sh
-make test                                    # 全部测试
-./.build/goscheme test/scheme/run-r7rs.scm   # 参考 R7RS 测试套件
-./.build/goscheme test/scheme/run-goscheme.scm
-```
+* Go 1.22 or newer (the module targets `go 1.22`).
+* No third-party modules — the standard library only.
+* The interpreter itself runs on Linux, macOS and Windows, on amd64 and arm64.
 
-- `test/scheme/r7rs-tests.scm`：chibi-scheme 维护的 R7RS 参考测试套件，覆盖
-  4.1–4.3 语法、6.1–6.14 全部标准过程，共 1227 条断言。
-- `test/scheme/goscheme-tests.scm`：针对尾调用、续延多发射、`dynamic-wind`
-  重入、库导入变换、记录、端口、文件读写、异常与 `eval`/`load` 的回归测试。
+## Known limitations
 
-## 已知限制
-
-- `define-syntax` 仅支持 `syntax-rules` 变换器（R7RS-small 只要求 `syntax-rules`）。
-- 数值输出中的浮点数使用最短往返表示；`write` 对形如 `+inf.0` 的符号会加 `|...|`。
-- 目标标准为 R7RS-small；未实现 R7RS-large / SRFI 库。
+* `define-syntax` supports `syntax-rules` transformers only, which is the full
+  extent of the R7RS-small macro system.
+* The target language is R7RS-small; R7RS-large and the SRFI libraries are not
+  provided, apart from the bundled hash-table extension.
+* It is a tree-walking interpreter — there is no compiler or JIT. Tail calls
+  are proper, but deep non-tail recursion allocates heap frames.
+* Inexact numbers are printed with Go's shortest round-trip representation, and
+  symbols that merely look like numbers (for example `+NaN.0abc`) are quoted
+  with `|…|` by `write`.
+* `write-simple` on cyclic data may not terminate, which the report permits.
