@@ -3,6 +3,7 @@
 *.out
 /tmp/
 /build/
+/.build/
 
 # editor
 .idea/
