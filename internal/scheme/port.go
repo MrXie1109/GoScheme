@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"os"
 )
 
 // PortError reports an I/O failure.
@@ -129,8 +128,8 @@ func (p *Port) checkOpen() error {
 	return nil
 }
 
-// ReadRune reads one character from a textual input port.
-func (p *Port) ReadRune() (rune, error) {
+// ReadChar reads one character from a textual input port.
+func (p *Port) ReadChar() (rune, error) {
 	if n := len(p.pushedR); n > 0 {
 		ch := p.pushedR[n-1]
 		p.pushedR = p.pushedR[:n-1]
@@ -152,8 +151,8 @@ func (p *Port) ReadRune() (rune, error) {
 	return r, nil
 }
 
-// UnreadRune pushes ch back onto the port.
-func (p *Port) UnreadRune(ch rune) error {
+// UnreadChar pushes ch back onto the port.
+func (p *Port) UnreadChar(ch rune) error {
 	p.pushedR = append(p.pushedR, ch)
 	if ch == '\n' && p.Line > 1 {
 		p.Line--
@@ -161,13 +160,13 @@ func (p *Port) UnreadRune(ch rune) error {
 	return nil
 }
 
-// PeekRune returns the next character without consuming it.
-func (p *Port) PeekRune() (rune, error) {
-	r, err := p.ReadRune()
+// PeekChar returns the next character without consuming it.
+func (p *Port) PeekChar() (rune, error) {
+	r, err := p.ReadChar()
 	if err != nil {
 		return 0, err
 	}
-	_ = p.UnreadRune(r)
+	_ = p.UnreadChar(r)
 	return r, nil
 }
 
@@ -212,8 +211,8 @@ func (p *Port) PeekByte() (byte, error) {
 	return b, nil
 }
 
-// UnreadByte pushes b back onto the port.
-func (p *Port) UnreadByte(b byte) error {
+// PushByte pushes b back onto the port.
+func (p *Port) PushByte(b byte) error {
 	p.pushedB = append(p.pushedB, b)
 	return nil
 }
@@ -222,14 +221,14 @@ func (p *Port) UnreadByte(b byte) error {
 func (p *Port) ReadChars(n int) ([]rune, error) {
 	var out []rune
 	for i := 0; i < n; i++ {
-		r, err := p.ReadRune()
+		r, err := p.ReadChar()
 		if err != nil {
 			break
 		}
 		out = append(out, r)
 	}
 	if len(out) == 0 {
-		if _, err := p.PeekRune(); err != nil {
+		if _, err := p.PeekChar(); err != nil {
 			return nil, io.EOF
 		}
 	}
@@ -241,7 +240,7 @@ func (p *Port) ReadChars(n int) ([]rune, error) {
 func (p *Port) LineRead() ([]rune, error) {
 	var out []rune
 	for {
-		r, err := p.ReadRune()
+		r, err := p.ReadChar()
 		if err != nil {
 			if len(out) == 0 {
 				return nil, io.EOF
@@ -252,8 +251,8 @@ func (p *Port) LineRead() ([]rune, error) {
 			return out, nil
 		}
 		if r == '\r' {
-			if nx, err := p.PeekRune(); err == nil && nx == '\n' {
-				p.ReadRune()
+			if nx, err := p.PeekChar(); err == nil && nx == '\n' {
+				p.ReadChar()
 			}
 			return out, nil
 		}
@@ -336,5 +335,3 @@ func (p *Port) OutputBytes() []byte {
 
 // ensure *Port satisfies RuneScanner.
 var _ RuneScanner = (*Port)(nil)
-
-var _ = os.Stdin

@@ -40,9 +40,6 @@ type Machine struct {
 	ErrParam *Parameter
 
 	Args []string
-
-	// Depth counts active Run calls (used by include / load).
-	depth int
 }
 
 type frame interface {
@@ -347,7 +344,7 @@ func (m *Machine) applyClosure(c *Closure, args []Value) {
 			env.Define(s, args[i])
 		}
 	}
-	for _, s := range c.BodyNames {
+	for _, s := range clause.BodyNames {
 		if _, exists := env.vars[s]; !exists {
 			env.Define(s, Unassigned)
 		}

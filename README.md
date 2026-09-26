@@ -85,6 +85,10 @@ echo '(map (lambda (x) (* x x)) (list 1 2 3))' | goscheme -q
 `(scheme lazy)` `(scheme load)` `(scheme process-context)` `(scheme read)`
 `(scheme repl)` `(scheme time)` `(scheme write)` `(scheme r5rs)`
 
+扩展库：`(goscheme hash-table)`（`make-equal-hashtable`、`hash-table-ref`、
+`hash-table-set!`、`hash-table-update!`、`hash-table-walk` 等；R7RS-small
+之外的可选扩展）。
+
 ### 数据类型
 
 布尔、数值（整数 / 有理数 / 浮点 / 复数）、字符（完整 Unicode 大小写映射）、

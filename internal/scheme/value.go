@@ -18,7 +18,6 @@ package scheme
 
 import (
 	"fmt"
-	"math/big"
 	"strings"
 	"sync"
 )
@@ -310,17 +309,16 @@ type Closure struct {
 	Clauses []ClosureClause
 	Name    string
 	Env     *Env
-	// BodyNames lists identifiers introduced by internal definitions, used to
-	// give internal defines letrec* semantics.
-	BodyNames []*Symbol
 }
 
 // ClosureClause is one arity case of a procedure.
 type ClosureClause struct {
-	Params   []*Symbol
-	Rest     *Symbol // nil when the parameter list is proper
-	HasRest  bool
-	Body     []Value
+	Params []*Symbol
+	Rest   *Symbol // nil when the parameter list is proper
+	HasRest bool
+	Body   []Value
+	// BodyNames lists the identifiers introduced by internal definitions so
+	// that they can be pre-bound (letrec* semantics).
 	BodyNames []*Symbol
 }
 
@@ -499,26 +497,17 @@ func typeName(v Value) string {
 // Hashtables (extension; not part of R7RS-small but widely used)
 // ---------------------------------------------------------------------------
 
-// Hashtable is a simple hash table keyed by Scheme values.
+// Hashtable is a hash table keyed by Scheme values.  It is an extension:
+// see b_hashtable.go.
 type Hashtable struct {
-	Weak     bool
-	Kind     string // "eq", "eqv" or "equal"
-	Table    map[interface{}]*htEntry
-	Keys     []Value
-	Index    map[Value]int
-	Mutable  bool
-	Capacity int
-}
-
-type htEntry struct {
-	Key   Value
-	Value Value
-	Live  bool
-}
-
-// NewHashtable builds an empty hash table.
-func NewHashtable(eq string) *Hashtable {
-	return &Hashtable{Kind: eq, Table: map[interface{}]*htEntry{}, Mutable: true}
+	// Kind is "eq", "eqv" or "equal" and selects the key equivalence.
+	Kind    string
+	Mutable bool
+	keys    []Value
+	vals    []Value
+	dead    []bool
+	index   map[interface{}][]int
+	count   int
 }
 
 // ---------------------------------------------------------------------------
@@ -574,6 +563,3 @@ func cddr(v Value) Value { return cdr(cdr(v)) }
 func caddr(v Value) Value { return car(cddr(v)) }
 func cdddr(v Value) Value { return cdr(cddr(v)) }
 
-func isBigInt(v Value) bool { _, ok := v.(*Integer); return ok }
-
-var _ = big.NewInt

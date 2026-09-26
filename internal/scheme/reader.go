@@ -13,10 +13,10 @@ import (
 // RuneScanner is the minimal input abstraction used by the reader; *Port
 // implements it for textual ports.
 type RuneScanner interface {
-	ReadRune() (rune, error)
-	// UnreadRune pushes ch back onto the input; it must accept an arbitrary
+	ReadChar() (rune, error)
+	// UnreadChar pushes ch back onto the input; it must accept an arbitrary
 	// number of characters so that lookahead of any depth is possible.
-	UnreadRune(ch rune) error
+	UnreadChar(ch rune) error
 }
 
 // stringScanner adapts a Go string to RuneScanner.
@@ -29,7 +29,7 @@ func newStringScanner(s string) *stringScanner {
 	return &stringScanner{runes: []rune(s)}
 }
 
-func (s *stringScanner) ReadRune() (rune, error) {
+func (s *stringScanner) ReadChar() (rune, error) {
 	if s.pos >= len(s.runes) {
 		return 0, io.EOF
 	}
@@ -38,7 +38,7 @@ func (s *stringScanner) ReadRune() (rune, error) {
 	return r, nil
 }
 
-func (s *stringScanner) UnreadRune(ch rune) error {
+func (s *stringScanner) UnreadChar(ch rune) error {
 	if s.pos == 0 {
 		return fmt.Errorf("unread at start of input")
 	}
@@ -67,7 +67,7 @@ func NewStringReader(s string) *Reader {
 }
 
 func (r *Reader) readRune() (rune, bool) {
-	ch, err := r.src.ReadRune()
+	ch, err := r.src.ReadChar()
 	if err != nil {
 		return 0, false
 	}
@@ -81,7 +81,7 @@ func (r *Reader) unget(ch rune) {
 	if ch == 0 {
 		return
 	}
-	if err := r.src.UnreadRune(ch); err != nil {
+	if err := r.src.UnreadChar(ch); err != nil {
 		return
 	}
 	if ch == '\n' {

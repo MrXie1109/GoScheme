@@ -1,7 +1,5 @@
 package scheme
 
-import "strings"
-
 func installLists(m *Machine) {
 	m.defSimple("pair?", 1, 1, func(a []Value) (Value, error) {
 		_, ok := a[0].(*Pair)
@@ -294,5 +292,3 @@ func assGeneric(obj, lst Value, eq func(a, b Value) bool, name string) (Value, e
 		}
 	}
 }
-
-var _ = strings.TrimSpace

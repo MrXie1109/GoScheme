@@ -2,7 +2,6 @@ package scheme
 
 import (
 	"fmt"
-	"math/big"
 	"strings"
 )
 
@@ -450,5 +449,3 @@ func printSymbol(name string) string {
 type MultipleValues struct {
 	Values []Value
 }
-
-var _ = big.NewInt

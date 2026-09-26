@@ -396,8 +396,7 @@ func evalDefine(m *Machine, form Value, env *Env) {
 	target := args[0]
 	body := args[1:]
 	// (define (f . args) body...) and curried variants
-	if p, ok := target.(*Pair); ok {
-		var name *Symbol
+	if _, ok := target.(*Pair); ok {
 		t := target
 		for {
 			pp, ok := t.(*Pair)
@@ -406,14 +405,12 @@ func evalDefine(m *Machine, form Value, env *Env) {
 			}
 			t = pp.Car
 		}
-		name, ok = t.(*Symbol)
+		name, ok := t.(*Symbol)
 		if !ok {
 			m.Raise(NewError("define: bad procedure name", target))
 			return
 		}
-		lam := Cons(Intern("lambda"), Cons(target.(*Pair).Cdr, listFromSlice(body)))
-		_ = p
-		expr := lam
+		expr := Cons(Intern("lambda"), Cons(target.(*Pair).Cdr, listFromSlice(body)))
 		m.EvalWith(expr, env, func(m *Machine, v Value) {
 			if c, ok := v.(*Closure); ok && c.Name == "" {
 				c.Name = name.Name

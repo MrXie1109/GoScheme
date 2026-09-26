@@ -1,10 +1,6 @@
 package scheme
 
-import (
-	"fmt"
-	"sort"
-	"strings"
-)
+import "fmt"
 
 // R7RS library names.
 const (
@@ -232,6 +228,7 @@ func installBuiltins(m *Machine) {
 	installControl(m)
 	installIO(m)
 	installSystem(m)
+	installHashtables(m)
 	installR5RS(m)
 	installSyntaxExports(m)
 }
@@ -361,12 +358,3 @@ func installCore(m *Machine) {
 
 }
 
-// ---------------------------------------------------------------------------
-// Sorting helper exposed as an extension
-// ---------------------------------------------------------------------------
-
-func sortValues(vals []Value, less func(a, b Value) bool) {
-	sort.SliceStable(vals, func(i, j int) bool { return less(vals[i], vals[j]) })
-}
-
-var _ = strings.TrimSpace

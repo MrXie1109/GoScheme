@@ -3,7 +3,6 @@ package scheme
 import (
 	"bufio"
 	"io"
-	"strings"
 )
 
 func (m *Machine) defValue(name string, v Value, libs ...string) Value {
@@ -104,7 +103,7 @@ func installIO(m *Machine) {
 				panic(errf("read-char", "expected an input port"))
 			}
 		}
-		r, err := p.ReadRune()
+		r, err := p.ReadChar()
 		if err != nil {
 			if err == io.EOF || err == bufio.ErrBufferFull {
 				return EOFObject, nil
@@ -121,7 +120,7 @@ func installIO(m *Machine) {
 				panic(errf("peek-char", "expected an input port"))
 			}
 		}
-		r, err := p.PeekRune()
+		r, err := p.PeekChar()
 		if err != nil {
 			if err == io.EOF {
 				return EOFObject, nil
@@ -407,5 +406,3 @@ func installIO(m *Machine) {
 		return UnspecifiedValue, nil
 	}, libBase, libWrite, libR5RS)
 }
-
-var _ = strings.TrimSpace

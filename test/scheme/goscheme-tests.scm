@@ -296,6 +296,61 @@
 
 (test-end)
 
+;; --------------------------------------------------- include / cond-expand
+(test-begin "Include and cond-expand")
+
+(include "include-me.scm")
+(test 99 included-value)
+(test 42 (included-double 21))
+
+;; include is relative to the including file's directory.
+(define-library (goscheme included)
+  (export included-lib-value)
+  (import (scheme base))
+  (include-library-declarations "include-lib.sld"))
+(import (goscheme included))
+(test 'from-included-library included-lib-value)
+
+(test 'yes (cond-expand (r7rs 'yes) (else 'no)))
+(test 'yes (cond-expand ((and r7rs (not windows)) 'yes) (else 'no)))
+(test 'yes (cond-expand ((library (scheme base)) 'yes) (else 'no)))
+(test 'no (cond-expand ((library (no such library)) 'yes) (else 'no)))
+(test 'yes (cond-expand ((or nonexistent-feature r7rs) 'yes) (else 'no)))
+(test 'fallback (cond-expand (nonexistent-feature 'yes) (else 'fallback)))
+
+(test-end)
+
+;; ------------------------------------------------------------- hash tables
+(test-begin "Hash tables")
+
+(define ht (make-equal-hashtable))
+(test 0 (hash-table-size ht))
+(hash-table-set! ht '(1 2) 'a)
+(hash-table-set! ht "k" 2)
+(test 2 (hash-table-size ht))
+(test 'a (hash-table-ref ht '(1 2)))
+(test 2 (hash-table-ref/default ht "k" #f))
+(test 'missing (hash-table-ref/default ht 'nope 'missing))
+(test #t (hash-table-exists? ht '(1 2)))
+(hash-table-update! ht "k" (lambda (x) (+ x 1)))
+(test 3 (hash-table-ref ht "k"))
+(hash-table-delete! ht '(1 2))
+(test #f (hash-table-exists? ht '(1 2)))
+(test 1 (hash-table-size ht))
+
+(define total 0)
+(hash-table-walk ht (lambda (k v) (set! total (+ total v))))
+(test 3 total)
+
+(define eh (make-eq-hashtable))
+(hash-table-set! eh 'x 1)
+(test 1 (hash-table-ref/default eh 'x #f))
+(test 'not-there (hash-table-ref/default eh (list 'x) 'not-there))
+
+(test 2 (hash-table-size (alist->hash-table '((a . 1) (b . 2)))))
+
+(test-end)
+
 ;; ------------------------------------------------------------------ records of
 ;; behaviour that the reference suite does not stress.
 (test-begin "Misc")
