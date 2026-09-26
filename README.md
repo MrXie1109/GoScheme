@@ -102,13 +102,18 @@ internal/scheme/          the interpreter
   b_io.go                 ports, read and write
   b_system.go             files, process context, time, eval and load
   b_hashtable.go          hash tables (extension)
+  b_concurrent.go         channels, (go ...), (select ...) (extension)
   scheme_test.go          Go unit tests and suite drivers
 test/scheme/              Scheme level tests
   r7rs-tests.scm          the reference R7RS test suite
   goscheme-tests.scm      regression tests specific to this implementation
+  goscheme-concurrency-tests.scm
+                          channels, threads and select
   chibi/test.scm          (chibi test) compatibility shim used by the suites
   run-r7rs.scm            drivers: goscheme run-r7rs.scm
   run-goscheme.scm
+  run-concurrency.scm
+examples/                 runnable examples, e.g. examples/concurrency.scm
 dist/                     `make dist` output: the release binaries, which are
                           attached to GitHub Releases and not tracked by git
 scripts/build-dist.sh     cross-compilation script used by `make dist`
@@ -221,6 +226,65 @@ in lowest terms with integral values normalised back to integers. Comparisons
 between an exact and an inexact operand convert the inexact operand to exact
 first, which keeps `=`, `<`, … transitive as R7RS 6.2.6 recommends.
 
+### Concurrency (Go flavour)
+
+The interpreter exposes Go's concurrency model to Scheme, in
+[`(goscheme channel)`](#libraries):
+
+| Form | Meaning |
+|---|---|
+| `(make-channel)` | unbuffered channel (a rendezvous) |
+| `(make-channel n)` | buffered channel holding up to *n* values |
+| `(chan-send! ch v)` | send, blocking until a receiver (or buffer space) is available |
+| `(chan-recv! ch)` | receive; returns two values: the value and an *ok?* flag (`#f` once closed) |
+| `(chan-close! ch)` | close; closing twice is a no-op |
+| `(channel? obj)` / `(channel-open? ch)` | predicates |
+| `(go body ...)` | run *body* on a new interpreter thread (a goroutine) |
+| `(go-wait)` | wait for every thread started so far |
+| `(select ...)` | race several operations, like Go's `select` |
+
+```scheme
+(define ch (make-channel))
+(go (chan-send! ch 'hello))
+(display (chan-recv! ch))            ; prints hello
+
+(select
+  (chan-recv! ch1)   => (lambda (v) (display "got: ") (display v))
+  (chan-send! ch2 42) => (lambda () (display "sent"))
+  (after 1000)       => (lambda () (display "timeout"))
+  (else)             => (lambda () (display "idle")))
+```
+
+`select` clauses are a flat sequence of `operation => handler` triples; the
+handler of a receive clause is called with the received value, the others with
+no arguments.  The channel expressions, send values and handlers are all
+evaluated before the race begins, and the clauses are checked in the order
+written for a ready operation, with `(else)` chosen only when nothing else is
+ready — exactly Go's semantics.
+
+Because these are Go's primitives rather than an emulation, Go's rules apply:
+
+* An **unbuffered** channel is a rendezvous; a **buffered** one lets the sender
+  run ahead.  A thread can therefore consume its own buffered message, so
+  hand-off protocols want an unbuffered channel.
+* **`(else)` never waits.**  It turns `select` into a non-blocking poll, so a
+  clause that is merely *about* to become ready will be missed.
+* **`(go-wait)` waits for every thread started so far**, including long-lived
+  server loops that never return — those must be left until last.
+* **A program in which every thread blocks is reported by the Go runtime** as
+  `all goroutines are asleep - deadlock!` and aborts, just as a Go program
+  would.
+* Errors raised inside a thread are handled by that thread's handlers; an
+  uncaught error is printed on the current error port and only ends that
+  thread.
+* Continuations belong to the thread that captured them; resuming one from
+  another thread raises an error.
+
+The interpreter's own shared state is synchronised, so threads may freely share
+the global environment, ports and parameters.  Ordinary Scheme data (pairs,
+strings, vectors, records) is *not* synchronised — share memory by
+communicating.
+
 ### Extensions
 
 Beyond R7RS-small the interpreter also provides:
@@ -232,8 +296,11 @@ Beyond R7RS-small the interpreter also provides:
   `hash-table-walk`, `hash-table->alist`, `alist->hash-table`,
   `hash-table-copy`, `hash-table-clear!`, `hash-table-size`, `hash-table-count`
   and `hash`.
-* `(assert expr)`, `#!unspecified`, and the alternative exponent markers
-  `s f d l` accepted by the reader.
+* `(goscheme channel)` — `make-channel`, `chan-send!`, `chan-recv!`,
+  `chan-close!`, `channel?`, `channel-open?`, `go`, `select` and `go-wait`
+  (see [Concurrency](#concurrency-go-flavour) above).
+* `(assert expr)`, `#!unspecified`, shebang lines (`#!/usr/bin/env goscheme`),
+  and the alternative exponent markers `s f d l` accepted by the reader.
 
 ## Testing
 
@@ -248,13 +315,20 @@ go test -short ./...                          # skip the reference suite
 ```
 == 1227 passed, 0 failed     reference R7RS suite (test/scheme/r7rs-tests.scm)
 ==  135 passed, 0 failed     GoScheme regression suite (test/scheme/goscheme-tests.scm)
+==   39 passed, 0 failed     concurrency suite (test/scheme/goscheme-concurrency-tests.scm)
 ```
+
+The concurrency suite also passes under the Go race detector
+(`go test -race ./...`).
 
 * `r7rs-tests.scm` is the suite maintained by chibi-scheme. It exercises
   sections 4.1–4.3 (primitive, derived and macro syntax) and 6.1–6.14 (all
   standard procedures), including hygiene corner cases, the numeric grammar,
   reader syntax and cyclic-output handling. It is run through the bundled
   `(chibi test)` shim.
+* `goscheme-concurrency-tests.scm` covers channels (buffering, rendezvous,
+  closing, `chan-recv!`'s two values), `(go ...)`/`go-wait`, worker pools,
+  error handling inside threads and every `select` clause.
 * `goscheme-tests.scm` adds regression coverage for proper tail calls,
   multi-shot continuations, `dynamic-wind` re-entry and unwinding, library
   import transformations, records, textual/binary ports, file round-trips,
@@ -298,3 +372,6 @@ Build flags: `GOOS=<os> GOARCH=<arch> CGO_ENABLED=0 go build -trimpath -ldflags 
   symbols that merely look like numbers (for example `+NaN.0abc`) are quoted
   with `|…|` by `write`.
 * `write-simple` on cyclic data may not terminate, which the report permits.
+* The concurrency extension follows Go rather than the R7RS/R6RS thread
+  proposals: there are no mutexes, condition variables or thread-local dynamic
+  state, and `(go-wait)` is a blunt "wait for everything".

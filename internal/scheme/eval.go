@@ -53,6 +53,8 @@ func init() {
 		"...":                evalBadAux,
 		"_":                  evalBadAux,
 		"assert":             evalAssert,
+		"go":                 evalGo,
+		"select":             evalSelect,
 	}
 }
 
@@ -750,8 +752,8 @@ func evalLetValuesCommon(m *Machine, form Value, env *Env, sequential bool) {
 		}
 		j := i
 		i++
-		m.EvalWith(producers[j], env, func(m *Machine, v Value) {
-			results[j] = valueList(v)
+		m.EvalWithMulti(producers[j], env, func(m *Machine, vs []Value) {
+			results[j] = vs
 			step()
 		})
 	}
@@ -807,8 +809,8 @@ func evalDefineValues(m *Machine, form Value, env *Env) {
 		return
 	}
 	formals := args[0]
-	m.EvalWith(args[1], env, func(m *Machine, v Value) {
-		if err := bindFormals(env, formals, valueList(v)); err != nil {
+	m.EvalWithMulti(args[1], env, func(m *Machine, vs []Value) {
+		if err := bindFormals(env, formals, vs); err != nil {
 			m.RaiseError(err)
 			return
 		}
@@ -1189,6 +1191,7 @@ func evalGuard(m *Machine, form Value, env *Env) {
 			stack: append([]frame(nil), guardStack...),
 			winds: append([]*windFrame(nil), guardWinds...),
 			hands: append([]*handlerFrame(nil), guardHands...),
+			owner: m,
 		}
 		m.transferToWith(target, func(m *Machine) {
 			clauseEnv := NewEnv(env)

@@ -96,13 +96,18 @@ internal/scheme/          解释器实现
   b_io.go                 端口、read 与 write
   b_system.go             文件、进程上下文、时间、eval 与 load
   b_hashtable.go          哈希表（扩展）
+  b_concurrent.go         通道、(go ...)、(select ...)（扩展）
   scheme_test.go          Go 单元测试与测试套件驱动
 test/scheme/              Scheme 层测试
   r7rs-tests.scm          参考 R7RS 测试套件
   goscheme-tests.scm      本实现的回归测试
+  goscheme-concurrency-tests.scm
+                          通道、线程与 select 测试
   chibi/test.scm          测试套件使用的 (chibi test) 兼容层
   run-r7rs.scm            驱动：goscheme run-r7rs.scm
   run-goscheme.scm
+  run-concurrency.scm
+examples/                 可直接运行的示例，如 examples/concurrency.scm
 dist/                     `make dist` 的产物：发布用二进制，只挂在 GitHub
                           Release 上，不纳入 git 跟踪
 scripts/build-dist.sh     `make dist` 使用的交叉编译脚本
@@ -135,14 +140,14 @@ Makefile                 构建、测试与打包目标
 `(scheme lazy)` `(scheme load)` `(scheme process-context)` `(scheme read)`
 `(scheme repl)` `(scheme time)` `(scheme write)` `(scheme r5rs)`
 
-外加一个扩展库 `(goscheme hash-table)`。
+外加两个扩展库 `(goscheme hash-table)` 与 `(goscheme channel)`。
 
 ### 数据类型
 
 布尔；数值（精确整数、精确有理数、非精确实数、复数）；完整 Unicode 大小写映射
 的字符；可变字符串；符号；序对与列表；向量；字节向量；过程（闭包、原语、
 续延、参数对象）；Promise；记录类型；错误对象；端口；环境对象；`eof`；
-未指定值；哈希表（扩展）。
+未指定值；哈希表（扩展）；通道（扩展）。
 
 ### 过程
 
@@ -202,6 +207,56 @@ $ goscheme -e '(let loop ((i 0)) (if (= i 2000000) i (loop (+ i 1))))'
 比较时先把非精确操作数转换为精确值，从而保证 `=`、`<` 等的传递性
 （R7RS 6.2.6 的建议）。
 
+### 并发（Go 风味）
+
+解释器把 Go 的并发模型直接暴露给 Scheme（见 [`(goscheme channel)`](#库)）：
+
+| 形式 | 含义 |
+|---|---|
+| `(make-channel)` | 无缓冲通道（一次握手） |
+| `(make-channel n)` | 可缓冲 *n* 个值的通道 |
+| `(chan-send! ch v)` | 发送；直到有接收者（或缓冲区有空位）才返回 |
+| `(chan-recv! ch)` | 接收；返回两个值：值本身与 *ok?* 标志（关闭后为 `#f`） |
+| `(chan-close! ch)` | 关闭；重复关闭是空操作 |
+| `(channel? obj)` / `(channel-open? ch)` | 谓词 |
+| `(go body ...)` | 在新的解释器线程（goroutine）上运行 *body* |
+| `(go-wait)` | 等待目前为止启动的所有线程结束 |
+| `(select ...)` | 同时竞速多个操作，等价于 Go 的 `select` |
+
+```scheme
+(define ch (make-channel))
+(go (chan-send! ch 'hello))
+(display (chan-recv! ch))            ; 打印 hello
+
+(select
+  (chan-recv! ch1)    => (lambda (v) (display "got: ") (display v))
+  (chan-send! ch2 42) => (lambda () (display "sent"))
+  (after 1000)        => (lambda () (display "timeout"))
+  (else)              => (lambda () (display "idle")))
+```
+
+`select` 的子句是扁平的 `操作 => 处理函数` 三元组序列：接收子句的处理函数会收到
+接收到的值，其余子句不带参数。所有通道表达式、发送值与处理函数都会在竞速开始前
+求值；若有操作就绪则按书写顺序选择，`(else)` 只在没有任何操作就绪时被选中——
+与 Go 的语义一致。
+
+因为用的是 Go 原语而不是模拟，所以 Go 的规则同样适用：
+
+* **无缓冲**通道是握手，**有缓冲**通道允许发送方先行；因此线程可能取回自己发出的
+  缓冲消息，严格的交接协议应当使用无缓冲通道。
+* **`(else)` 从不等待**，它把 `select` 变成非阻塞轮询，所以“即将就绪”的子句会被
+  错过。
+* **`(go-wait)` 等待此前启动的每一个线程**，包括永不返回的服务型循环——这类线程
+  要留到最后再启动。
+* **所有线程都阻塞的程序会被 Go 运行时判定为死锁**并打印
+  `all goroutines are asleep - deadlock!` 后终止，与 Go 程序的行为相同。
+* 线程内抛出的错误由该线程自己的处理器处理；未捕获的错误打印到当前错误端口，且
+  只结束该线程。
+* 续延属于捕获它的线程，跨线程恢复会报错。
+
+解释器自身的共享状态是加锁保护的，因此线程可以自由共享全局环境、端口与参数；
+普通 Scheme 数据（序对、字符串、向量、记录）**没有**同步——请通过通信共享内存。
+
 ### 扩展
 
 除 R7RS-small 之外，解释器还提供：
@@ -213,8 +268,11 @@ $ goscheme -e '(let loop ((i 0)) (if (= i 2000000) i (loop (+ i 1))))'
   `hash-table-walk`、`hash-table->alist`、`alist->hash-table`、
   `hash-table-copy`、`hash-table-clear!`、`hash-table-size`、
   `hash-table-count` 与 `hash`。
-* `(assert expr)`、`#!unspecified`，以及读取器额外接受的指数标记
-  `s f d l`。
+* `(goscheme channel)` —— `make-channel`、`chan-send!`、`chan-recv!`、
+  `chan-close!`、`channel?`、`channel-open?`、`go`、`select`、`go-wait`
+  （见上文[并发](#并发go-风味)）。
+* `(assert expr)`、`#!unspecified`、shebang 行
+  （`#!/usr/bin/env goscheme`），以及读取器额外接受的指数标记 `s f d l`。
 
 ## 测试
 
@@ -229,12 +287,18 @@ go test -short ./...                          # 跳过参考套件
 ```
 == 1227 passed, 0 failed     参考 R7RS 套件（test/scheme/r7rs-tests.scm）
 ==  135 passed, 0 failed     GoScheme 回归套件（test/scheme/goscheme-tests.scm）
+==   39 passed, 0 failed     并发套件（test/scheme/goscheme-concurrency-tests.scm）
 ```
+
+并发套件同样通过 Go 竞态检测器（`go test -race ./...`）。
 
 * `r7rs-tests.scm` 是 chibi-scheme 维护的参考测试套件，覆盖 4.1–4.3 节
   （原始、派生与宏语法）与 6.1–6.14 节（全部标准过程），包含卫生宏的边界
   情形、数值文法、读取器语法与环状输出的处理。它通过内置的 `(chibi test)`
   兼容层运行。
+* `goscheme-concurrency-tests.scm` 覆盖通道（缓冲、握手、关闭、`chan-recv!`
+  的两个返回值）、`(go ...)`/`go-wait`、工作池、线程内错误处理以及每一种
+  `select` 子句。
 * `goscheme-tests.scm` 补充回归覆盖：真尾调用、多发射续延、`dynamic-wind`
   的重入与退栈、库导入变换、记录类型、文本/二进制端口、文件往返、
   `include` / `cond-expand`、哈希表、异常以及 `eval` / `load`。
@@ -274,3 +338,5 @@ go test -short ./...                          # 跳过参考套件
 * 非精确数值采用 Go 的最短往返表示输出；形似数值的符号（例如 `+NaN.0abc`）
   会被 `write` 加 `|…|` 引用。
 * 按报告允许的行为，`write-simple` 作用于环状数据时可能不会终止。
+* 并发扩展遵循 Go 而不是 R7RS/R6RS 的线程提案：没有互斥量、条件变量，也没有
+  线程局部的动态状态，`(go-wait)` 是“等待全部”的粗粒度操作。

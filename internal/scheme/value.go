@@ -339,15 +339,19 @@ type Continuation struct {
 	stack []frame
 	winds []*windFrame
 	hands []*handlerFrame
+	// owner is the interpreter thread the continuation belongs to; jumping
+	// between threads is not supported.
+	owner *Machine
 }
 
 // Parameter is a parameter object as created by make-parameter.
 type Parameter struct {
 	Name      string
 	Converter Value // #f for the identity converter
-	values    []Value
-	// Init is installed by parameterize / with-*-file.
-	IsPort bool
+	IsPort    bool
+
+	mu     sync.RWMutex
+	values []Value
 }
 
 // Promise is the object produced by delay / delay-force / make-promise.
@@ -489,6 +493,8 @@ func typeName(v Value) string {
 		return "environment"
 	case *Hashtable:
 		return "hashtable"
+	case *Channel:
+		return "channel"
 	}
 	return fmt.Sprintf("%T", v)
 }
@@ -496,6 +502,15 @@ func typeName(v Value) string {
 // ---------------------------------------------------------------------------
 // Hashtables (extension; not part of R7RS-small but widely used)
 // ---------------------------------------------------------------------------
+
+// Channel is a Go channel exposed to Scheme; see b_concurrent.go.
+type Channel struct {
+	Name     string
+	capacity int
+	ch       chan Value
+	mu       sync.Mutex
+	closed   bool
+}
 
 // Hashtable is a hash table keyed by Scheme values.  It is an extension:
 // see b_hashtable.go.

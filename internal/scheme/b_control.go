@@ -30,6 +30,7 @@ func installControl(m *Machine) {
 			stack: append([]frame(nil), m.stack...),
 			winds: append([]*windFrame(nil), m.winds...),
 			hands: append([]*handlerFrame(nil), m.hands...),
+			owner: m,
 		}
 		m.apply(proc, []Value{k})
 	}, libBase, libR5RS)
@@ -39,6 +40,7 @@ func installControl(m *Machine) {
 			stack: append([]frame(nil), m.stack...),
 			winds: append([]*windFrame(nil), m.winds...),
 			hands: append([]*handlerFrame(nil), m.hands...),
+			owner: m,
 		}
 		m.apply(proc, []Value{k})
 	}, libBase, libR5RS)
@@ -52,8 +54,8 @@ func installControl(m *Machine) {
 	m.def("call-with-values", 2, 2, func(m *Machine, a []Value) {
 		producer := wantProcedure("call-with-values", a[0])
 		consumer := wantProcedure("call-with-values", a[1])
-		m.ApplyWith(producer, nil, func(m *Machine, v Value) {
-			m.apply(consumer, valueList(v))
+		m.ApplyWithMulti(producer, nil, func(m *Machine, vs []Value) {
+			m.apply(consumer, vs)
 		})
 	}, libBase, libR5RS)
 

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"sync"
 )
 
 // PortError reports an I/O failure.
@@ -20,6 +21,9 @@ func portErrf(format string, args ...interface{}) *PortError {
 // output.  String and bytevector ports are backed by an in-memory buffer,
 // file ports by the corresponding OS file.
 type Port struct {
+	// mu serialises access so that several interpreter threads can share a
+	// port without corrupting its buffer.
+	mu      sync.Mutex
 	Name    string
 	IsInput bool
 	IsOut   bool
@@ -100,6 +104,8 @@ func (p *Port) kindName() string {
 
 // Close closes the port.
 func (p *Port) Close() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.closed {
 		return nil
 	}
@@ -130,6 +136,12 @@ func (p *Port) checkOpen() error {
 
 // ReadChar reads one character from a textual input port.
 func (p *Port) ReadChar() (rune, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.readChar()
+}
+
+func (p *Port) readChar() (rune, error) {
 	if n := len(p.pushedR); n > 0 {
 		ch := p.pushedR[n-1]
 		p.pushedR = p.pushedR[:n-1]
@@ -153,6 +165,12 @@ func (p *Port) ReadChar() (rune, error) {
 
 // UnreadChar pushes ch back onto the port.
 func (p *Port) UnreadChar(ch rune) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.unreadChar(ch)
+}
+
+func (p *Port) unreadChar(ch rune) error {
 	p.pushedR = append(p.pushedR, ch)
 	if ch == '\n' && p.Line > 1 {
 		p.Line--
@@ -162,11 +180,13 @@ func (p *Port) UnreadChar(ch rune) error {
 
 // PeekChar returns the next character without consuming it.
 func (p *Port) PeekChar() (rune, error) {
-	r, err := p.ReadChar()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	r, err := p.readChar()
 	if err != nil {
 		return 0, err
 	}
-	_ = p.UnreadChar(r)
+	_ = p.unreadChar(r)
 	return r, nil
 }
 
@@ -183,6 +203,12 @@ func (p *Port) Ready() bool {
 
 // ReadByte reads one byte from a binary input port.
 func (p *Port) ReadByte() (byte, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.readByte()
+}
+
+func (p *Port) readByte() (byte, error) {
 	if n := len(p.pushedB); n > 0 {
 		b := p.pushedB[n-1]
 		p.pushedB = p.pushedB[:n-1]
@@ -203,7 +229,9 @@ func (p *Port) ReadByte() (byte, error) {
 
 // PeekByte returns the next byte without consuming it.
 func (p *Port) PeekByte() (byte, error) {
-	b, err := p.ReadByte()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	b, err := p.readByte()
 	if err != nil {
 		return 0, err
 	}
@@ -213,6 +241,8 @@ func (p *Port) PeekByte() (byte, error) {
 
 // PushByte pushes b back onto the port.
 func (p *Port) PushByte(b byte) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.pushedB = append(p.pushedB, b)
 	return nil
 }
@@ -277,6 +307,8 @@ func (p *Port) ReadBytes(n int) ([]byte, error) {
 }
 
 func (p *Port) WriteRune(r rune) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if err := p.checkOpen(); err != nil {
 		return err
 	}
@@ -296,6 +328,8 @@ func (p *Port) WriteRune(r rune) error {
 }
 
 func (p *Port) WriteStr(s string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if err := p.checkOpen(); err != nil {
 		return err
 	}
@@ -307,6 +341,8 @@ func (p *Port) WriteStr(s string) error {
 }
 
 func (p *Port) WriteBytes(b []byte) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if err := p.checkOpen(); err != nil {
 		return err
 	}
@@ -319,6 +355,8 @@ func (p *Port) WriteBytes(b []byte) error {
 
 // OutputString returns the accumulated characters of an output string port.
 func (p *Port) OutputString() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.outBuf == nil {
 		return ""
 	}
@@ -327,6 +365,8 @@ func (p *Port) OutputString() string {
 
 // OutputBytes returns the accumulated bytes of an output bytevector port.
 func (p *Port) OutputBytes() []byte {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.outBuf == nil {
 		return nil
 	}

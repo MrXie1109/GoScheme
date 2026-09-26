@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 )
 
 // Machine is a CEK-style abstract machine.  The control component is either
@@ -40,12 +41,17 @@ type Machine struct {
 	ErrParam *Parameter
 
 	Args []string
+
+	// wg tracks the interpreter threads started by (go ...).
+	wg *sync.WaitGroup
 }
 
 type frame interface {
 	resume(m *Machine, v Value)
 }
 
+// Parameter values live in a stack so that parameterize can nest; the guard
+// makes them safe to touch from several interpreter threads.
 type windFrame struct {
 	before Value
 	after  Value
@@ -57,7 +63,7 @@ type handlerFrame struct {
 
 // NewMachine builds a machine with the standard environment installed.
 func NewMachine() *Machine {
-	m := &Machine{Libraries: map[string]*Library{}}
+	m := &Machine{Libraries: map[string]*Library{}, wg: &sync.WaitGroup{}}
 	m.CurIn = NewPortFromFile("stdin", os.Stdin, true, true)
 	m.CurOut = NewPortFromFile("stdout", os.Stdout, false, true)
 	m.CurErr = NewPortFromFile("stderr", os.Stderr, false, true)
@@ -91,10 +97,22 @@ func (m *Machine) Eval(expr Value, env *Env) {
 	m.returning = false
 }
 
-// ApplyWith calls proc with args and hands the result to fn.
+// ApplyWith calls proc with args and hands its first value to fn.
 func (m *Machine) ApplyWith(proc Value, args []Value, fn func(*Machine, Value)) {
 	m.stack = append(m.stack, &fGeneric{fn: fn})
 	m.apply(proc, args)
+}
+
+// ApplyWithMulti calls proc with args and hands every value to fn.
+func (m *Machine) ApplyWithMulti(proc Value, args []Value, fn func(*Machine, []Value)) {
+	m.stack = append(m.stack, &fMultiGeneric{fn: fn})
+	m.apply(proc, args)
+}
+
+// EvalWithMulti evaluates expr and hands every value to fn.
+func (m *Machine) EvalWithMulti(expr Value, env *Env, fn func(*Machine, []Value)) {
+	m.stack = append(m.stack, &fMultiGeneric{fn: fn})
+	m.Eval(expr, env)
 }
 
 // EvalWith evaluates expr and hands the result to fn.
@@ -117,12 +135,29 @@ func (m *Machine) EvalSeq(exprs []Value, env *Env) {
 	}
 }
 
+// multiFrame marks the continuation frames that want every value of a
+// multiple-value return.  Every other frame takes the first value, which is
+// what makes (display (chan-recv! ch)) and (+ 1 (floor/ 7 2)) behave the way
+// one expects.
+type multiFrame interface {
+	wantsMultipleValues()
+}
+
 // fGeneric is a continuation frame backed by a Go closure.
 type fGeneric struct {
 	fn func(m *Machine, v Value)
 }
 
 func (f *fGeneric) resume(m *Machine, v Value) { f.fn(m, v) }
+
+// fMultiGeneric is a frame that receives all of the returned values.
+type fMultiGeneric struct {
+	fn func(m *Machine, vs []Value)
+}
+
+func (f *fMultiGeneric) resume(m *Machine, v Value) { f.fn(m, valueList(v)) }
+
+func (f *fMultiGeneric) wantsMultipleValues() {}
 
 type fSeq struct {
 	exprs []Value
@@ -169,7 +204,17 @@ func (f *fAppArgs) resume(m *Machine, v Value) {
 // ---------------------------------------------------------------------------
 
 // Run evaluates expr in env until the continuation stack is exhausted.
-func (m *Machine) Run(expr Value, env *Env) (result Value, err error) {
+func (m *Machine) Run(expr Value, env *Env) (Value, error) {
+	return m.guardedRun(func() (Value, error) {
+		base := len(m.stack)
+		m.Eval(expr, env)
+		return m.runLoop(base)
+	})
+}
+
+// guardedRun runs fn, converting the panic used for non-local exits and Go
+// runtime errors into ordinary Scheme errors.
+func (m *Machine) guardedRun(fn func() (Value, error)) (result Value, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			m.stack = m.stack[:0]
@@ -191,9 +236,7 @@ func (m *Machine) Run(expr Value, env *Env) (result Value, err error) {
 			}
 		}
 	}()
-	base := len(m.stack)
-	m.Eval(expr, env)
-	return m.runLoop(base)
+	return fn()
 }
 
 func (m *Machine) runLoop(base int) (Value, error) {
@@ -221,6 +264,9 @@ func (m *Machine) runLoop(base int) (Value, error) {
 			m.stack = m.stack[:len(m.stack)-1]
 			m.retVal = nil
 			m.returning = false
+			if _, wantsAll := f.(multiFrame); !wantsAll {
+				v = single(v)
+			}
 			f.resume(m, v)
 			continue
 		}
@@ -297,6 +343,10 @@ func (m *Machine) apply(proc Value, args []Value) {
 		}
 		p.Fn(m, args)
 	case *Continuation:
+		if p.owner != nil && p.owner != m {
+			m.raiseErrorf("continuation invoked from a different interpreter thread")
+			return
+		}
 		var v Value
 		switch len(args) {
 		case 0:
@@ -345,7 +395,7 @@ func (m *Machine) applyClosure(c *Closure, args []Value) {
 		}
 	}
 	for _, s := range clause.BodyNames {
-		if _, exists := env.vars[s]; !exists {
+		if !env.Has(s) {
 			env.Define(s, Unassigned)
 		}
 	}
@@ -387,6 +437,8 @@ func (m *Machine) applyParameter(p *Parameter, args []Value) {
 }
 
 func (p *Parameter) current() Value {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	if len(p.values) == 0 {
 		return UnspecifiedValue
 	}
@@ -394,6 +446,8 @@ func (p *Parameter) current() Value {
 }
 
 func (p *Parameter) set(v Value) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if len(p.values) == 0 {
 		p.values = append(p.values, v)
 		return
@@ -401,12 +455,18 @@ func (p *Parameter) set(v Value) {
 	p.values[len(p.values)-1] = v
 }
 
-func (p *Parameter) push(v Value) { p.values = append(p.values, v) }
+func (p *Parameter) push(v Value) {
+	p.mu.Lock()
+	p.values = append(p.values, v)
+	p.mu.Unlock()
+}
 
 func (p *Parameter) pop() {
+	p.mu.Lock()
 	if len(p.values) > 1 {
 		p.values = p.values[:len(p.values)-1]
 	}
+	p.mu.Unlock()
 }
 
 // ---------------------------------------------------------------------------

@@ -257,6 +257,12 @@ func (p *printer) printRaw(sb *strings.Builder, v Value) {
 		sb.WriteString("#<environment>")
 	case *Hashtable:
 		sb.WriteString("#<hashtable>")
+	case *Channel:
+		state := "open"
+		if x.isClosed() {
+			state = "closed"
+		}
+		fmt.Fprintf(sb, "#<channel cap=%d %s>", x.capacity, state)
 	case *MultipleValues:
 		for i, mv := range x.Values {
 			if i > 0 {

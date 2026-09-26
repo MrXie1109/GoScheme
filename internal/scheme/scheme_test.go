@@ -79,6 +79,21 @@ func TestGoSchemeSuite(t *testing.T) {
 	t.Log(strings.TrimSpace(out))
 }
 
+func TestGoSchemeConcurrencySuite(t *testing.T) {
+	path := filepath.Join("..", "..", "test", "scheme", "goscheme-concurrency-tests.scm")
+	if _, err := os.Stat(path); err != nil {
+		t.Skipf("suite not available: %v", err)
+	}
+	out, code, err := runSuite(t, path)
+	if err != nil {
+		t.Fatalf("suite aborted: %v\n%s", err, out)
+	}
+	if code != 0 {
+		t.Fatalf("concurrency suite reported failures:\n%s", out)
+	}
+	t.Log(strings.TrimSpace(out))
+}
+
 func TestReader(t *testing.T) {
 	cases := []struct {
 		src  string
@@ -105,6 +120,7 @@ func TestReader(t *testing.T) {
 		{"|a b|", "|a b|"},
 		{"(a . #;b c)", "(a . c)"},
 		{"#;(1 2) 3", "3"},
+		{"#!/usr/bin/env goscheme\n(+ 1 2)", "(+ 1 2)"},
 	}
 	for _, c := range cases {
 		r := NewStringReader(c.src)

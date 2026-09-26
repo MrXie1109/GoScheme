@@ -167,6 +167,17 @@ func (r *Reader) skipAtmosphere() error {
 				continue
 			case '!':
 				r.readRune()
+				// A shebang line (#!/usr/bin/env goscheme) is treated as a
+				// comment so that Scheme files can be executable directly.
+				if c, ok := r.peekRune(); ok && (c == '/' || c == ' ') {
+					for {
+						c, ok := r.readRune()
+						if !ok || c == '\n' {
+							break
+						}
+					}
+					continue
+				}
 				word, err := r.readToken()
 				if err != nil {
 					return err

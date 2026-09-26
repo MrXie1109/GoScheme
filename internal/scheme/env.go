@@ -1,5 +1,7 @@
 package scheme
 
+import "sync"
+
 // Env is a lexical environment: a frame of variable bindings with a pointer
 // to the enclosing environment.
 //
@@ -9,6 +11,10 @@ package scheme
 // sharing one table keeps lookup and define-syntax simple and lets a lexical
 // variable shadow a macro and vice versa.
 type Env struct {
+	// mu guards vars.  Environments can be shared between the goroutines
+	// created by (go ...), and Go maps may not be read and written
+	// concurrently.
+	mu     sync.RWMutex
 	vars   map[*Symbol]Value
 	parent *Env
 	Name   string
@@ -43,21 +49,42 @@ func (e *Env) Global() *Env {
 
 // Define binds sym in this frame.
 func (e *Env) Define(sym *Symbol, v Value) {
+	e.mu.Lock()
 	e.vars[sym] = v
+	e.mu.Unlock()
 }
 
 // DefineName binds a symbol by name.
 func (e *Env) DefineName(name string, v Value) {
-	e.vars[Intern(name)] = v
+	e.Define(Intern(name), v)
+}
+
+// Has reports whether sym is bound in this frame only.
+func (e *Env) Has(sym *Symbol) bool {
+	e.mu.RLock()
+	_, ok := e.vars[sym]
+	e.mu.RUnlock()
+	return ok
+}
+
+// get returns the binding of sym in this frame only.
+func (e *Env) get(sym *Symbol) (Value, bool) {
+	e.mu.RLock()
+	v, ok := e.vars[sym]
+	e.mu.RUnlock()
+	return v, ok
 }
 
 // Set updates an existing binding, returning false when unbound.
 func (e *Env) Set(sym *Symbol, v Value) bool {
 	for env := e; env != nil; env = env.parent {
+		env.mu.Lock()
 		if _, ok := env.vars[sym]; ok {
 			env.vars[sym] = v
+			env.mu.Unlock()
 			return true
 		}
+		env.mu.Unlock()
 	}
 	if sym.Mark != 0 {
 		if def := markEnvOf(sym.Mark); def != nil {
@@ -72,7 +99,7 @@ func (e *Env) Set(sym *Symbol, v Value) bool {
 
 // SetGlobal binds sym in the global frame, creating it when needed.
 func (e *Env) SetGlobal(sym *Symbol, v Value) {
-	e.Global().vars[sym] = v
+	e.Global().Define(sym, v)
 }
 
 // Lookup finds the value bound to sym.  Marked identifiers that are not bound
@@ -81,7 +108,7 @@ func (e *Env) SetGlobal(sym *Symbol, v Value) {
 // identifiers.
 func (e *Env) Lookup(sym *Symbol) (Value, bool) {
 	for env := e; env != nil; env = env.parent {
-		if v, ok := env.vars[sym]; ok {
+		if v, ok := env.get(sym); ok {
 			return v, true
 		}
 	}
@@ -103,7 +130,7 @@ func (e *Env) Lookup(sym *Symbol) (Value, bool) {
 // LookupLocal searches only the frames from e up to (but excluding) stop.
 func (e *Env) LookupLocal(sym *Symbol, stop *Env) (Value, bool) {
 	for env := e; env != nil && env != stop; env = env.parent {
-		if v, ok := env.vars[sym]; ok {
+		if v, ok := env.get(sym); ok {
 			return v, true
 		}
 	}
@@ -136,11 +163,13 @@ func (e *Env) Snapshot() map[*Symbol]Value {
 			return
 		}
 		seen[env] = true
+		env.mu.RLock()
 		for k, v := range env.vars {
 			if _, dup := out[k]; !dup {
 				out[k] = v
 			}
 		}
+		env.mu.RUnlock()
 		walk(env.parent)
 	}
 	walk(e)

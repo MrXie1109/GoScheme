@@ -229,6 +229,7 @@ func installBuiltins(m *Machine) {
 	installIO(m)
 	installSystem(m)
 	installHashtables(m)
+	installConcurrency(m)
 	installR5RS(m)
 	installSyntaxExports(m)
 }
@@ -245,6 +246,7 @@ func installSyntaxExports(m *Machine) {
 	}
 	m.defSyntax(libBase, base...)
 	m.defSyntax(libCaseLambda, "case-lambda")
+	m.defSyntax(libChannel, "go", "select")
 	m.defSyntax(libLazy, "delay", "delay-force")
 	m.defSyntax(libFile, "define-record-type")
 	m.defSyntax(libR5RS, "quote", "lambda", "if", "define", "set!", "begin", "cond",
