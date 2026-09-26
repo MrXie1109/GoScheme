@@ -70,8 +70,14 @@ goscheme [options] [file] [argument ...]
   --                  end of options; the next argument is the script
 ```
 
-With neither a file nor `-e`, the interpreter starts a REPL. `(command-line)`
-returns the program name, the script and its arguments.
+With neither a file nor `-e`, the interpreter starts a REPL.  It prompts with
+`>>> ` for a fresh form and `... ` while a form is still open, and it stays
+quiet whenever more input is already waiting — a pasted multi-line form is
+therefore consumed in one go instead of being sprayed with prompts.  When
+stdin is not a terminal (a pipe or a redirected file) there is no banner and no
+prompt at all, so `echo '(+ 1 2)' | goscheme` simply prints `3`.
+
+`(command-line)` returns the program name, the script and its arguments.
 
 Exit status: `0` on success, the argument of `(exit n)`, `1` for `(exit #f)` or
 for an uncaught error.
@@ -336,6 +342,10 @@ The concurrency suite also passes under the Go race detector
 * The Go tests in `internal/scheme/scheme_test.go` drive both suites and also
   contain direct unit tests for the reader, the numeric tower, tail-call
   behaviour and error propagation.
+* `cmd/goscheme/main_test.go` covers the REPL: pasted input must not be
+  interleaved with prompts, line-by-line input must use the continuation
+  prompt, a piped session must print neither banner nor prompts, and an error
+  must not desynchronise the buffer.
 
 ## Cross-compilation
 

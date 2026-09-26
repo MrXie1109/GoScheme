@@ -98,12 +98,23 @@ func (r *Reader) peekRune() (rune, bool) {
 	return ch, true
 }
 
-func (r *Reader) errf(format string, args ...interface{}) error {
+// errMsg renders a reader error message, including the source position.
+func (r *Reader) errMsg(format string, args ...interface{}) string {
 	msg := fmt.Sprintf(format, args...)
 	if r.Source != "" {
 		msg = fmt.Sprintf("%s:%d: %s", r.Source, r.Line, msg)
 	}
-	return NewReadError(msg)
+	return msg
+}
+
+func (r *Reader) errf(format string, args ...interface{}) error {
+	return NewReadError(r.errMsg(format, args...))
+}
+
+// incompletef reports input that stopped in the middle of a datum, which is
+// not an error when more input may follow (a REPL, or a slow pipe).
+func (r *Reader) incompletef(format string, args ...interface{}) error {
+	return NewIncompleteError(r.errMsg(format, args...))
 }
 
 // ReadAll reads every datum until end of input.
@@ -207,7 +218,7 @@ func (r *Reader) skipBlockComment() error {
 	for depth > 0 {
 		ch, ok := r.readRune()
 		if !ok {
-			return r.errf("unterminated block comment")
+			return r.incompletef("unterminated block comment")
 		}
 		if ch == '#' {
 			if n, ok := r.peekRune(); ok && n == '|' {
@@ -292,11 +303,11 @@ func (r *Reader) readList(close rune) (Value, error) {
 	// A leading dot is invalid; handled by readDatum returning an error.
 	for {
 		if err := r.skipAtmosphere(); err != nil {
-			return nil, r.errf("unterminated list")
+			return nil, r.incompletef("unterminated list")
 		}
 		ch, ok := r.readRune()
 		if !ok {
-			return nil, r.errf("unterminated list")
+			return nil, r.incompletef("unterminated list")
 		}
 		if ch == close || (close == ')' && ch == ']') || (close == ']' && ch == ')') {
 			if head == nil {
@@ -333,7 +344,7 @@ func (r *Reader) readList(close rune) (Value, error) {
 			}
 			tail.Cdr = t
 			if err := r.skipAtmosphere(); err != nil {
-				return nil, r.errf("unterminated list")
+				return nil, r.incompletef("unterminated list")
 			}
 			c, ok := r.readRune()
 			if !ok || (c != close && !(close == ')' && c == ']') && !(close == ']' && c == ')')) {
@@ -361,7 +372,7 @@ func (r *Reader) readString() (Value, error) {
 	for {
 		ch, ok := r.readRune()
 		if !ok {
-			return nil, r.errf("unterminated string")
+			return nil, r.incompletef("unterminated string")
 		}
 		if ch == '"' {
 			return NewStringFromRunes(sb), nil
@@ -372,7 +383,7 @@ func (r *Reader) readString() (Value, error) {
 		}
 		e, ok := r.readRune()
 		if !ok {
-			return nil, r.errf("unterminated string")
+			return nil, r.incompletef("unterminated string")
 		}
 		switch e {
 		case 'a':
@@ -421,7 +432,7 @@ func (r *Reader) readString() (Value, error) {
 				for {
 					c, ok := r.readRune()
 					if !ok {
-						return nil, r.errf("unterminated string")
+						return nil, r.incompletef("unterminated string")
 					}
 					if c == '\n' {
 						break
@@ -461,7 +472,7 @@ func parseHex(s string) (int64, error) {
 func (r *Reader) readHash() (Value, error) {
 	ch, ok := r.readRune()
 	if !ok {
-		return nil, r.errf("unexpected end of input after #")
+		return nil, r.incompletef("unexpected end of input after #")
 	}
 	switch ch {
 	case 't':
@@ -499,7 +510,7 @@ func (r *Reader) readHash() (Value, error) {
 		for {
 			c, ok := r.readRune()
 			if !ok {
-				return nil, r.errf("unexpected end of input")
+				return nil, r.incompletef("unexpected end of input")
 			}
 			if c == '(' {
 				break
@@ -547,7 +558,7 @@ func (r *Reader) readHash() (Value, error) {
 			fmt.Sscanf(string(digits), "%d", &label)
 			c, ok := r.readRune()
 			if !ok {
-				return nil, r.errf("unexpected end of input in datum label")
+				return nil, r.incompletef("unexpected end of input in datum label")
 			}
 			switch c {
 			case '=':
@@ -619,7 +630,7 @@ func (r *Reader) expectDelimiterOrWord(rest string) error {
 func (r *Reader) readChar() (Value, error) {
 	ch, ok := r.readRune()
 	if !ok {
-		return nil, r.errf("unexpected end of input after #\\")
+		return nil, r.incompletef("unexpected end of input after #\\")
 	}
 	// Read the whole token.
 	var sb []rune
@@ -679,7 +690,7 @@ func (r *Reader) readBarSymbol() (Value, error) {
 	for {
 		ch, ok := r.readRune()
 		if !ok {
-			return nil, r.errf("unterminated |symbol|")
+			return nil, r.incompletef("unterminated |symbol|")
 		}
 		if ch == '|' {
 			return Intern(string(sb)), nil
@@ -687,7 +698,7 @@ func (r *Reader) readBarSymbol() (Value, error) {
 		if ch == '\\' {
 			e, ok := r.readRune()
 			if !ok {
-				return nil, r.errf("unterminated |symbol|")
+				return nil, r.incompletef("unterminated |symbol|")
 			}
 			switch e {
 			case 'a':

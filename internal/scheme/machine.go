@@ -572,6 +572,24 @@ func (m *Machine) RunForms(forms []Value, env *Env) (Value, error) {
 	return m.Run(List(body...), env)
 }
 
+// SetStandardInput replaces the current input port.
+func (m *Machine) SetStandardInput(p *Port) {
+	m.CurIn = p
+	m.InParam.set(p)
+}
+
+// SetStandardOutput replaces the current output port.
+func (m *Machine) SetStandardOutput(p *Port) {
+	m.CurOut = p
+	m.OutParam.set(p)
+}
+
+// SetStandardError replaces the current error port.
+func (m *Machine) SetStandardError(p *Port) {
+	m.CurErr = p
+	m.ErrParam.set(p)
+}
+
 // AddLoadPath pushes a directory used to resolve include / load.
 func (m *Machine) AddLoadPath(dir string) { m.LoadPath = append(m.LoadPath, dir) }
 

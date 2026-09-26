@@ -397,6 +397,10 @@ type ErrorObject struct {
 	Message   string
 	Irritants []Value
 	Kind      errorKind
+	// Incomplete marks input that ended in the middle of a datum.  A REPL
+	// uses it to decide whether to read another line instead of reporting a
+	// syntax error.
+	Incomplete bool
 }
 
 type errorKind int
@@ -446,6 +450,26 @@ func NewFileError(msg string, irritants ...Value) *ErrorObject {
 // NewReadError builds a read error condition.
 func NewReadError(msg string, irritants ...Value) *ErrorObject {
 	return &ErrorObject{Message: msg, Irritants: irritants, Kind: errRead}
+}
+
+// NewIncompleteError builds a read error that says the input stopped in the
+// middle of a datum.
+func NewIncompleteError(msg string) *ErrorObject {
+	return &ErrorObject{Message: msg, Kind: errRead, Incomplete: true}
+}
+
+// IsIncomplete reports whether err means "the input ended in the middle of a
+// datum", that is, whether more input would complete it.
+func IsIncomplete(err error) bool {
+	switch e := err.(type) {
+	case *ErrorObject:
+		return e.Incomplete
+	case *SchemeError:
+		if eo, ok := e.Condition.(*ErrorObject); ok {
+			return eo.Incomplete
+		}
+	}
+	return false
 }
 
 func wrongType(want string, got Value) *ErrorObject {

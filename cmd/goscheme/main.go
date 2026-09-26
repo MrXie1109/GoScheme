@@ -164,57 +164,117 @@ func reportError(err error) int {
 	return 1
 }
 
+// The two REPL prompts: one for a fresh expression, one while a form is still
+// being read.
+const (
+	primaryPrompt      = ">>> "
+	continuationPrompt = "... "
+)
+
 func repl(m *scheme.Machine, quiet bool) {
-	if !quiet {
-		fmt.Println(versionString())
-		fmt.Println("Type (exit) or press Ctrl-D to leave.")
+	interactive := isTerminal(os.Stdin)
+	// pending reports whether the terminal already holds more input; it is
+	// only consulted for an interactive session.
+	var pending func() bool
+	if interactive {
+		pending = func() bool { return inputPending(os.Stdin) }
 	}
-	in := bufio.NewReader(os.Stdin)
-	prompt := func() { fmt.Print("> ") }
-	prompt()
+	replOn(m, os.Stdin, os.Stdout, os.Stderr, interactive && !quiet, pending)
+}
+
+// replOn drives the read-eval-print loop.  pending is non-nil for an
+// interactive session and reports whether more input is already waiting.
+//
+// A prompt is written only when the interpreter genuinely has to wait for the
+// user: neither its own buffer nor the terminal may hold further input.  A
+// pasted multi-line form therefore shows the primary prompt once and the
+// continuation prompt only when a human is really still typing, instead of a
+// run of prompts wedged between the pasted lines.
+func replOn(m *scheme.Machine, stdin io.Reader, stdout, stderr io.Writer, banner bool, pending func() bool) {
+	if banner {
+		fmt.Fprintln(stdout, versionString())
+		fmt.Fprintln(stdout, "Type (exit) or press Ctrl-D to leave.")
+	}
+	in := bufio.NewReaderSize(stdin, 1<<16)
 	var buf strings.Builder
+	incomplete := false
 	for {
-		line, err := in.ReadString('\n')
-		if err != nil && line == "" {
-			fmt.Println()
-			return
+		moreQueued := in.Buffered() > 0
+		if !moreQueued && pending != nil {
+			moreQueued = pending()
 		}
-		buf.WriteString(line)
-		src := buf.String()
-		r := scheme.NewStringReader(src)
-		r.Source = "<stdin>"
-		forms, rerr := r.ReadAll()
-		if rerr != nil {
-			if rerr == io.EOF || isIncomplete(rerr) {
-				prompt()
-				continue
+		if pending != nil && !moreQueued {
+			if incomplete {
+				fmt.Fprint(stdout, continuationPrompt)
+			} else {
+				fmt.Fprint(stdout, primaryPrompt)
 			}
-			fmt.Fprintf(os.Stderr, "Error: %v\n", rerr)
-			buf.Reset()
-			prompt()
-			continue
 		}
-		buf.Reset()
-		for _, f := range forms {
-			v, err := m.Run(f, m.Global)
-			if err != nil {
-				if _, ok := err.(*scheme.ExitError); ok {
+		line, rerr := in.ReadString('\n')
+		buf.WriteString(line)
+
+		forms, perr := readForms(buf.String())
+		switch {
+		case perr == nil:
+			buf.Reset()
+			incomplete = false
+			for _, f := range forms {
+				if !evalForm(m, f, stdout, stderr) {
 					return
 				}
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				continue
 			}
-			if _, un := v.(scheme.Unspecified); !un {
-				fmt.Println(scheme.WriteToString(v))
-			}
+		case scheme.IsIncomplete(perr):
+			// Wait for the rest of the datum.
+			incomplete = true
+		default:
+			fmt.Fprintf(stderr, "Error: %v\n", perr)
+			buf.Reset()
+			incomplete = false
 		}
-		prompt()
+
+		if rerr != nil {
+			// End of input.
+			if incomplete {
+				fmt.Fprintln(stderr, "Error: unexpected end of input")
+			}
+			if pending != nil {
+				fmt.Fprintln(stdout)
+			}
+			return
+		}
 	}
 }
 
-func isIncomplete(err error) bool {
-	msg := err.Error()
-	return strings.Contains(msg, "unterminated") ||
-		strings.Contains(msg, "end of input") ||
-		strings.Contains(msg, "end of file")
+// readForms parses every datum in src.
+func readForms(src string) ([]scheme.Value, error) {
+	r := scheme.NewStringReader(src)
+	r.Source = "<stdin>"
+	return r.ReadAll()
+}
+
+// evalForm evaluates one datum, reporting its value.  It returns false when
+// the session should end.
+func evalForm(m *scheme.Machine, f scheme.Value, stdout, stderr io.Writer) bool {
+	v, err := m.Run(f, m.Global)
+	if err != nil {
+		if _, ok := err.(*scheme.ExitError); ok {
+			return false
+		}
+		fmt.Fprintf(stderr, "Error: %v\n", err)
+		return true
+	}
+	if _, un := v.(scheme.Unspecified); !un {
+		fmt.Fprintln(stdout, scheme.WriteToString(v))
+	}
+	return true
+}
+
+// isTerminal reports whether f is a character device, i.e. whether the
+// interpreter is talking to a user rather than to a pipe or a file.
+func isTerminal(f *os.File) bool {
+	st, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return st.Mode()&os.ModeCharDevice != 0
 }
