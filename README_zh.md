@@ -67,10 +67,25 @@ goscheme [选项] [文件] [参数 ...]
 ```
 
 既没有文件也没有 `-e` 时进入 REPL。新表达式用 `>>> ` 提示，表达式尚未写完时用
-`... ` 提示；只要还有输入已经在等待（例如粘贴），就完全不再打印提示符——因此
-粘贴多行表达式会被一次性读完，而不会在粘贴内容中间插入一串提示符。当 stdin 不是
-终端（管道或重定向文件）时既不打印 banner 也不打印提示符，所以
-`echo '(+ 1 2)' | goscheme` 只会输出 `3`。
+`... ` 提示。
+
+在终端下，REPL 会把终端切换到 raw 模式，并提供应有的编辑能力：光标移动
+（方向键、Home/End、Ctrl-A/E/B/F）、退格与删除、Ctrl-U/K/W、Ctrl-L 清屏、
+Ctrl-C 放弃当前行、Ctrl-D 退出，以及上下方向键的历史记录。同时启用
+**bracketed paste（括号粘贴）**：由终端自己标出粘贴的起止，整段粘贴作为**一个
+输入单元**执行——提示符绝不会插进粘贴内容中间，粘贴内部的换行也不会提前提交：
+
+```text
+>>> (define (f x)
+  (* x x))
+(f 12)
+144
+>>> 
+```
+
+当 stdin 不是终端（管道或重定向文件）时，不打印 banner、不打印提示符、也不做行
+编辑，所以 `echo '(+ 1 2)' | goscheme` 只会输出 `3`。在不支持 raw 模式的平台上，
+REPL 会退回到按行读取的实现。
 
 `(command-line)` 返回程序名、脚本名及其参数。
 
@@ -79,7 +94,13 @@ goscheme [选项] [文件] [参数 ...]
 ## 仓库结构
 
 ```
-cmd/goscheme/main.go      命令行入口（文件执行 / -e 求值 / REPL）
+cmd/goscheme/             命令行入口
+  main.go                 文件执行、-e 求值、REPL 主循环
+  lineedit.go             raw 模式行编辑器与 bracketed paste
+  term_linux.go           termios raw 模式（Linux）
+  term_darwin.go          termios raw 模式（macOS）
+  term_other.go           无 raw 模式平台的退化实现
+  main_test.go            REPL 与行编辑器回归测试
 internal/scheme/          解释器实现
   value.go                运行时对象（符号、序对、字符串、向量、字节向量、
                           过程、记录 …）
@@ -310,8 +331,9 @@ go test -short ./...                          # 跳过参考套件
   `include` / `cond-expand`、哈希表、异常以及 `eval` / `load`。
 * `internal/scheme/scheme_test.go` 中的 Go 测试驱动上述套件，并包含针对
   读取器、数值塔、尾调用行为与错误传播的直接单元测试。
-* `cmd/goscheme/main_test.go` 覆盖 REPL：粘贴输入不得与提示符交错、逐行输入必须
-  使用续行提示符、管道会话不得打印 banner 与提示符、出错后缓冲区不得错位。
+* `cmd/goscheme/main_test.go` 覆盖 REPL 与行编辑器：括号粘贴视为一个输入单元、
+  结束标记跨读取被切断时也能正确处理、编辑键与历史记录行为、管道会话不打印
+  banner 与提示符、未以换行结束的输出不会被下一次提示符擦掉。
 
 ## 交叉编译
 

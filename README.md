@@ -70,12 +70,29 @@ goscheme [options] [file] [argument ...]
   --                  end of options; the next argument is the script
 ```
 
-With neither a file nor `-e`, the interpreter starts a REPL.  It prompts with
-`>>> ` for a fresh form and `... ` while a form is still open, and it stays
-quiet whenever more input is already waiting — a pasted multi-line form is
-therefore consumed in one go instead of being sprayed with prompts.  When
-stdin is not a terminal (a pipe or a redirected file) there is no banner and no
-prompt at all, so `echo '(+ 1 2)' | goscheme` simply prints `3`.
+With neither a file nor `-e`, the interpreter starts a REPL.  The primary
+prompt is `>>> `, and `... ` appears while a form is still open.
+
+On a terminal the REPL switches the terminal into raw mode and provides the
+editing keys one expects: cursor movement (arrows, Home/End, Ctrl-A/E/B/F),
+backspace and delete, Ctrl-U/K/W, Ctrl-L to clear the screen, Ctrl-C to abandon
+the line, Ctrl-D to leave, and history via the up/down arrows.  It also enables
+**bracketed paste**, so the terminal itself marks where a paste begins and ends
+and the pasted block is executed as one unit — a prompt is never wedged between
+the pasted lines, and newlines inside a paste do not submit anything early:
+
+```text
+>>> (define (f x)
+  (* x x))
+(f 12)
+144
+>>> 
+```
+
+When stdin is not a terminal (a pipe or a redirected file) there is no banner,
+no prompt and no line editing, so `echo '(+ 1 2)' | goscheme` simply prints
+`3`.  On platforms where raw mode is unavailable the REPL falls back to a
+line-oriented reader.
 
 `(command-line)` returns the program name, the script and its arguments.
 
@@ -85,7 +102,13 @@ for an uncaught error.
 ## Repository layout
 
 ```
-cmd/goscheme/main.go      command line driver (file / -e / REPL)
+cmd/goscheme/             command line driver
+  main.go                 file execution, -e, the REPL loop
+  lineedit.go             raw mode line editor and bracketed paste
+  term_linux.go           termios raw mode (Linux)
+  term_darwin.go          termios raw mode (macOS)
+  term_other.go           fallback for platforms without raw mode
+  main_test.go            REPL and editor regression tests
 internal/scheme/          the interpreter
   value.go                runtime objects (symbols, pairs, strings, vectors,
                           bytevectors, procedures, records, …)
@@ -342,10 +365,11 @@ The concurrency suite also passes under the Go race detector
 * The Go tests in `internal/scheme/scheme_test.go` drive both suites and also
   contain direct unit tests for the reader, the numeric tower, tail-call
   behaviour and error propagation.
-* `cmd/goscheme/main_test.go` covers the REPL: pasted input must not be
-  interleaved with prompts, line-by-line input must use the continuation
-  prompt, a piped session must print neither banner nor prompts, and an error
-  must not desynchronise the buffer.
+* `cmd/goscheme/main_test.go` covers the REPL and the line editor: a bracketed
+  paste becomes one input block, an end marker split across reads is handled,
+  the editing keys and history behave, a piped session prints neither banner
+  nor prompts, and output that does not end with a newline is not erased by the
+  next prompt.
 
 ## Cross-compilation
 

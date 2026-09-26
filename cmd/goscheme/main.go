@@ -172,14 +172,82 @@ const (
 )
 
 func repl(m *scheme.Machine, quiet bool) {
-	interactive := isTerminal(os.Stdin)
-	// pending reports whether the terminal already holds more input; it is
-	// only consulted for an interactive session.
-	var pending func() bool
-	if interactive {
-		pending = func() bool { return inputPending(os.Stdin) }
+	if !isTerminal(os.Stdin) {
+		// Not talking to a user: no banner, no prompts.
+		replOn(m, os.Stdin, os.Stdout, os.Stderr, false, nil)
+		return
 	}
-	replOn(m, os.Stdin, os.Stdout, os.Stderr, interactive && !quiet, pending)
+	// Everything written to the terminal goes through out, so the REPL knows
+	// where the cursor is even when Scheme code used (display ...).
+	out := newLineTracker(os.Stdout)
+	m.SetStandardOutput(scheme.NewPortFromFile("stdout", out, false, true))
+	if !quiet {
+		fmt.Fprintln(out, versionString())
+		fmt.Fprintln(out, "Type (exit) or press Ctrl-D to leave.")
+	}
+	restore, err := makeRaw(os.Stdin)
+	if err != nil {
+		// No raw mode available: fall back to the canonical reader, which
+		// still avoids prompting while input is already queued.
+		replOn(m, os.Stdin, os.Stdout, os.Stderr, false, func() bool {
+			return inputPending(os.Stdin)
+		})
+		return
+	}
+	fmt.Fprint(os.Stdout, bracketedPasteOn)
+	defer func() {
+		fmt.Fprint(os.Stdout, bracketedPasteOff)
+		restore()
+	}()
+	replEdited(m, newLineEditor(os.Stdin, out), out, os.Stderr)
+}
+
+// replEdited is the line editing read-eval-print loop.  The editor hands back a
+// bracketed paste as a single block, so a pasted program is parsed and
+// evaluated as a unit with no prompts in between.
+func replEdited(m *scheme.Machine, ed *lineEditor, stdout, stderr io.Writer) {
+	var buf strings.Builder
+	prompt := primaryPrompt
+	for {
+		line, err := ed.ReadLine(prompt)
+		if err != nil {
+			if buf.Len() > 0 {
+				fmt.Fprintln(stderr, "Error: unexpected end of input")
+			}
+			fmt.Fprintln(stdout)
+			return
+		}
+		buf.WriteString(line)
+		buf.WriteString("\n")
+
+		forms, perr := readForms(buf.String())
+		switch {
+		case perr == nil:
+			// The pasted block may hold several forms; run them all before
+			// asking for more input.
+			buf.Reset()
+			prompt = primaryPrompt
+			if len(forms) == 0 {
+				continue
+			}
+			stop := false
+			for _, f := range forms {
+				if !evalForm(m, f, stdout, stderr) {
+					stop = true
+					break
+				}
+			}
+			if stop {
+				return
+			}
+		case scheme.IsIncomplete(perr):
+			prompt = continuationPrompt
+		default:
+			fmt.Fprintf(stderr, "Error: %v\n", perr)
+			buf.Reset()
+			prompt = primaryPrompt
+		}
+	}
 }
 
 // replOn drives the read-eval-print loop.  pending is non-nil for an
