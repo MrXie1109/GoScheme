@@ -44,16 +44,15 @@ func installNumbers(m *Machine) {
 		return False, nil
 	}, libBase)
 	m.defSimple("nan?", 1, 1, func(a []Value) (Value, error) {
-		f := asFloat(wantReal("nan?", a[0]))
-		return BooleanOf(math.IsNaN(f)), nil
+		return BooleanOf(numAny(wantNumber("nan?", a[0]), func(f float64) bool { return math.IsNaN(f) })), nil
 	}, libBase)
 	m.defSimple("infinite?", 1, 1, func(a []Value) (Value, error) {
-		f := asFloat(wantReal("infinite?", a[0]))
-		return BooleanOf(math.IsInf(f, 0)), nil
+		return BooleanOf(numAny(wantNumber("infinite?", a[0]), func(f float64) bool { return math.IsInf(f, 0) })), nil
 	}, libBase)
 	m.defSimple("finite?", 1, 1, func(a []Value) (Value, error) {
-		f := asFloat(wantReal("finite?", a[0]))
-		return BooleanOf(!math.IsInf(f, 0) && !math.IsNaN(f)), nil
+		return BooleanOf(numAll(wantNumber("finite?", a[0]), func(f float64) bool {
+			return !math.IsInf(f, 0) && !math.IsNaN(f)
+		})), nil
 	}, libBase)
 
 	// ------------------------------------------------------------- comparison
@@ -188,15 +187,28 @@ func installNumbers(m *Machine) {
 	}, libBase, libR5RS)
 	m.defSimple("gcd", 0, -1, func(a []Value) (Value, error) {
 		acc := big.NewInt(0)
+		inexact := false
 		for _, v := range a {
-			acc = intGcd(acc, wantInteger("gcd", v).Big())
+			iv := wantIntegerLike("gcd", v)
+			if IsInexact(v) {
+				inexact = true
+			}
+			acc = intGcd(acc, iv.Big())
 		}
-		return BigInt(acc), nil
+		res := Value(BigInt(acc))
+		if inexact {
+			return Inexact(res), nil
+		}
+		return res, nil
 	}, libBase, libR5RS)
 	m.defSimple("lcm", 0, -1, func(a []Value) (Value, error) {
 		acc := big.NewInt(1)
+		inexact := false
 		for _, v := range a {
-			b := wantInteger("lcm", v).Big()
+			if IsInexact(v) {
+				inexact = true
+			}
+			b := wantIntegerLike("lcm", v).Big()
 			if b.Sign() == 0 {
 				return Int(0), nil
 			}
@@ -207,7 +219,11 @@ func installNumbers(m *Machine) {
 		if len(a) == 0 {
 			return Int(1), nil
 		}
-		return BigInt(acc), nil
+		res := Value(BigInt(acc))
+		if inexact {
+			return Inexact(res), nil
+		}
+		return res, nil
 	}, libBase, libR5RS)
 	m.defSimple("square", 1, 1, func(a []Value) (Value, error) {
 		return NumMul(wantNumber("square", a[0]), a[0]), nil
@@ -215,39 +231,39 @@ func installNumbers(m *Machine) {
 
 	// ------------------------------------------------------------ division
 	m.defSimple("floor/", 2, 2, func(a []Value) (Value, error) {
-		q, r := FloorDivMod(wantInteger("floor/", a[0]), wantInteger("floor/", a[1]))
+		q, r := divMod("floor/", a[0], a[1], true)
 		return &MultipleValues{Values: []Value{q, r}}, nil
 	}, libBase)
 	m.defSimple("truncate/", 2, 2, func(a []Value) (Value, error) {
-		q, r := TruncDivMod(wantInteger("truncate/", a[0]), wantInteger("truncate/", a[1]))
+		q, r := divMod("truncate/", a[0], a[1], false)
 		return &MultipleValues{Values: []Value{q, r}}, nil
 	}, libBase)
 	m.defSimple("floor-quotient", 2, 2, func(a []Value) (Value, error) {
-		q, _ := FloorDivMod(wantInteger("floor-quotient", a[0]), wantInteger("floor-quotient", a[1]))
+		q, _ := divMod("floor-quotient", a[0], a[1], true)
 		return q, nil
 	}, libBase)
 	m.defSimple("floor-remainder", 2, 2, func(a []Value) (Value, error) {
-		_, r := FloorDivMod(wantInteger("floor-remainder", a[0]), wantInteger("floor-remainder", a[1]))
+		_, r := divMod("floor-remainder", a[0], a[1], true)
 		return r, nil
 	}, libBase)
 	m.defSimple("truncate-quotient", 2, 2, func(a []Value) (Value, error) {
-		q, _ := TruncDivMod(wantInteger("truncate-quotient", a[0]), wantInteger("truncate-quotient", a[1]))
+		q, _ := divMod("truncate-quotient", a[0], a[1], false)
 		return q, nil
 	}, libBase)
 	m.defSimple("truncate-remainder", 2, 2, func(a []Value) (Value, error) {
-		_, r := TruncDivMod(wantInteger("truncate-remainder", a[0]), wantInteger("truncate-remainder", a[1]))
+		_, r := divMod("truncate-remainder", a[0], a[1], false)
 		return r, nil
 	}, libBase)
 	m.defSimple("quotient", 2, 2, func(a []Value) (Value, error) {
-		q, _ := TruncDivMod(wantInteger("quotient", a[0]), wantInteger("quotient", a[1]))
+		q, _ := divMod("quotient", a[0], a[1], false)
 		return q, nil
 	}, libR5RS)
 	m.defSimple("remainder", 2, 2, func(a []Value) (Value, error) {
-		_, r := TruncDivMod(wantInteger("remainder", a[0]), wantInteger("remainder", a[1]))
+		_, r := divMod("remainder", a[0], a[1], false)
 		return r, nil
 	}, libR5RS)
 	m.defSimple("modulo", 2, 2, func(a []Value) (Value, error) {
-		_, r := FloorDivMod(wantInteger("modulo", a[0]), wantInteger("modulo", a[1]))
+		_, r := divMod("modulo", a[0], a[1], true)
 		return r, nil
 	}, libR5RS)
 
@@ -488,6 +504,60 @@ func installNumbers(m *Machine) {
 		}
 		return False, nil
 	}, libBase, libR5RS)
+}
+
+// wantIntegerLike accepts exact integers and inexact integral reals.
+func wantIntegerLike(name string, v Value) *Integer {
+	if i, ok := v.(*Integer); ok {
+		return i
+	}
+	switch x := v.(type) {
+	case Float:
+		f := float64(x)
+		if math.IsInf(f, 0) || math.IsNaN(f) || f != math.Trunc(f) {
+			panic(errf(name, "expected an integer but got %s", WriteToString(v)))
+		}
+		return BigInt(Exact(x).(*Integer).Big())
+	}
+	panic(errf(name, "expected an integer but got %s", WriteToString(v)))
+}
+
+// divMod computes the quotient and remainder of two integers (exact or
+// inexact).  The result is inexact when either operand is inexact.
+func divMod(name string, a, b Value, floorMode bool) (Value, Value) {
+	ai := wantIntegerLike(name, a)
+	bi := wantIntegerLike(name, b)
+	if bi.IsZero() {
+		panic(errf(name, "division by zero"))
+	}
+	inexact := IsInexact(a) || IsInexact(b)
+	var q, r *Integer
+	if floorMode {
+		q, r = FloorDivMod(ai, bi)
+	} else {
+		q, r = TruncDivMod(ai, bi)
+	}
+	var qv, rv Value = q, r
+	if inexact {
+		qv, rv = Inexact(q), Inexact(r)
+	}
+	return qv, rv
+}
+
+// numAny applies pred to every real component and reports whether any
+// component satisfies it.
+func numAny(v Value, pred func(float64) bool) bool {
+	re, im := ComplexParts(v)
+	if pred(asFloat(re)) {
+		return true
+	}
+	return pred(asFloat(im))
+}
+
+// numAll applies pred to every real component.
+func numAll(v Value, pred func(float64) bool) bool {
+	re, im := ComplexParts(v)
+	return pred(asFloat(re)) && pred(asFloat(im))
 }
 
 // ---------------------------------------------------------------------------

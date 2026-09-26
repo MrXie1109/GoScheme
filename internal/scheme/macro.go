@@ -46,18 +46,41 @@ func NewSyntaxRules(name string, ellipsis *Symbol, literals []*Symbol, rules []M
 	return &Macro{Name: name, Ellipsis: ellipsis, Literals: literals, Rules: rules, Env: env}
 }
 
+// isLiteral reports whether s is one of the macro's literal identifiers.
+// Literals are compared by identity (or by binding), not merely by name, so
+// that an identifier introduced by an enclosing macro expansion does not
+// capture an unrelated literal of the same name written at the use site.
 func (m *Macro) isLiteral(s *Symbol) bool {
 	for _, l := range m.Literals {
-		if l.Name == s.Name {
+		if l == s {
+			return true
+		}
+		if l.Name != s.Name {
+			continue
+		}
+		if l.Mark == s.Mark {
+			return true
+		}
+		if l.Mark == 0 && s.Mark == 0 {
+			return true
+		}
+		lv, lok := m.Env.Lookup(l)
+		sv, sok := m.Env.Lookup(s)
+		if lok && sok && Equal(lv, sv) {
 			return true
 		}
 	}
 	return false
 }
 
+// isEllipsis reports whether s acts as the ellipsis identifier.  A literal
+// takes priority over the ellipsis (R7RS 4.3.2).
 func (m *Macro) isEllipsis(v Value) bool {
 	s, ok := v.(*Symbol)
-	return ok && s.Name == m.Ellipsis.Name
+	if !ok || s.Name != m.Ellipsis.Name {
+		return false
+	}
+	return !m.isLiteral(s)
 }
 
 // Expand applies the macro to the given form (which includes the keyword).
@@ -68,12 +91,14 @@ func (m *Macro) Expand(form Value) (Value, error) {
 	for _, rule := range m.Rules {
 		binds := map[*Symbol]*matchVal{}
 		mt := &matcher{m: m, binds: binds}
-		// The keyword position of the pattern is ignored, per R7RS.
-		pat := rule.Pattern
-		if p, ok := pat.(*Pair); ok {
-			pat = Cons(Intern("_"), p.Cdr)
+		// Both the pattern and the form start with the keyword, which is
+		// ignored per R7RS: match the tails.
+		patTail := cdr(rule.Pattern)
+		formTail := cdr(args)
+		if patTail == nil || formTail == nil {
+			continue
 		}
-		if mt.match(pat, args) {
+		if mt.match(patTail, formTail) {
 			mark := newMark(m.Env)
 			return m.instantiate(rule.Template, binds, mark, 0), nil
 		}
@@ -88,12 +113,12 @@ func (m *Macro) Expand(form Value) (Value, error) {
 func (mt *matcher) match(pat, in Value) bool {
 	switch p := pat.(type) {
 	case *Symbol:
-		if p.Name == "_" && !p.IsMarked() {
-			return true
-		}
 		if mt.m.isLiteral(p) {
 			s, ok := in.(*Symbol)
 			return ok && s.Name == p.Name
+		}
+		if p.Name == "_" && !p.IsMarked() {
+			return true
 		}
 		if mv, exists := mt.binds[p]; exists {
 			return sameDatum(mv.datum, in)
@@ -123,7 +148,7 @@ func listFromSlice(items []Value) Value {
 
 // matchList matches a (possibly dotted) list pattern against a value.
 func (mt *matcher) matchList(pat, in Value) bool {
-	_, hasEllipsis, preEllipsis, postEllipsis, tailPat := splitEllipsis(pat, mt.m.Ellipsis)
+	_, hasEllipsis, preEllipsis, postEllipsis, tailPat := splitEllipsis(pat, mt.m)
 	if !hasEllipsis {
 		// Ordinary list pattern (possibly dotted).
 		for {
@@ -165,7 +190,7 @@ func (mt *matcher) matchList(pat, in Value) bool {
 		}
 	}
 	mid := items[nPre : len(items)-nPost]
-	subPat := repeatedPatternOf(pat, mt.m.Ellipsis)
+	subPat := repeatedPatternOf(pat, mt.m)
 	vars := map[*Symbol]bool{}
 	collectPatternVars(subPat, mt.m, vars)
 	var perIter []map[*Symbol]*matchVal
@@ -202,7 +227,7 @@ func (mt *matcher) matchList(pat, in Value) bool {
 
 // splitEllipsis returns the list elements before and after the single
 // ellipsis, and the dotted tail pattern.
-func splitEllipsis(pat Value, ellipsis *Symbol) (head Value, found bool, pre, post []Value, tail Value) {
+func splitEllipsis(pat Value, m *Macro) (head Value, found bool, pre, post []Value, tail Value) {
 	var items []Value
 	cur := pat
 	for {
@@ -218,14 +243,14 @@ func splitEllipsis(pat Value, ellipsis *Symbol) (head Value, found bool, pre, po
 		tail = nil
 	}
 	for i := 1; i < len(items); i++ {
-		if s, ok := items[i].(*Symbol); ok && s.Name == ellipsis.Name {
+		if m.isEllipsis(items[i]) {
 			return pat, true, items[:i-1], items[i+1:], tail
 		}
 	}
 	return pat, false, nil, nil, tail
 }
 
-func repeatedPatternOf(pat Value, ellipsis *Symbol) Value {
+func repeatedPatternOf(pat Value, m *Macro) Value {
 	var items []Value
 	cur := pat
 	for {
@@ -237,7 +262,7 @@ func repeatedPatternOf(pat Value, ellipsis *Symbol) Value {
 		cur = p.Cdr
 	}
 	for i := 1; i < len(items); i++ {
-		if s, ok := items[i].(*Symbol); ok && s.Name == ellipsis.Name {
+		if m.isEllipsis(items[i]) {
 			return items[i-1]
 		}
 	}
@@ -247,7 +272,7 @@ func repeatedPatternOf(pat Value, ellipsis *Symbol) Value {
 func collectPatternVars(pat Value, m *Macro, out map[*Symbol]bool) {
 	switch p := pat.(type) {
 	case *Symbol:
-		if p.Name != "_" && !m.isLiteral(p) && p.Name != m.Ellipsis.Name {
+		if p.Name != "_" && !m.isLiteral(p) && !m.isEllipsis(p) {
 			out[p] = true
 		}
 	case *Pair:
@@ -285,32 +310,37 @@ func sameDatum(a, b Value) bool {
 // Template instantiation
 // ---------------------------------------------------------------------------
 
-// instantiate expands a template.  depth is the number of enclosing ellipses.
+// instantiate expands a template.  depth is the number of enclosing
+// ellipses; esc is true inside a (... template) escape, where ellipses are
+// ordinary identifiers.
 func (m *Macro) instantiate(tmpl Value, binds map[*Symbol]*matchVal, mark uint64, depth int) Value {
+	return m.instantiateEsc(tmpl, binds, mark, depth, false)
+}
+
+func (m *Macro) instantiateEsc(tmpl Value, binds map[*Symbol]*matchVal, mark uint64, depth int, esc bool) Value {
 	switch t := tmpl.(type) {
 	case *Symbol:
 		if mv, ok := binds[t]; ok {
 			if mv.isSeq {
-				// A pattern variable used without enough ellipses: use the
-				// first match (permissive).
 				if len(mv.seq) > 0 {
-					return m.instantiateValue(mv.seq[0].datumOrNil(), binds, mark, depth)
+					return mv.seq[0].datumOrNil()
 				}
 				return Nil
 			}
 			return mv.datum
 		}
-		if t.Name == m.Ellipsis.Name {
+		if m.isEllipsis(t) {
 			return t
 		}
 		return renameSymbol(t, mark)
 	case *Pair:
 		// (... template) escapes the ellipsis.
-		if s, ok := t.Car.(*Symbol); ok && s.Name == m.Ellipsis.Name {
-			if rest, ok := t.Cdr.(*Pair); ok {
-				_, more := rest.Cdr.(Empty)
-				if more {
-					return m.instantiateNoEscape(rest.Car, binds, mark, depth)
+		if !esc {
+			if m.isEllipsis(t.Car) {
+				if rest, ok := t.Cdr.(*Pair); ok {
+					if _, more := rest.Cdr.(Empty); more {
+						return m.instantiateEsc(rest.Car, binds, mark, depth, true)
+					}
 				}
 			}
 		}
@@ -321,43 +351,35 @@ func (m *Macro) instantiate(tmpl Value, binds map[*Symbol]*matchVal, mark uint64
 			if !ok {
 				break
 			}
-			// Is the next element the ellipsis?
-			if next, ok := p.Cdr.(*Pair); ok {
-				if es, ok := next.Car.(*Symbol); ok && es.Name == m.Ellipsis.Name {
-					iters := m.iterationCount(p.Car, binds)
-					for i := 0; i < iters; i++ {
-						nb := m.subBinds(p.Car, binds, i)
-						out = append(out, m.instantiate(p.Car, nb, mark, depth+1))
+			if !esc {
+				if next, ok := p.Cdr.(*Pair); ok {
+					if m.isEllipsis(next.Car) {
+						iters := m.iterationCount(p.Car, binds)
+						for i := 0; i < iters; i++ {
+							nb := m.subBinds(p.Car, binds, i)
+							out = append(out, m.instantiateEsc(p.Car, nb, mark, depth+1, false))
+						}
+						cur = next.Cdr
+						continue
 					}
-					cur = next.Cdr
-					continue
 				}
 			}
-			out = append(out, m.instantiate(p.Car, binds, mark, depth))
+			out = append(out, m.instantiateEsc(p.Car, binds, mark, depth, esc))
 			cur = p.Cdr
 		}
 		res := listFromSlice(out)
-		// Dotted tail
 		if _, isNil := cur.(Empty); !isNil {
-			tail := m.instantiate(cur, binds, mark, depth)
+			tail := m.instantiateEsc(cur, binds, mark, depth, esc)
 			res = appendToTail(res, tail)
 		}
 		return res
 	case *Vector:
-		lst := m.instantiate(listFromSlice(t.Items), binds, mark, depth)
+		lst := m.instantiateEsc(listFromSlice(t.Items), binds, mark, depth, esc)
 		items, _ := ListToSlice(lst)
 		return NewVectorFrom(items)
 	default:
 		return tmpl
 	}
-}
-
-func (m *Macro) instantiateValue(v Value, binds map[*Symbol]*matchVal, mark uint64, depth int) Value {
-	return v
-}
-
-func (m *Macro) instantiateNoEscape(tmpl Value, binds map[*Symbol]*matchVal, mark uint64, depth int) Value {
-	return m.instantiate(tmpl, binds, mark, depth)
 }
 
 func appendToTail(lst, tail Value) Value {

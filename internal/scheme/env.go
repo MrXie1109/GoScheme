@@ -61,6 +61,9 @@ func (e *Env) Set(sym *Symbol, v Value) bool {
 	}
 	if sym.Mark != 0 {
 		if def := markEnvOf(sym.Mark); def != nil {
+			if sym.orig != nil && def.Set(sym.orig, v) {
+				return true
+			}
 			return def.Set(sym.Base(), v)
 		}
 	}
@@ -84,6 +87,11 @@ func (e *Env) Lookup(sym *Symbol) (Value, bool) {
 	}
 	if sym.Mark != 0 {
 		if def := markEnvOf(sym.Mark); def != nil {
+			if sym.orig != nil {
+				if v, ok := def.Lookup(sym.orig); ok {
+					return v, true
+				}
+			}
 			if v, ok := def.Lookup(sym.Base()); ok {
 				return v, true
 			}

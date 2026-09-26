@@ -105,6 +105,20 @@ func (m *Machine) evalStep() {
 	}
 }
 
+// isAuxSyntax reports whether the auxiliary keyword s (else, =>) is in scope
+// as syntax rather than shadowed by a variable binding.
+func isAuxSyntax(s *Symbol, env *Env) bool {
+	if s.IsMarked() {
+		return false
+	}
+	v, ok := env.Lookup(s)
+	if !ok {
+		return true
+	}
+	_, isKW := v.(*SyntaxKeyword)
+	return isKW
+}
+
 func formArgs(form Value) []Value {
 	items, _ := ListToSlice(cdr(form))
 	return items
@@ -817,7 +831,7 @@ func (m *Machine) evalCondClauses(clauses []Value, env *Env) {
 		m.Raise(NewError("cond: bad clause", cl))
 		return
 	}
-	if s, ok := p.Car.(*Symbol); ok && s.Name == "else" && !s.IsMarked() {
+	if s, ok := p.Car.(*Symbol); ok && s.Name == "else" && isAuxSyntax(s, env) {
 		m.EvalSeq(mustSlice(p.Cdr), env)
 		return
 	}
@@ -828,7 +842,7 @@ func (m *Machine) evalCondClauses(clauses []Value, env *Env) {
 				m.Return(v)
 				return
 			}
-			if s, ok := body[0].(*Symbol); ok && s.Name == "=>" && !s.IsMarked() {
+			if s, ok := body[0].(*Symbol); ok && s.Name == "=>" && isAuxSyntax(s, env) {
 				if len(body) != 2 {
 					m.Raise(NewError("cond: bad => clause", cl))
 					return
@@ -869,8 +883,8 @@ func (m *Machine) evalCaseClauses(clauses []Value, key Value, env *Env) {
 		return
 	}
 	body := mustSlice(p.Cdr)
-	if s, ok := p.Car.(*Symbol); ok && s.Name == "else" && !s.IsMarked() {
-		m.EvalSeq(body, env)
+	if s, ok := p.Car.(*Symbol); ok && s.Name == "else" && isAuxSyntax(s, env) {
+		m.evalCaseBody(body, key, env)
 		return
 	}
 	datums, ok := ListToSlice(p.Car)
@@ -880,19 +894,25 @@ func (m *Machine) evalCaseClauses(clauses []Value, key Value, env *Env) {
 	}
 	for _, d := range datums {
 		if Eqv(key, d) {
-			if len(body) == 2 {
-				if s, ok := body[0].(*Symbol); ok && s.Name == "=>" && !s.IsMarked() {
-					m.EvalWith(body[1], env, func(m *Machine, proc Value) {
-						m.apply(proc, []Value{key})
-					})
-					return
-				}
-			}
-			m.EvalSeq(body, env)
+			m.evalCaseBody(body, key, env)
 			return
 		}
 	}
 	m.evalCaseClauses(clauses[1:], key, env)
+}
+
+// evalCaseBody evaluates the body of a case clause, handling the (=> proc)
+// form which receives the key.
+func (m *Machine) evalCaseBody(body []Value, key Value, env *Env) {
+	if len(body) == 2 {
+		if s, ok := body[0].(*Symbol); ok && s.Name == "=>" && isAuxSyntax(s, env) {
+			m.EvalWith(body[1], env, func(m *Machine, proc Value) {
+				m.apply(proc, []Value{key})
+			})
+			return
+		}
+	}
+	m.EvalSeq(body, env)
 }
 
 func evalAnd(m *Machine, form Value, env *Env) {
@@ -1169,7 +1189,7 @@ func (m *Machine) evalGuardClauses(clauses []Value, env *Env, cond Value) {
 		m.Raise(NewError("guard: bad clause", cl))
 		return
 	}
-	if s, ok := p.Car.(*Symbol); ok && s.Name == "else" && !s.IsMarked() {
+	if s, ok := p.Car.(*Symbol); ok && s.Name == "else" && isAuxSyntax(s, env) {
 		m.EvalSeq(mustSlice(p.Cdr), env)
 		return
 	}
@@ -1180,9 +1200,9 @@ func (m *Machine) evalGuardClauses(clauses []Value, env *Env, cond Value) {
 				m.Return(v)
 				return
 			}
-			if s, ok := body[0].(*Symbol); ok && s.Name == "=>" && !s.IsMarked() {
+			if s, ok := body[0].(*Symbol); ok && s.Name == "=>" && isAuxSyntax(s, env) {
 				m.EvalWith(body[1], env, func(m *Machine, proc Value) {
-					m.apply(proc, []Value{cond})
+					m.apply(proc, []Value{v})
 				})
 				return
 			}
@@ -1688,8 +1708,9 @@ func evalDefineLibrary(m *Machine, form Value, env *Env) {
 	for _, d := range declFileDirs {
 		m.AddLoadPath(d)
 	}
-	m.EvalSeq(bodyForms, libEnv)
-	// Export resolution happens after the body has run, using a frame.
+	// The export resolution frame must be installed before the body runs:
+	// evaluation is stack based, so a frame pushed afterwards would run
+	// first.
 	m.stack = append(m.stack, &fGeneric{fn: func(m *Machine, v Value) {
 		for range declFileDirs {
 			m.PopLoadPath()
@@ -1723,6 +1744,7 @@ func evalDefineLibrary(m *Machine, form Value, env *Env) {
 		}
 		m.Return(UnspecifiedValue)
 	}})
+	m.EvalSeq(bodyForms, libEnv)
 }
 
 // LibraryNameString renders a library name as a canonical string key.

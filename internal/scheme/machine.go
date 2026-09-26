@@ -376,7 +376,7 @@ func (m *Machine) applyParameter(p *Parameter, args []Value) {
 	case 1:
 		v := args[0]
 		if p.Converter != nil && p.Converter != Value(False) {
-			m.EvalWith(Value(&application{op: p.Converter, args: []Value{v}}), m.Global, func(m *Machine, cv Value) {
+			m.ApplyWith(p.Converter, []Value{v}, func(m *Machine, cv Value) {
 				p.set(cv)
 				m.Return(UnspecifiedValue)
 			})
@@ -410,13 +410,6 @@ func (p *Parameter) pop() {
 	if len(p.values) > 1 {
 		p.values = p.values[:len(p.values)-1]
 	}
-}
-
-// application is a tiny helper used when the machine needs to call a Scheme
-// procedure from Go code.
-type application struct {
-	op   Value
-	args []Value
 }
 
 // ---------------------------------------------------------------------------

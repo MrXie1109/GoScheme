@@ -83,6 +83,10 @@ type Symbol struct {
 	Name string
 	Mark uint64
 	env  *Env
+	// orig is the identifier this one was created from by the macro
+	// expander; it is the fallback identity used for hygiene resolution so
+	// that marks compose correctly.
+	orig *Symbol
 }
 
 var (
@@ -152,7 +156,7 @@ func renameSymbol(sym *Symbol, mark uint64) *Symbol {
 	if s, ok := mi.syms[sym]; ok {
 		return s
 	}
-	s := &Symbol{Name: sym.Name, Mark: mark, env: mi.env}
+	s := &Symbol{Name: sym.Name, Mark: mark, env: mi.env, orig: sym}
 	mi.syms[sym] = s
 	return s
 }

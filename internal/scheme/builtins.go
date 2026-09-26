@@ -301,7 +301,7 @@ func installCore(m *Machine) {
 	m.defSimple("symbol=?", 2, -1, func(a []Value) (Value, error) {
 		first := wantSymbol("symbol=?", a[0])
 		for _, v := range a[1:] {
-			if wantSymbol("symbol=?", v) != first {
+			if wantSymbol("symbol=?", v).Name != first.Name {
 				return False, nil
 			}
 		}

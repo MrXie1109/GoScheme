@@ -9,7 +9,8 @@ func Eq(a, b Value) bool {
 		y, ok := b.(Boolean)
 		return ok && x == y
 	case *Symbol:
-		return a == b
+		y, ok := b.(*Symbol)
+		return ok && x.Name == y.Name
 	case Char:
 		y, ok := b.(Char)
 		return ok && x == y
@@ -38,7 +39,8 @@ func Eqv(a, b Value) bool {
 		y, ok := b.(Boolean)
 		return ok && x == y
 	case *Symbol:
-		return a == b
+		y, ok := b.(*Symbol)
+		return ok && x.Name == y.Name
 	case Char:
 		y, ok := b.(Char)
 		return ok && x == y
@@ -155,6 +157,9 @@ func equalRec(a, b Value, seen map[[2]Value]bool) bool {
 			}
 		}
 		return true
+	case *Symbol:
+		y, ok := b.(*Symbol)
+		return ok && x.Name == y.Name
 	case *ErrorObject:
 		y, ok := b.(*ErrorObject)
 		if !ok {

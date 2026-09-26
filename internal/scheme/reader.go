@@ -294,28 +294,33 @@ func (r *Reader) readList(close rune) (Value, error) {
 			return head, nil
 		}
 		if ch == '.' {
-			// dotted tail
 			n, ok := r.peekRune()
 			if !ok || !isDelimiter(n) {
+				// The dot begins an atom such as `.5` or `...`; it is an
+				// ordinary element, not a dotted tail.
 				r.unget(ch)
-				v, err := r.readAtom()
+				v, err := r.readDatum()
 				if err != nil {
 					return nil, err
 				}
+				cell := &Pair{Car: v, Cdr: Nil}
 				if head == nil {
-					return nil, r.errf("bad dotted list")
+					head = cell
+				} else {
+					tail.Cdr = cell
 				}
-				tail.Cdr = v
-			} else {
-				if head == nil {
-					return nil, r.errf("bad dotted list")
-				}
-				t, err := r.readDatum()
-				if err != nil {
-					return nil, err
-				}
-				tail.Cdr = t
+				tail = cell
+				continue
 			}
+			// A lone dot introduces the tail of an improper list.
+			if head == nil {
+				return nil, r.errf("bad dotted list")
+			}
+			t, err := r.readDatum()
+			if err != nil {
+				return nil, err
+			}
+			tail.Cdr = t
 			if err := r.skipAtmosphere(); err != nil {
 				return nil, r.errf("unterminated list")
 			}
@@ -479,7 +484,7 @@ func (r *Reader) readHash() (Value, error) {
 		return NewVectorFrom(items), nil
 	case 'u', 'U':
 		// #u8(
-		var word []rune
+		word := []rune{ch}
 		for {
 			c, ok := r.readRune()
 			if !ok {
@@ -489,7 +494,7 @@ func (r *Reader) readHash() (Value, error) {
 				break
 			}
 			word = append(word, c)
-			if len(word) > 2 {
+			if len(word) > 3 {
 				return nil, r.errf("unknown # syntax")
 			}
 		}
@@ -582,8 +587,17 @@ func (r *Reader) readHash() (Value, error) {
 				return nil, r.errf("bad datum label syntax")
 			}
 		}
-		r.unget(ch)
-		return r.readAtom()
+		// Not a # syntax we handle specially: it may be a numeric prefix
+		// such as #x1f, #e1e10 or #b101.
+		rest, err := r.readToken()
+		if err != nil {
+			return nil, err
+		}
+		tok := "#" + string(ch) + rest
+		if n, ok := ParseNumber(tok, 10); ok {
+			return n, nil
+		}
+		return nil, r.errf("unknown # syntax %s", tok)
 	}
 }
 
@@ -831,13 +845,14 @@ func ParseNumber(s string, radix int) (Value, bool) {
 		split := -1
 		for j := 1; j < len(inner); j++ {
 			c := inner[j]
-			if (c == '+' || c == '-') && inner[j-1] != 'e' && inner[j-1] != 'E' {
+			if (c == '+' || c == '-') && !isExponentMarker(inner[j-1]) {
 				split = j
 			}
 		}
 		// A bare "i" is an identifier; the imaginary part must be introduced
-		// by a sign.
-		if inner == "+" || inner == "-" || split > 0 {
+		// by a sign, either as in "1+2i" or as in "+2i".
+		signed := len(inner) > 0 && (inner[0] == '+' || inner[0] == '-')
+		if signed || split > 0 {
 			var im Value
 			imStr := inner
 			if split > 0 {
@@ -884,7 +899,7 @@ func parseReal(s string, radix int, exact byte) (Value, bool) {
 	if s == "" {
 		return nil, false
 	}
-	switch s {
+	switch strings.ToLower(s) {
 	case "+inf.0":
 		if radix != 10 {
 			return nil, false
@@ -933,7 +948,7 @@ func parseReal(s string, radix int, exact byte) (Value, bool) {
 		return normRat(r), true
 	}
 	// Decimal?
-	if radix == 10 && strings.ContainsAny(body, ".eE") {
+	if radix == 10 && strings.ContainsAny(body, ".eEsSfFdDlL") {
 		f, err := parseDecimal(body)
 		if err != nil {
 			return nil, false
@@ -960,6 +975,14 @@ func parseReal(s string, radix int, exact byte) (Value, bool) {
 	return BigInt(n), true
 }
 
+func isExponentMarker(c byte) bool {
+	switch c {
+	case 'e', 'E', 's', 'S', 'f', 'F', 'd', 'D', 'l', 'L':
+		return true
+	}
+	return false
+}
+
 func parseUInteger(s string, radix int) (*big.Int, bool) {
 	if s == "" {
 		return nil, false
@@ -979,8 +1002,13 @@ func parseDecimal(s string) (float64, error) {
 	mant := s
 	exp := ""
 	for i := 0; i < len(s); i++ {
-		if (s[i] == 'e' || s[i] == 'E') && i > 0 {
-			mant, exp = s[:i], s[i+1:]
+		switch s[i] {
+		case 'e', 'E', 's', 'S', 'f', 'F', 'd', 'D', 'l', 'L':
+			if i > 0 {
+				mant, exp = s[:i], s[i+1:]
+			}
+		}
+		if exp != "" {
 			break
 		}
 	}
@@ -1016,7 +1044,12 @@ func parseDecimal(s string) (float64, error) {
 			}
 		}
 	}
-	f, err := strconv.ParseFloat(s, 64)
+	// Go only understands `e` as the exponent marker; normalise the others.
+	norm := mant
+	if exp != "" {
+		norm = mant + "e" + exp
+	}
+	f, err := strconv.ParseFloat(norm, 64)
 	if err != nil {
 		return 0, err
 	}

@@ -370,6 +370,16 @@ func (p *printer) printChar(sb *strings.Builder, r rune) {
 	}
 }
 
+// isPeculiarIdentifier reports whether name is one of the R7RS "peculiar
+// identifiers" that are unambiguously symbols.
+func isPeculiarIdentifier(name string) bool {
+	switch name {
+	case "+", "-", "...":
+		return true
+	}
+	return strings.HasPrefix(name, "->")
+}
+
 // printSymbol quotes symbols that would not read back as themselves.
 func printSymbol(name string) string {
 	if name == "" {
@@ -380,6 +390,18 @@ func printSymbol(name string) string {
 	}
 	if _, isNum := ParseNumber(name, 10); isNum {
 		return "|" + name + "|"
+	}
+	// Symbols that merely *look* like numbers are also quoted so that the
+	// output reads back as a symbol.  Peculiar identifiers (+, -, ..., ->foo)
+	// are exempt because they can never be read as numbers.
+	if !isPeculiarIdentifier(name) {
+		switch name[0] {
+		case '+', '-', '.', '@':
+			return "|" + name + "|"
+		}
+		if name[0] >= '0' && name[0] <= '9' {
+			return "|" + name + "|"
+		}
 	}
 	needBar := false
 	for i, r := range name {

@@ -1,6 +1,7 @@
 package scheme
 
 import (
+	"bufio"
 	"io"
 	"strings"
 )
@@ -105,7 +106,10 @@ func installIO(m *Machine) {
 		}
 		r, err := p.ReadRune()
 		if err != nil {
-			return EOFObject, nil
+			if err == io.EOF || err == bufio.ErrBufferFull {
+				return EOFObject, nil
+			}
+			return nil, err
 		}
 		return Char(r), nil
 	}, libBase, libR5RS)
@@ -119,7 +123,10 @@ func installIO(m *Machine) {
 		}
 		r, err := p.PeekRune()
 		if err != nil {
-			return EOFObject, nil
+			if err == io.EOF {
+				return EOFObject, nil
+			}
+			return nil, err
 		}
 		return Char(r), nil
 	}, libBase, libR5RS)
@@ -133,7 +140,10 @@ func installIO(m *Machine) {
 		}
 		line, err := p.LineRead()
 		if err != nil {
-			return EOFObject, nil
+			if err == io.EOF {
+				return EOFObject, nil
+			}
+			return nil, err
 		}
 		return NewStringFromRunes(line), nil
 	}, libBase)
@@ -151,7 +161,10 @@ func installIO(m *Machine) {
 		}
 		rs, err := p.ReadChars(k)
 		if err != nil {
-			return EOFObject, nil
+			if err == io.EOF {
+				return EOFObject, nil
+			}
+			return nil, err
 		}
 		return NewStringFromRunes(rs), nil
 	}, libBase)
@@ -169,7 +182,10 @@ func installIO(m *Machine) {
 		}
 		b, err := p.ReadByte()
 		if err != nil {
-			return EOFObject, nil
+			if err == io.EOF {
+				return EOFObject, nil
+			}
+			return nil, err
 		}
 		return Int(int64(b)), nil
 	}, libBase)
@@ -180,7 +196,10 @@ func installIO(m *Machine) {
 		}
 		b, err := p.PeekByte()
 		if err != nil {
-			return EOFObject, nil
+			if err == io.EOF {
+				return EOFObject, nil
+			}
+			return nil, err
 		}
 		return Int(int64(b)), nil
 	}, libBase)
@@ -202,7 +221,10 @@ func installIO(m *Machine) {
 		}
 		bs, err := p.ReadBytes(k)
 		if err != nil {
-			return EOFObject, nil
+			if err == io.EOF {
+				return EOFObject, nil
+			}
+			return nil, err
 		}
 		return NewBytevectorFrom(bs), nil
 	}, libBase)
@@ -227,7 +249,10 @@ func installIO(m *Machine) {
 		}
 		bs, err := p.ReadBytes(end - start)
 		if err != nil {
-			return EOFObject, nil
+			if err == io.EOF {
+				return EOFObject, nil
+			}
+			return nil, err
 		}
 		copy(bv.Bytes[start:], bs)
 		return Int(int64(len(bs))), nil

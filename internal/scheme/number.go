@@ -443,8 +443,20 @@ func NormalizeComplex(re, im Value) Value {
 
 // ------------------------------------------------------------------ comparison
 
-// NumEq reports numeric equality.
+// NumEq reports numeric equality.  When one operand is exact and the other
+// inexact the inexact operand is converted to exact, as R7RS 6.2.6
+// recommends, so that = remains transitive.
 func NumEq(a, b Value) bool {
+	if _, ok := a.(*Complex); ok {
+		ar, ai := ComplexParts(a)
+		br, bi := ComplexParts(b)
+		return NumEq(ar, br) && NumEq(ai, bi)
+	}
+	if _, ok := b.(*Complex); ok {
+		ar, ai := ComplexParts(a)
+		br, bi := ComplexParts(b)
+		return NumEq(ar, br) && NumEq(ai, bi)
+	}
 	if IsExact(a) && IsExact(b) {
 		ar, aok := ToBigRat(a)
 		br, bok := ToBigRat(b)
@@ -452,18 +464,26 @@ func NumEq(a, b Value) bool {
 			return ar.Cmp(br) == 0
 		}
 	}
-	ar, ai := ComplexParts(a)
-	br, bi := ComplexParts(b)
-	if _, ok := a.(*Complex); ok {
-		_, ok2 := b.(*Complex)
-		if !ok2 {
-			// compare with zero imaginary part
-		}
+	if IsInexact(a) && IsInexact(b) {
+		return asFloat(a) == asFloat(b)
 	}
-	if isExactZero(ai) && isExactZero(bi) {
-		return asFloat(ar) == asFloat(br)
+	fa, fb := asFloat(a), asFloat(b)
+	if math.IsInf(fa, 0) || math.IsInf(fb, 0) || math.IsNaN(fa) || math.IsNaN(fb) {
+		return fa == fb
 	}
-	return asFloat(ar) == asFloat(br) && asFloat(ai) == asFloat(bi)
+	ea, eb := a, b
+	if IsInexact(ea) {
+		ea = Exact(ea)
+	}
+	if IsInexact(eb) {
+		eb = Exact(eb)
+	}
+	ra, aok := ToBigRat(ea)
+	rb, bok := ToBigRat(eb)
+	if aok && bok {
+		return ra.Cmp(rb) == 0
+	}
+	return fa == fb
 }
 
 // NumCmp compares two real numbers; returns -1, 0 or 1.  NaN comparisons
@@ -561,9 +581,16 @@ func FormatFloat(f float64) string {
 		return strconv.FormatFloat(f, 'f', 1, 64)
 	}
 	s := strconv.FormatFloat(f, 'g', -1, 64)
-	// Guarantee the result reads back as inexact: it must contain '.', 'e'
-	// or the exponent marker 'E'.
-	if !strings.ContainsAny(s, ".eE") {
+	// Guarantee the result reads back as inexact: it must contain '.' or an
+	// exponent, and when it uses an exponent the mantissa keeps a decimal
+	// point so that it round-trips as an inexact number.
+	if i := strings.IndexAny(s, "eE"); i >= 0 {
+		if !strings.Contains(s[:i], ".") {
+			s = s[:i] + ".0" + s[i:]
+		}
+		return s
+	}
+	if !strings.Contains(s, ".") {
 		s += ".0"
 	}
 	return s
