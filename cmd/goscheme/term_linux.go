@@ -24,11 +24,11 @@ func ioctl(fd int, req uintptr, arg unsafe.Pointer) error {
 // marker of a paste sits in the line buffer until a newline arrives, so the
 // interpreter would either block or guess.  Reading byte by byte removes the
 // guesswork.
-func makeRaw(f *os.File) (func(), error) {
+func makeRaw(f *os.File) (enter func(), restore func(), err error) {
 	fd := int(f.Fd())
 	var old syscall.Termios
 	if err := ioctl(fd, syscall.TCGETS, unsafe.Pointer(&old)); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	raw := old
 	raw.Iflag &^= syscall.IGNBRK | syscall.BRKINT | syscall.PARMRK | syscall.ISTRIP |
@@ -41,9 +41,11 @@ func makeRaw(f *os.File) (func(), error) {
 	raw.Cc[syscall.VMIN] = 1
 	raw.Cc[syscall.VTIME] = 0
 	if err := ioctl(fd, syscall.TCSETS, unsafe.Pointer(&raw)); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return func() { _ = ioctl(fd, syscall.TCSETS, unsafe.Pointer(&old)) }, nil
+	enter = func() { _ = ioctl(fd, syscall.TCSETS, unsafe.Pointer(&raw)) }
+	restore = func() { _ = ioctl(fd, syscall.TCSETS, unsafe.Pointer(&old)) }
+	return enter, restore, nil
 }
 
 // setInterrupts enables or disables the generation of SIGINT for Ctrl-C

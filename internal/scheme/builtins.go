@@ -230,6 +230,7 @@ func installBuiltins(m *Machine) {
 	installSystem(m)
 	installHashtables(m)
 	installConcurrency(m)
+	installProcess(m)
 	installR5RS(m)
 	installSyntaxExports(m)
 }

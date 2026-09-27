@@ -9,8 +9,8 @@ import (
 
 // makeRaw is not available on this platform, so the REPL falls back to the
 // canonical, line oriented reader.
-func makeRaw(f *os.File) (func(), error) {
-	return nil, errors.New("raw mode is not supported on this platform")
+func makeRaw(f *os.File) (enter func(), restore func(), err error) {
+	return nil, nil, errors.New("raw mode is not supported on this platform")
 }
 
 // setInterrupts is not available on this platform; signal generation is left

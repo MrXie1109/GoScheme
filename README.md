@@ -150,6 +150,7 @@ internal/scheme/          the interpreter
   b_system.go             files, process context, time, eval and load
   b_hashtable.go          hash tables (extension)
   b_concurrent.go         channels, (go ...), (select ...) (extension)
+  b_process.go            system and system* (extension)
   scheme_test.go          Go unit tests and suite drivers
 test/scheme/              Scheme level tests
   r7rs-tests.scm          the reference R7RS test suite
@@ -195,7 +196,8 @@ combination of `#b #o #d #x` and `#e #i` prefixes.
 `(scheme lazy)` `(scheme load)` `(scheme process-context)` `(scheme read)`
 `(scheme repl)` `(scheme time)` `(scheme write)` `(scheme r5rs)`
 
-plus one extension library, `(goscheme hash-table)`.
+plus the extension libraries `(goscheme hash-table)`, `(goscheme channel)`
+and `(goscheme process)`.
 
 ### Data types
 
@@ -347,6 +349,21 @@ Beyond R7RS-small the interpreter also provides:
 * `(goscheme channel)` — `make-channel`, `chan-send!`, `chan-recv!`,
   `chan-close!`, `channel?`, `channel-open?`, `go`, `select` and `go-wait`
   (see [Concurrency](#concurrency-go-flavour) above).
+* `(goscheme process)` — `(system command)` runs a command line through the
+  system's command processor (`/bin/sh -c`, or `cmd /c` on Windows) and
+  `(system* program arg ...)` runs a program directly, both returning the exit
+  status as an exact integer: the exit code, or `128+signal` when the child was
+  killed by a signal, as a shell reports it.  A program that cannot be started
+  raises a file error.  The child inherits the interpreter's standard streams,
+  and on a terminal the REPL hands the terminal back to it, so an editor or a
+  shell started this way gets a normal cooked terminal.
+
+  ```scheme
+  (system "make -j4")                 ; => 0
+  (system* "git" "status" "--short")
+  (guard (e ((file-error? e) (display "no such program")))
+    (system* "/nonexistent"))
+  ```
 * `(assert expr)`, `#!unspecified`, shebang lines (`#!/usr/bin/env goscheme`),
   and the alternative exponent markers `s f d l` accepted by the reader.
 

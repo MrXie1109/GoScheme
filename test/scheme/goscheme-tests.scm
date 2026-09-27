@@ -409,4 +409,41 @@
           count))
 (test-end)
 
+
+;; ------------------------------------------------------------ subprocesses
+(test-begin "Subprocesses")
+
+(define (posix-system?) (and (memq 'posix (features)) #t))
+
+(if (posix-system?)
+    (begin
+      ;; system runs a command line through the shell; system* execs directly.
+      (test 0 (system "exit 0"))
+      (test 3 (system "exit 3"))
+      (test 0 (system* "true"))
+      (test 1 (system* "false"))
+      (test 7 (system* "sh" "-c" "exit 7"))
+      ;; killed by a signal: reported the way a shell does
+      (test 143 (system* "sh" "-c" "kill -TERM $$"))
+      ;; a program that cannot be started at all is a file error
+      (test #t (guard (e ((file-error? e) #t)) (system* "/nonexistent-program-xyz")))
+      ;; the child inherits the interpreter's standard streams, so capture
+      ;; its output through a file
+      (define sys-file (string-append "goscheme-subprocess-"
+                                      (number->string (current-jiffy)) ".txt"))
+      (test 0 (system (string-append "printf 'one\\ntwo\\n' > " sys-file)))
+      (test "one" (call-with-input-file sys-file read-line))
+      (test 0 (system (string-append "echo three >> " sys-file)))
+      (test '("one" "two" "three")
+            (call-with-input-file sys-file
+              (lambda (p)
+                (let loop ((acc '()))
+                  (let ((line (read-line p)))
+                    (if (eof-object? line) (reverse acc) (loop (cons line acc))))))))
+      (delete-file sys-file)
+      (test #f (file-exists? sys-file)))
+    (test #t #t))
+
+(test-end)
+
 (test-end)

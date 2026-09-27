@@ -139,6 +139,7 @@ internal/scheme/          解释器实现
   b_system.go             文件、进程上下文、时间、eval 与 load
   b_hashtable.go          哈希表（扩展）
   b_concurrent.go         通道、(go ...)、(select ...)（扩展）
+  b_process.go            system 与 system*（扩展）
   scheme_test.go          Go 单元测试与测试套件驱动
 test/scheme/              Scheme 层测试
   r7rs-tests.scm          参考 R7RS 测试套件
@@ -182,7 +183,7 @@ Makefile                 构建、测试与打包目标
 `(scheme lazy)` `(scheme load)` `(scheme process-context)` `(scheme read)`
 `(scheme repl)` `(scheme time)` `(scheme write)` `(scheme r5rs)`
 
-外加两个扩展库 `(goscheme hash-table)` 与 `(goscheme channel)`。
+外加扩展库 `(goscheme hash-table)`、`(goscheme channel)` 与 `(goscheme process)`。
 
 ### 数据类型
 
@@ -315,6 +316,19 @@ $ goscheme -e '(let loop ((i 0)) (if (= i 2000000) i (loop (+ i 1))))'
 * `(goscheme channel)` —— `make-channel`、`chan-send!`、`chan-recv!`、
   `chan-close!`、`channel?`、`channel-open?`、`go`、`select`、`go-wait`
   （见上文[并发](#并发go-风味)）。
+* `(goscheme process)` —— `(system command)` 把命令行交给系统命令处理器执行
+  （Unix 为 `/bin/sh -c`，Windows 为 `cmd /c`）；`(system* program arg ...)`
+  直接执行程序、不经 shell。两者都返回精确整数形式的退出状态：正常退出返回退出码，
+  被信号杀死返回 `128+信号`（与 shell 的表示一致）；程序无法启动则抛文件错误。
+  子进程继承解释器的标准流；在终端下 REPL 会把终端交还给子进程，因此用它启动
+  编辑器或 shell 时对方看到的是正常的 cooked 终端。
+
+  ```scheme
+  (system "make -j4")                 ; => 0
+  (system* "git" "status" "--short")
+  (guard (e ((file-error? e) (display "没有这个程序")))
+    (system* "/nonexistent"))
+  ```
 * `(assert expr)`、`#!unspecified`、shebang 行
   （`#!/usr/bin/env goscheme`），以及读取器额外接受的指数标记 `s f d l`。
 

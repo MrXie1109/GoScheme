@@ -17,24 +17,28 @@ func ioctl(fd int, req uintptr, arg unsafe.Pointer) error {
 }
 
 // makeRaw puts the terminal into raw mode; see the Linux version for why.
-func makeRaw(f *os.File) (func(), error) {
+func makeRaw(f *os.File) (enter func(), restore func(), err error) {
 	fd := int(f.Fd())
 	var old syscall.Termios
 	if err := ioctl(fd, syscall.TIOCGETA, unsafe.Pointer(&old)); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	raw := old
 	raw.Iflag &^= syscall.IGNBRK | syscall.BRKINT | syscall.PARMRK | syscall.ISTRIP |
 		syscall.INLCR | syscall.IGNCR | syscall.ICRNL | syscall.IXON
+	// OPOST is deliberately left alone so that a plain "\n" still becomes
+	// CR+LF on output.
 	raw.Lflag &^= syscall.ECHO | syscall.ECHONL | syscall.ICANON | syscall.ISIG | syscall.IEXTEN
 	raw.Cflag &^= syscall.CSIZE | syscall.PARENB
 	raw.Cflag |= syscall.CS8
 	raw.Cc[syscall.VMIN] = 1
 	raw.Cc[syscall.VTIME] = 0
 	if err := ioctl(fd, syscall.TIOCSETA, unsafe.Pointer(&raw)); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return func() { _ = ioctl(fd, syscall.TIOCSETA, unsafe.Pointer(&old)) }, nil
+	enter = func() { _ = ioctl(fd, syscall.TIOCSETA, unsafe.Pointer(&raw)) }
+	restore = func() { _ = ioctl(fd, syscall.TIOCSETA, unsafe.Pointer(&old)) }
+	return enter, restore, nil
 }
 
 // setInterrupts enables or disables the generation of SIGINT for Ctrl-C

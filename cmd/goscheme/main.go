@@ -186,7 +186,7 @@ func repl(m *scheme.Machine, quiet bool) {
 		fmt.Fprintln(out, versionString())
 		fmt.Fprintln(out, "Type (exit) or press Ctrl-D to leave.")
 	}
-	restore, err := makeRaw(os.Stdin)
+	enterRaw, restore, err := makeRaw(os.Stdin)
 	if err != nil {
 		// No raw mode available: fall back to the canonical reader, which
 		// still avoids prompting while input is already queued.
@@ -216,6 +216,19 @@ func repl(m *scheme.Machine, quiet bool) {
 			}
 		}
 	}()
+
+	// Hand the terminal back to a child process, and take it again afterwards.
+	// An interactive child (a shell, an editor) needs the normal terminal, not
+	// the REPL's raw mode, and interrupts must reach it.
+	scheme.RunSubprocess = func(run func()) {
+		restore()
+		defer func() {
+			enterRaw()
+			_ = setInterrupts(os.Stdin, true)
+		}()
+		run()
+	}
+	defer func() { scheme.RunSubprocess = nil }()
 
 	// Ctrl-C aborts the evaluation in progress instead of killing the REPL.
 	sigint := make(chan os.Signal, 1)
