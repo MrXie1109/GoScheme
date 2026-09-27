@@ -84,10 +84,12 @@ editing keys one expects: cursor movement (arrows, Home/End, Ctrl-A/E/B/F),
 backspace and delete, Ctrl-U/K/W, Ctrl-L to clear the screen, Ctrl-C to abandon
 the line, Ctrl-D to leave, and history via the up/down arrows.  It also enables
 **bracketed paste**, so the terminal itself marks where a paste begins and ends
-and the pasted block is executed as one unit — a prompt is never wedged between
-the pasted lines, and newlines inside a paste do not submit anything early.
-Clipboard line endings (CR, CRLF or LF) are all normalised, so pasted lines are
-echoed on separate lines rather than overwriting one another:
+and the pasted block is inserted at the prompt as one piece — a prompt is never
+wedged between the pasted lines, and newlines inside a paste do not submit
+anything early.  The paste is **submitted only when Enter is pressed**, so a
+pasted program can be reviewed (or extended) first.  Clipboard line endings
+(CR, CRLF or LF) are all normalised, so pasted lines are echoed on separate
+lines rather than overwriting one another:
 
 ```text
 >>> (define (f x)
@@ -96,6 +98,12 @@ echoed on separate lines rather than overwriting one another:
 144
 >>> 
 ```
+
+Ctrl-C abandons the line being edited; while a form is running it aborts that
+form and returns to the prompt.  A mistyped expression that blocks forever —
+say a `chan-recv!` nobody will ever satisfy — therefore waits instead of taking
+the session down, and a Go panic inside an evaluation is reported as a single
+line rather than a stack dump.
 
 When stdin is not a terminal (a pipe or a redirected file) there is no banner,
 no prompt and no line editing, so `echo '(+ 1 2)' | goscheme` simply prints
@@ -310,9 +318,10 @@ Because these are Go's primitives rather than an emulation, Go's rules apply:
   clause that is merely *about* to become ready will be missed.
 * **`(go-wait)` waits for every thread started so far**, including long-lived
   server loops that never return — those must be left until last.
-* **A program in which every thread blocks is reported by the Go runtime** as
-  `all goroutines are asleep - deadlock!` and aborts, just as a Go program
-  would.
+* **A script in which every thread blocks** is reported by the Go runtime as
+  `all goroutines are asleep - deadlock!` and aborts, as a Go program would.
+  The interactive REPL is protected instead: a form that blocks forever simply
+  waits, and **Ctrl-C abandons it** and returns to the prompt.
 * Errors raised inside a thread are handled by that thread's handlers; an
   uncaught error is printed on the current error port and only ends that
   thread.

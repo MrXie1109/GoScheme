@@ -98,7 +98,8 @@ type lineEditor struct {
 	line []rune
 	pos  int
 
-	prompt string
+	prompt     string
+	promptCols int
 	// pasting is true while a bracketed paste is being consumed; the pasted
 	// text is echoed as it arrives instead of being redrawn.
 	pasting bool
@@ -117,6 +118,7 @@ func (e *lineEditor) ReadLine(prompt string) (string, error) {
 	e.line = e.line[:0]
 	e.pos = 0
 	e.prompt = prompt
+	e.promptCols = displayWidth([]rune(prompt))
 	e.histPos = len(e.history)
 	e.out.newLine()
 	e.render()
@@ -140,13 +142,12 @@ func (e *lineEditor) ReadLine(prompt string) (string, error) {
 			return line, nil
 
 		case keyPasteStart:
+			// A paste is inserted into the line being edited, exactly as it
+			// would be in a shell: it is not submitted until Enter is
+			// pressed, so a pasted program can be reviewed first.
 			if err := e.consumePaste(); err != nil {
 				return "", err
 			}
-			e.out.newLine()
-			line := string(e.line)
-			e.remember(line)
-			return line, nil
 
 		case keyRune:
 			e.line = append(e.line, 0)
@@ -253,17 +254,53 @@ func (e *lineEditor) setLine(s string) {
 }
 
 // render redraws the prompt and the line being edited, then puts the cursor
-// back at the insertion point.
+// back at the insertion point.  The line may contain newlines (a pasted
+// block), in which case it occupies several rows and the cursor is moved
+// accordingly.
 func (e *lineEditor) render() {
 	var sb strings.Builder
+	// The cursor sits at e.pos, so it is that many rows below the prompt row.
+	if up := countNewlines(e.line[:e.pos]); up > 0 {
+		fmt.Fprintf(&sb, "\x1b[%dA", up)
+	}
 	sb.WriteByte('\r')
 	sb.WriteString(e.prompt)
 	sb.WriteString(string(e.line))
-	sb.WriteString("\x1b[K")
-	if back := displayWidth(e.line[e.pos:]); back > 0 {
-		fmt.Fprintf(&sb, "\x1b[%dD", back)
+	sb.WriteString("\x1b[J") // erase everything below
+
+	if down := countNewlines(e.line[e.pos:]); down > 0 {
+		fmt.Fprintf(&sb, "\x1b[%dB\r", down)
+		if col := displayWidth(afterLastNewline(e.line[:e.pos])); col > 0 {
+			fmt.Fprintf(&sb, "\x1b[%dC", col)
+		}
+	} else {
+		end := e.promptCols + displayWidth(e.line)
+		at := e.promptCols + displayWidth(e.line[:e.pos])
+		if back := end - at; back > 0 {
+			fmt.Fprintf(&sb, "\x1b[%dD", back)
+		}
 	}
 	io.WriteString(e.out, sb.String())
+}
+
+func countNewlines(rs []rune) int {
+	n := 0
+	for _, r := range rs {
+		if r == '\n' {
+			n++
+		}
+	}
+	return n
+}
+
+// afterLastNewline returns the runes of rs that follow its last newline.
+func afterLastNewline(rs []rune) []rune {
+	for i := len(rs) - 1; i >= 0; i-- {
+		if rs[i] == '\n' {
+			return rs[i+1:]
+		}
+	}
+	return rs
 }
 
 // consumePaste reads everything up to the bracketed paste end marker, echoing

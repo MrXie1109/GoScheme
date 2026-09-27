@@ -19,14 +19,27 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"goscheme/internal/scheme"
 )
 
 func main() {
-	os.Exit(run())
+	os.Exit(runGuarded())
+}
+
+// runGuarded makes sure a Go panic never reaches the user as a stack dump.
+func runGuarded() (code int) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "goscheme: internal error: %v\n", r)
+			code = 2
+		}
+	}()
+	return run()
 }
 
 func run() int {
@@ -187,13 +200,35 @@ func repl(m *scheme.Machine, quiet bool) {
 		fmt.Fprint(os.Stdout, bracketedPasteOff)
 		restore()
 	}()
-	replEdited(m, newLineEditor(os.Stdin, out), out, os.Stderr)
+
+	// A pending timer keeps the Go runtime from reporting "all goroutines are
+	// asleep - deadlock!" and killing the session: a form that blocks forever
+	// then simply waits, and Ctrl-C abandons it.  Without this the runtime
+	// tears the whole interpreter down and prints a Go stack dump.
+	stopWatchdog := make(chan struct{})
+	defer close(stopWatchdog)
+	go func() {
+		for {
+			select {
+			case <-stopWatchdog:
+				return
+			case <-time.After(time.Hour):
+			}
+		}
+	}()
+
+	// Ctrl-C aborts the evaluation in progress instead of killing the REPL.
+	sigint := make(chan os.Signal, 1)
+	signal.Notify(sigint, os.Interrupt)
+	defer signal.Stop(sigint)
+
+	replEdited(m, newLineEditor(os.Stdin, out), out, os.Stderr, sigint)
 }
 
-// replEdited is the line editing read-eval-print loop.  The editor hands back a
-// bracketed paste as a single block, so a pasted program is parsed and
-// evaluated as a unit with no prompts in between.
-func replEdited(m *scheme.Machine, ed *lineEditor, stdout, stderr io.Writer) {
+// replEdited is the line editing read-eval-print loop.  A bracketed paste is
+// inserted into the line being edited and submitted only when Enter is pressed,
+// so a pasted program is evaluated as a unit with no prompts in between.
+func replEdited(m *scheme.Machine, ed *lineEditor, stdout, stderr io.Writer, sigint <-chan os.Signal) {
 	var buf strings.Builder
 	prompt := primaryPrompt
 	for {
@@ -218,15 +253,10 @@ func replEdited(m *scheme.Machine, ed *lineEditor, stdout, stderr io.Writer) {
 			if len(forms) == 0 {
 				continue
 			}
-			stop := false
 			for _, f := range forms {
-				if !evalForm(m, f, stdout, stderr) {
-					stop = true
-					break
+				if !evalFormInteractive(m, f, stdout, stderr, sigint) {
+					return
 				}
-			}
-			if stop {
-				return
 			}
 		case scheme.IsIncomplete(perr):
 			prompt = continuationPrompt
@@ -298,6 +328,62 @@ func replOn(m *scheme.Machine, stdin io.Reader, stdout, stderr io.Writer, banner
 			}
 			return
 		}
+	}
+}
+
+// evalFormInteractive evaluates one datum on a fresh interpreter thread.  Doing
+// so means a form that never returns can be abandoned with Ctrl-C, and that a
+// Go panic inside it is reported as one line instead of tearing down the
+// session.  It returns false when the session should end.
+func evalFormInteractive(m *scheme.Machine, form scheme.Value, stdout, stderr io.Writer, sigint <-chan os.Signal) bool {
+	type outcome struct {
+		value scheme.Value
+		err   error
+		panic interface{}
+	}
+	machine := m.Child()
+	done := make(chan outcome, 1)
+
+	// While an evaluation runs Ctrl-C must abort it rather than cancel a line.
+	_ = setInterrupts(os.Stdin, true)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				done <- outcome{panic: r}
+			}
+		}()
+		v, err := machine.Run(form, machine.Global)
+		done <- outcome{value: v, err: err}
+	}()
+
+	// The pending timer is what stops the Go runtime from declaring a
+	// deadlock while the evaluation is blocked.
+	timer := time.NewTimer(time.Hour)
+	defer timer.Stop()
+
+	select {
+	case r := <-done:
+		_ = setInterrupts(os.Stdin, false)
+		switch {
+		case r.panic != nil:
+			fmt.Fprintf(stderr, "internal error: %v\n", r.panic)
+		case r.err != nil:
+			if _, ok := r.err.(*scheme.ExitError); ok {
+				return false
+			}
+			fmt.Fprintf(stderr, "Error: %v\n", r.err)
+		default:
+			if _, un := r.value.(scheme.Unspecified); !un {
+				fmt.Fprintln(stdout, scheme.WriteToString(r.value))
+			}
+		}
+		return true
+	case <-sigint:
+		_ = setInterrupts(os.Stdin, false)
+		fmt.Fprint(stdout, "^C\n")
+		return true
+	case <-timer.C:
+		return true
 	}
 }
 

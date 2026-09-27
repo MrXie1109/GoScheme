@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"io"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"goscheme/internal/scheme"
 )
@@ -143,7 +145,7 @@ func editorFor(src string) (*lineEditor, *bytes.Buffer) {
 }
 
 func TestLineEditorBracketedPaste(t *testing.T) {
-	ed, out := editorFor("\x1b[200~(+ 1\n2 3)\x1b[201~")
+	ed, out := editorFor("\x1b[200~(+ 1\n2 3)\x1b[201~\r")
 	line, err := ed.ReadLine(primaryPrompt)
 	if err != nil {
 		t.Fatalf("ReadLine: %v", err)
@@ -159,7 +161,7 @@ func TestLineEditorBracketedPaste(t *testing.T) {
 // The end marker may be split across reads; the editor must hold back the
 // partial marker instead of treating it as pasted text.
 func TestLineEditorPasteMarkerSplitAcrossReads(t *testing.T) {
-	r := &lineFeeder{lines: []string{"\x1b[200~(+ 1 2", ")\x1b[20", "1~"}}
+	r := &lineFeeder{lines: []string{"\x1b[200~(+ 1 2", ")\x1b[20", "1~", "\r"}}
 	var out bytes.Buffer
 	ed := newLineEditor(r, newLineTracker(&out))
 	line, err := ed.ReadLine(primaryPrompt)
@@ -223,17 +225,18 @@ func TestREPLBracketedPasteBlock(t *testing.T) {
 	var out, errOut bytes.Buffer
 	tracker := newLineTracker(&out)
 	m.SetStandardOutput(scheme.NewPortFromFile("stdout", tracker, false, true))
-	ed := newLineEditor(strings.NewReader("\x1b[200~(+ 1 2)\n(* 3 4)\n\x1b[201~\x04"), tracker)
-	replEdited(m, ed, tracker, &errOut)
+	ed := newLineEditor(strings.NewReader("\x1b[200~(+ 1 2)\n(* 3 4)\n\x1b[201~\r\x04"), tracker)
+	replEdited(m, ed, tracker, &errOut, nil)
 
 	got := out.String()
 	if strings.Contains(got, continuationPrompt) {
 		t.Errorf("a completed paste produced a continuation prompt:\n%s", got)
 	}
-	// One prompt before the paste and one after it, while waiting for the
-	// Ctrl-D that ends the session; nothing in between.
-	if n := strings.Count(got, primaryPrompt); n != 2 {
-		t.Errorf("got %d primary prompts, want 2:\n%s", n, got)
+	// The prompt also appears in redraws, so counting it is not meaningful;
+	// what matters is that the pasted block reaches the terminal in one piece
+	// with nothing wedged between its lines.
+	if !strings.Contains(got, "(+ 1 2)\n(* 3 4)") {
+		t.Errorf("the pasted block was broken up:\n%s", got)
 	}
 	if !strings.Contains(got, "3\n") || !strings.Contains(got, "12\n") {
 		t.Errorf("not every form in the paste was evaluated:\n%s", got)
@@ -267,10 +270,10 @@ func TestLineEditorPasteLineEndings(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"carriage return", "\x1b[200~(+ 1\r2 3)\x1b[201~", "(+ 1\n2 3)"},
-		{"crlf", "\x1b[200~(+ 1\r\n2 3)\x1b[201~", "(+ 1\n2 3)"},
-		{"line feed", "\x1b[200~(+ 1\n2 3)\x1b[201~", "(+ 1\n2 3)"},
-		{"trailing carriage return", "\x1b[200~(+ 1 2)\r\x1b[201~", "(+ 1 2)\n"},
+		{"carriage return", "\x1b[200~(+ 1\r2 3)\x1b[201~\r", "(+ 1\n2 3)"},
+		{"crlf", "\x1b[200~(+ 1\r\n2 3)\x1b[201~\r", "(+ 1\n2 3)"},
+		{"line feed", "\x1b[200~(+ 1\n2 3)\x1b[201~\r", "(+ 1\n2 3)"},
+		{"trailing carriage return", "\x1b[200~(+ 1 2)\r\x1b[201~\r", "(+ 1 2)\n"},
 	}
 	for _, c := range cases {
 		ed, out := editorFor(c.input)
@@ -295,7 +298,7 @@ func TestLineEditorPasteLineEndings(t *testing.T) {
 
 // A CRLF split across two reads must not produce two line feeds.
 func TestLineEditorPasteCRLFSplitAcrossReads(t *testing.T) {
-	r := &lineFeeder{lines: []string{"\x1b[200~(+ 1\r", "\n2 3)\x1b[201~"}}
+	r := &lineFeeder{lines: []string{"\x1b[200~(+ 1\r", "\n2 3)\x1b[201~", "\r"}}
 	var out bytes.Buffer
 	ed := newLineEditor(r, newLineTracker(&out))
 	line, err := ed.ReadLine(primaryPrompt)
@@ -314,14 +317,14 @@ func TestREPLPasteWithCarriageReturnsRendersLines(t *testing.T) {
 	var out, errOut bytes.Buffer
 	tracker := newLineTracker(&out)
 	m.SetStandardOutput(scheme.NewPortFromFile("stdout", tracker, false, true))
-	ed := newLineEditor(strings.NewReader("\x1b[200~(+ 1\r2 3)\x1b[201~\x04"), tracker)
-	replEdited(m, ed, tracker, &errOut)
+	ed := newLineEditor(strings.NewReader("\x1b[200~(+ 1\r2 3)\x1b[201~\r\x04"), tracker)
+	replEdited(m, ed, tracker, &errOut, nil)
 
 	got := out.String()
 	if strings.Contains(got, "2 3)(+ 1") {
 		t.Errorf("the pasted lines overwrote each other:\n%q", got)
 	}
-	if !strings.Contains(got, "(+ 1\n2 3)\n") {
+	if !strings.Contains(got, "(+ 1\n2 3)") {
 		t.Errorf("the pasted block was not echoed line by line:\n%s", got)
 	}
 	if !strings.Contains(got, "6\n") {
@@ -345,5 +348,59 @@ func TestVersionIsEmbedded(t *testing.T) {
 	}
 	if got := versionString(); !strings.Contains(got, strings.TrimSpace(versionFile)) {
 		t.Errorf("versionString() = %q, want it to contain %q", got, strings.TrimSpace(versionFile))
+	}
+}
+
+// A paste is *inserted*, not submitted: the interpreter waits for Enter, so a
+// pasted program can be reviewed (and extended) before it runs.
+func TestLineEditorPasteWaitsForEnter(t *testing.T) {
+	ed, _ := editorFor("\x1b[200~(+ 1 2)\x1b[201~ 3\r")
+	line, err := ed.ReadLine(primaryPrompt)
+	if err != nil {
+		t.Fatalf("ReadLine: %v", err)
+	}
+	if line != "(+ 1 2) 3" {
+		t.Errorf("line = %q, want %q: the paste should stay editable until Enter", line, "(+ 1 2) 3")
+	}
+}
+
+// A form that never returns must not take the session down: Ctrl-C abandons it
+// and the REPL carries on, with no Go stack dump anywhere.
+func TestREPLEvaluationCanBeInterrupted(t *testing.T) {
+	m := scheme.NewMachine()
+	var out, errOut bytes.Buffer
+	tracker := newLineTracker(&out)
+	m.SetStandardOutput(scheme.NewPortFromFile("stdout", tracker, false, true))
+
+	sigint := make(chan os.Signal, 1)
+	src := "(chan-recv! (make-channel))\n(+ 1 2)\n"
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		sigint <- os.Interrupt
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		ed := newLineEditor(strings.NewReader(src), tracker)
+		replEdited(m, ed, tracker, &errOut, sigint)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the REPL did not survive an evaluation that blocks forever")
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "^C") {
+		t.Errorf("Ctrl-C did not report an interrupt:\n%s", got)
+	}
+	if !strings.Contains(got, "3\n") {
+		t.Errorf("the REPL did not continue after the interrupt:\n%s", got)
+	}
+	for _, dump := range []string{"fatal error", "goroutine ", "deadlock"} {
+		if strings.Contains(got, dump) || strings.Contains(errOut.String(), dump) {
+			t.Errorf("a raw Go error leaked (%q):\nstdout: %s\nstderr: %s", dump, got, errOut.String())
+		}
 	}
 }

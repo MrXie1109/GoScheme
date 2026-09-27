@@ -37,6 +37,24 @@ func makeRaw(f *os.File) (func(), error) {
 	return func() { _ = ioctl(fd, syscall.TIOCSETA, unsafe.Pointer(&old)) }, nil
 }
 
+// setInterrupts enables or disables the generation of SIGINT for Ctrl-C
+// without disturbing the rest of the raw settings.  It is switched on while an
+// evaluation runs, so that Ctrl-C aborts the evaluation, and off while a line
+// is edited, where Ctrl-C is handled as an ordinary key.
+func setInterrupts(f *os.File, on bool) error {
+	fd := int(f.Fd())
+	var t syscall.Termios
+	if err := ioctl(fd, syscall.TIOCGETA, unsafe.Pointer(&t)); err != nil {
+		return err
+	}
+	if on {
+		t.Lflag |= syscall.ISIG
+	} else {
+		t.Lflag &^= syscall.ISIG
+	}
+	return ioctl(fd, syscall.TIOCSETA, unsafe.Pointer(&t))
+}
+
 // inputPending reports whether more input is already waiting on the terminal.
 func inputPending(f *os.File) bool {
 	fd := int(f.Fd())
