@@ -55,6 +55,7 @@ func init() {
 		"...":                evalBadAux,
 		"_":                  evalBadAux,
 		"assert":             evalAssert,
+		"match":              evalMatch,
 		"go":                 evalGo,
 		"select":             evalSelect,
 	}
