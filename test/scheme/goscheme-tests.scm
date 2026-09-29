@@ -1,3 +1,4 @@
+;;; SPDX-License-Identifier: MIT
 ;;; Supplementary tests for GoScheme: proper tail calls, continuations,
 ;;; dynamic-wind, libraries, records, ports and the extension surface.
 

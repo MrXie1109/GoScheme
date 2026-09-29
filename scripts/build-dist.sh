@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: MIT
 # Cross compile GoScheme for every supported platform into dist/.
 #
 # Targets: windows, linux and macOS on amd64 and arm64.

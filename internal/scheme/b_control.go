@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package scheme
 
 // installControl provides the procedure-calling procedures: apply, map,

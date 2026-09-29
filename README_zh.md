@@ -443,6 +443,11 @@ go test -short ./...                          # 跳过参考套件
 
 ## 许可证
 
-MIT，详见 [LICENSE](LICENSE)。
+MIT，详见 [LICENSE](LICENSE)；每个源文件都带有
+`SPDX-License-Identifier: MIT` 标识。
 
 Copyright (c) 2026 MrXie1109。
+
+随仓库附带的参考测试套件 `test/scheme/r7rs-tests.scm` 不属于 GoScheme：它来自
+[chibi-scheme](https://github.com/ashinn/chibi-scheme)，仍遵循其自身的
+BSD-3-Clause 许可证（文件头部已注明）。

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Command goscheme is a Scheme (R7RS) interpreter.
 //
 // Usage:

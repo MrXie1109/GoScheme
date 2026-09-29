@@ -493,6 +493,11 @@ Build flags: `GOOS=<os> GOARCH=<arch> CGO_ENABLED=0 go build -trimpath -ldflags 
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).  Every source file carries an
+`SPDX-License-Identifier: MIT` tag.
 
 Copyright (c) 2026 MrXie1109.
+
+The R7RS reference test suite vendored as `test/scheme/r7rs-tests.scm` is not
+part of GoScheme: it comes from [chibi-scheme](https://github.com/ashinn/chibi-scheme)
+and stays under its own BSD-3-Clause license, as its header notes.

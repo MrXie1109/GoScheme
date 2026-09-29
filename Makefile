@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+
 # GoScheme — R7RS Scheme interpreter written in Go.
 
 GO      ?= /usr/bin/go

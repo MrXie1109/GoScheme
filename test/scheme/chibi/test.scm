@@ -1,3 +1,4 @@
+;;; SPDX-License-Identifier: MIT
 ;;; (chibi test) compatible test library, implemented in portable R7RS.
 ;;;
 ;;; It provides the subset of the chibi/SRFI-64 API used by the reference

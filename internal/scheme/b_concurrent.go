@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package scheme
 
 import (
@@ -46,19 +48,19 @@ func (c *Channel) markClosed() bool {
 // stack.  It is the interpreter thread created by (go ...).
 func (m *Machine) Child() *Machine {
 	return &Machine{
-		Global:    m.Global,
-		Builtin:   m.Builtin,
-		Libraries: m.Libraries,
-		LoadPath:  m.LoadPath,
-		Args:      m.Args,
-		CurIn:     m.CurIn,
-		CurOut:    m.CurOut,
-		CurErr:    m.CurErr,
-		InParam:   m.InParam,
-		OutParam:  m.OutParam,
-		ErrParam:  m.ErrParam,
+		Global:     m.Global,
+		Builtin:    m.Builtin,
+		Libraries:  m.Libraries,
+		LoadPath:   m.LoadPath,
+		Args:       m.Args,
+		CurIn:      m.CurIn,
+		CurOut:     m.CurOut,
+		CurErr:     m.CurErr,
+		InParam:    m.InParam,
+		OutParam:   m.OutParam,
+		ErrParam:   m.ErrParam,
 		libExports: m.libExports,
-		wg:        m.wg,
+		wg:         m.wg,
 	}
 }
 

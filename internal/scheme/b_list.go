@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package scheme
 
 func installLists(m *Machine) {

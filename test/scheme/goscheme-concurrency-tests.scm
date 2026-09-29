@@ -1,3 +1,4 @@
+;;; SPDX-License-Identifier: MIT
 ;;; Concurrency extension: channels, (go ...), (select ...) and go-wait.
 
 (import (scheme base) (scheme write) (scheme char) (chibi test))

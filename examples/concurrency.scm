@@ -1,4 +1,5 @@
 #!/usr/bin/env goscheme
+;;; SPDX-License-Identifier: MIT
 ;;; Go flavoured concurrency in GoScheme: channels, (go ...) and (select ...).
 ;;;
 ;;; Run with:  goscheme examples/concurrency.scm

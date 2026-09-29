@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package scheme implements an interpreter for the Scheme programming
 // language as specified by the R7RS report (small language).
 //
@@ -313,10 +315,10 @@ type Closure struct {
 
 // ClosureClause is one arity case of a procedure.
 type ClosureClause struct {
-	Params []*Symbol
-	Rest   *Symbol // nil when the parameter list is proper
+	Params  []*Symbol
+	Rest    *Symbol // nil when the parameter list is proper
 	HasRest bool
-	Body   []Value
+	Body    []Value
 	// BodyNames lists the identifiers introduced by internal definitions so
 	// that they can be pre-bound (letrec* semantics).
 	BodyNames []*Symbol
@@ -597,8 +599,7 @@ func cdr(v Value) Value {
 	return nil
 }
 
-func cadr(v Value) Value { return car(cdr(v)) }
-func cddr(v Value) Value { return cdr(cdr(v)) }
+func cadr(v Value) Value  { return car(cdr(v)) }
+func cddr(v Value) Value  { return cdr(cdr(v)) }
 func caddr(v Value) Value { return car(cddr(v)) }
 func cdddr(v Value) Value { return cdr(cddr(v)) }
-

@@ -1,3 +1,6 @@
+;;; SPDX-License-Identifier: BSD-3-Clause
+;;; Vendored from chibi-scheme (tests/r7rs-tests.scm); it is not part of
+;;; GoScheme and remains under chibi-scheme's own license.
 ;; -*- coding: utf-8 -*-
 
 (import (scheme base) (scheme char) (scheme lazy)

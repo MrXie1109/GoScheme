@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package scheme
 
 import "fmt"
@@ -81,7 +83,7 @@ func (m *Machine) defSyntax(lib string, names ...string) {
 // ---------------------------------------------------------------------------
 
 func errf(name, format string, args ...interface{}) *ErrorObject {
-	return NewError(name+": "+fmt.Sprintf(format, args...))
+	return NewError(name + ": " + fmt.Sprintf(format, args...))
 }
 
 func wantNumber(name string, v Value) Value {
@@ -360,4 +362,3 @@ func installCore(m *Machine) {
 	}, libBase)
 
 }
-
