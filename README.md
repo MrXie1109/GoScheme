@@ -486,6 +486,13 @@ Beyond R7RS-small the interpreter also provides:
   either).  A missing library or symbol, or a mistaken argument type, is an
   ordinary condition.
 
+  A `string` result is copied into a Scheme string; a `pointer` result is the
+  address as an exact integer, and a null pointer is `#f`.  String arguments
+  are copied for the duration of the call only, so a pointer that a function
+  returns *into one of its arguments* (as `strchr` does) is dangling by the time
+  you hold it — pass such a pointer straight back to C only if C itself owns
+  the memory, as with the pointer `getenv` returns.
+
   This needs **cgo**: a static Go binary cannot call into a shared library, and
   the released binaries are `CGO_ENABLED=0` so that they stay static and
   cross-compilable.  Those builds still provide the names and raise a clear

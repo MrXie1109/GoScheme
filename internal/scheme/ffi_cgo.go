@@ -43,6 +43,22 @@ static double gs_call_3_ld(void *f, long a, long b, long c) {
 static double gs_call_4_ld(void *f, long a, long b, long c, long d) {
 	return ((double (*)(long, long, long, long))f)(a, b, c, d);
 }
+// Pointer results come back as pointers, so that no uintptr has to be turned
+// back into an unsafe.Pointer.
+static void *gs_call_0_lp(void *f) { return ((void *(*)(void))f)(); }
+static void *gs_call_1_lp(void *f, long a) { return ((void *(*)(long))f)(a); }
+static void *gs_call_2_lp(void *f, long a, long b) { return ((void *(*)(long, long))f)(a, b); }
+static void *gs_call_3_lp(void *f, long a, long b, long c) {
+	return ((void *(*)(long, long, long))f)(a, b, c);
+}
+static void *gs_call_4_lp(void *f, long a, long b, long c, long d) {
+	return ((void *(*)(long, long, long, long))f)(a, b, c, d);
+}
+static void *gs_call_1_dp(void *f, double a) { return ((void *(*)(double))f)(a); }
+static void *gs_call_2_dp(void *f, double a, double b) {
+	return ((void *(*)(double, double))f)(a, b);
+}
+
 static long gs_call_1_dl(void *f, double a) { return ((long (*)(double))f)(a); }
 static long gs_call_2_dl(void *f, double a, double b) { return ((long (*)(double, double))f)(a, b); }
 static long gs_call_3_dl(void *f, double a, double b, double c) {
@@ -263,18 +279,24 @@ func makeForeignFunction(name string, fn unsafe.Pointer, ret ffiKind, args []ffi
 			}()
 
 			if allLong {
-				if ret == ffiDouble {
+				switch ret {
+				case ffiDouble:
 					m.Return(Float(float64(callLongToDouble(fn, longs))))
-					return
+				case ffiString, ffiPointer:
+					m.Return(pointerResult(ret, callLongToPointer(fn, longs)))
+				default:
+					m.Return(Int(int64(callLong(fn, longs))))
 				}
-				m.Return(ffiResult(ret, callLong(fn, longs), 0))
 				return
 			}
-			if ret == ffiDouble {
+			switch ret {
+			case ffiDouble:
 				m.Return(Float(float64(callDouble(fn, doubles))))
-				return
+			case ffiString, ffiPointer:
+				m.Return(pointerResult(ret, callDoubleToPointer(fn, doubles)))
+			default:
+				m.Return(Int(int64(callDoubleToLong(fn, doubles))))
 			}
-			m.Return(ffiResult(ret, callDoubleToLong(fn, doubles), 0))
 		},
 	}
 }
@@ -339,21 +361,44 @@ func callDoubleToLong(fn unsafe.Pointer, a []C.double) C.long {
 	}
 }
 
-// ffiResult converts what the C function returned into a Scheme value.
-func ffiResult(ret ffiKind, l C.long, d C.double) Value {
-	switch ret {
-	case ffiVoid:
-		return UnspecifiedValue
-	case ffiDouble:
-		return Float(float64(d))
-	case ffiString:
-		if l == 0 {
-			return False
-		}
-		return NewString(C.GoString((*C.char)(unsafe.Pointer(uintptr(l)))))
+// callLongToPointer calls a function that takes integral arguments and returns
+// a pointer, such as strchr or malloc.
+func callLongToPointer(fn unsafe.Pointer, a []C.long) unsafe.Pointer {
+	switch len(a) {
+	case 0:
+		return C.gs_call_0_lp(fn)
+	case 1:
+		return C.gs_call_1_lp(fn, a[0])
+	case 2:
+		return C.gs_call_2_lp(fn, a[0], a[1])
+	case 3:
+		return C.gs_call_3_lp(fn, a[0], a[1], a[2])
 	default:
-		return Int(int64(l))
+		return C.gs_call_4_lp(fn, a[0], a[1], a[2], a[3])
 	}
+}
+
+func callDoubleToPointer(fn unsafe.Pointer, a []C.double) unsafe.Pointer {
+	switch len(a) {
+	case 0:
+		return C.gs_call_0_lp(fn)
+	case 1:
+		return C.gs_call_1_dp(fn, a[0])
+	default:
+		return C.gs_call_2_dp(fn, a[0], a[1])
+	}
+}
+
+// pointerResult converts a pointer result: a string for 'string, an integer
+// address for 'pointer, and #f for the null pointer.
+func pointerResult(ret ffiKind, p unsafe.Pointer) Value {
+	if p == nil {
+		return False
+	}
+	if ret == ffiString {
+		return NewString(C.GoString((*C.char)(p)))
+	}
+	return Int(int64(uintptr(p)))
 }
 
 func ffiNumber(name string, v Value) (float64, error) {

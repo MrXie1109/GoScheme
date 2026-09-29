@@ -488,8 +488,9 @@
 (if (memq 'ffi (features))
     (begin
       (import (goscheme ffi))
-      (define math-lib
-        (load-shared-library (if (memq 'darwin (features)) "libSystem.B.dylib" "libm.so.6")))
+      (define math-lib-name
+        (if (memq 'darwin (features)) "libSystem.B.dylib" "libm.so.6"))
+      (define math-lib (load-shared-library math-lib-name))
       (define cbrt (foreign-function math-lib 'cbrt 'double 'double))
       (define pow (foreign-function math-lib 'pow 'double 'double 'double))
       (define lround (foreign-function math-lib 'lround 'long 'double))
@@ -505,8 +506,29 @@
       (test 3.5 (strtod "3.5" 0))
       (test #t (exact? (getpid)))
 
+      ;; string results are copied out of C, and a null pointer is #f
+      (define getenv (foreign-function self 'getenv 'string 'string))
+      (test #t (string? (getenv "PATH")))
+      (test #f (getenv "GOSCHEME_NO_SUCH_VARIABLE_XYZ"))
+
+      ;; pointer results stay addresses: usable as arguments, and #f when null
+      (define strchr (foreign-function self 'strchr 'pointer 'string 'long))
+      (test #t (exact? (strchr "hello" 108)))  ; the 'l'
+      (test #f (strchr "hello" 122))           ; no 'z'
+      ;; A pointer into memory C itself owns survives the call that produced it,
+      ;; so it can be handed to another function.  (Pointers into a string
+      ;; argument do not: those buffers are freed on return.)
+      (define strlen-pointer (foreign-function self 'strlen 'long 'pointer))
+      (define getenv-address (foreign-function self 'getenv 'pointer 'string))
+      (define path (getenv "PATH"))
+      (test (string-length path) (strlen-pointer (getenv-address "PATH")))
+
       (test #t (foreign-library? math-lib))
       (test #f (foreign-library? 5))
+      (test (string-append "#<foreign-library " math-lib-name ">")
+            (let ((o (open-output-string)))
+              (write math-lib o)
+              (get-output-string o)))
       (test 'missing (guard (e (#t 'missing)) (foreign-function math-lib 'no_such_symbol 'long)))
       (test 'no-library (guard (e (#t 'no-library)) (load-shared-library "libdoes-not-exist.so")))
       (test 'mixed (guard (e (#t 'mixed))

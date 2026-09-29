@@ -265,6 +265,8 @@ func (p *printer) printRaw(sb *strings.Builder, v Value) {
 			state = "closed"
 		}
 		fmt.Fprintf(sb, "#<channel cap=%d %s>", x.capacity, state)
+	case *ForeignLibrary:
+		fmt.Fprintf(sb, "#<foreign-library %s>", x.Name)
 	case *MultipleValues:
 		for i, mv := range x.Values {
 			if i > 0 {
