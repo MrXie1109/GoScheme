@@ -410,6 +410,36 @@ func TestREPLEvaluationCanBeInterrupted(t *testing.T) {
 	}
 }
 
+// (command-line) must be (script-or-program arg ...) in both the interpreted
+// and the bundled case, so that (cdr (command-line)) is always the arguments.
+func TestCommandLineShape(t *testing.T) {
+	cases := []struct {
+		script string
+		args   []string
+		want   []string
+	}{
+		{"a.scm", []string{"1", "2", "3"}, []string{"a.scm", "1", "2", "3"}},
+		{"a.scm", nil, []string{"a.scm"}},
+		{"/tmp/dir/b.scm", []string{"x"}, []string{"/tmp/dir/b.scm", "x"}},
+		{"", nil, nil}, // goscheme -e ... / REPL
+		{"", []string{"ignored"}, []string{"ignored"}}, // no script, only args
+		{"./a.out", []string{"1"}, []string{"./a.out", "1"}},
+	}
+	for _, c := range cases {
+		got := commandLine(c.script, c.args)
+		if len(got) != len(c.want) {
+			t.Errorf("commandLine(%q, %v) = %v, want %v", c.script, c.args, got, c.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("commandLine(%q, %v) = %v, want %v", c.script, c.args, got, c.want)
+				break
+			}
+		}
+	}
+}
+
 // ------------------------------------------------------------------ bundles
 
 func TestBundleTrailerRoundTrip(t *testing.T) {

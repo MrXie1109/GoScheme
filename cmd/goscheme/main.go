@@ -102,15 +102,15 @@ func run() int {
 	}
 
 	m := scheme.NewMachine()
-	// R7RS 6.14: the first element of (command-line) is the name of the
-	// command, i.e. whatever the operating system passed as argv[0]; the
-	// second is the script (if any) and the remaining elements are its
-	// arguments.
-	prog := "goscheme"
-	if len(os.Args) > 0 && os.Args[0] != "" {
-		prog = os.Args[0]
+	// (command-line) starts with the script and continues with the user's
+	// arguments; the interpreter's own name is deliberately left out, so that
+	// (cdr (command-line)) is the argument list whether the script is
+	// interpreted or has been bound into an executable by "goscheme build".
+	script := ""
+	if len(files) > 0 {
+		script = files[0]
 	}
-	m.Args = append([]string{prog}, append(append([]string{}, files...), rest...)...)
+	m.Args = commandLine(script, rest)
 
 	for _, e := range exprs {
 		if code := evalString(m, e, "(command line)"); code != 0 {
@@ -133,12 +133,27 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "       goscheme build <script> [-o <output>] [-i <interpreter>]")
 }
 
+// commandLine builds the (command-line) list: the script (or, for a bundled
+// executable, the program as it was invoked) followed by the user's arguments.
+func commandLine(script string, args []string) []string {
+	out := make([]string, 0, len(args)+1)
+	if script != "" {
+		out = append(out, script)
+	}
+	return append(out, args...)
+}
+
 // runBundled runs the script bound into this executable.  There is no separate
-// script name — the program *is* the script — so (command-line) reports
-// (program arg ...), exactly as a compiled program would.
+// script name — the program *is* the script — so (command-line) reports the
+// program as it was invoked, followed by the arguments, exactly as a compiled
+// program would.
 func runBundled(exe string, info *bundleInfo) int {
 	m := scheme.NewMachine()
-	m.Args = append([]string{exe}, os.Args[1:]...)
+	prog := exe
+	if len(os.Args) > 0 && os.Args[0] != "" {
+		prog = os.Args[0]
+	}
+	m.Args = commandLine(prog, os.Args[1:])
 
 	r := scheme.NewStringReader(string(info.Script))
 	r.Source = info.Name

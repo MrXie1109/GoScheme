@@ -103,7 +103,18 @@ Ctrl-C 会放弃正在编辑的行；若此时有表达式正在求值，则中�
 编辑，所以 `echo '(+ 1 2)' | goscheme` 只会输出 `3`。在不支持 raw 模式的平台上，
 REPL 会退回到按行读取的实现。
 
-`(command-line)` 返回程序名、脚本名及其参数。
+`(command-line)` 是**脚本名后接用户参数**——解释器自身的名字不会出现，因此无论
+脚本是被解释执行，还是已经用 `goscheme build` 绑定成可执行文件，
+`(cdr (command-line))` 都等于用户参数：
+
+```sh
+$ goscheme a.scm 1 2 3     ; (command-line) => ("a.scm" "1" "2" "3")
+$ goscheme build a.scm
+$ ./a.out 1 2 3            ; (command-line) => ("./a.out" "1" "2" "3")
+```
+
+（这是**有意偏离 R7RS** 的：标准把命令名放在最前面。只有去掉它，同一份脚本才能在
+两种形态下用同样的方式取参数。）
 
 退出码：正常为 `0`，`(exit n)` 为 `n`，`(exit #f)` 与未捕获的错误为 `1`。
 
@@ -135,9 +146,9 @@ argv: ("./hello" "world")
   若绑定的解释器是 Windows 二进制，则为 `a.exe`。
 * `-i, --interpreter FILE` 绑定另一个解释器——一台机器可以借此为另一个平台产出
   可执行文件：`-i dist/goscheme-windows-amd64.exe` 会写出 `.exe`。
-* 打包程序的 `(command-line)` 是 `(program arg ...)`，没有额外的脚本名，和编译出来
-  的程序完全一致；`include` / `load` 相对可执行文件所在目录解析，所以可以把数据
-  文件与它放在一起分发。
+* 打包程序的 `(command-line)` 是 `(program arg ...)`，即被调用时的程序名（见上）；
+  `include` / `load` 相对可执行文件所在目录解析，所以可以把数据文件与它放在一起
+  分发。
 * 在 macOS 上，追加数据会让链接器生成的代码签名失效，因此 `goscheme build` 会在
   可用时用 `codesign --force --sign -` 重新做 ad-hoc 签名，做不到时给出警告：
   Apple silicon 拒绝运行被修改过且未签名的二进制。

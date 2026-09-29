@@ -113,7 +113,19 @@ no prompt and no line editing, so `echo '(+ 1 2)' | goscheme` simply prints
 `3`.  On platforms where raw mode is unavailable the REPL falls back to a
 line-oriented reader.
 
-`(command-line)` returns the program name, the script and its arguments.
+`(command-line)` is the **script name followed by the user's arguments** — the
+interpreter's own name never appears, so `(cdr (command-line))` is the argument
+list whether the script is interpreted or has been bound into an executable by
+`goscheme build`:
+
+```sh
+$ goscheme a.scm 1 2 3     ; (command-line) => ("a.scm" "1" "2" "3")
+$ goscheme build a.scm
+$ ./a.out 1 2 3            ; (command-line) => ("./a.out" "1" "2" "3")
+```
+
+(That is a deliberate departure from R7RS, which puts the command name first;
+it is what makes one script work unchanged in both forms.)
 
 Exit status: `0` on success, the argument of `(exit n)`, `1` for `(exit #f)` or
 for an uncaught error.
@@ -150,10 +162,9 @@ verbatim, so a bundle is exactly `interpreter + script + trailer` bytes.
 * `-i, --interpreter FILE` binds a different interpreter, which is how one
   machine can produce executables for another:
   `-i dist/goscheme-windows-amd64.exe` writes a `.exe`.
-* A bundled program's `(command-line)` is `(program arg ...)` — there is no
-  separate script name, exactly as for a compiled program — and `include` /
-  `load` resolve relative to the executable, so data files can be shipped
-  beside it.
+* A bundled program's `(command-line)` is `(program arg ...)`, the program as
+  it was invoked — see above — and `include` / `load` resolve relative to the
+  executable, so data files can be shipped beside it.
 * On macOS the appended data invalidates the code signature the linker
   produced, so `goscheme build` re-signs the result ad hoc
   (`codesign --force --sign -`) when it can, and warns when it cannot: Apple
