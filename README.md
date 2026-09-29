@@ -29,6 +29,7 @@ $ goscheme -e '(display (map (lambda (x) (* x x)) (list 1 2 3 4))) (newline)'
 ## Table of contents
 
 - [Quick start](#quick-start)
+- [Examples](#examples)
 - [Command line](#command-line)
 - [Standalone executables](#standalone-executables)
 - [Repository layout](#repository-layout)
@@ -49,7 +50,7 @@ make build          # or: go build -o .build/goscheme ./cmd/goscheme
 make test           # Go unit tests + both Scheme test suites
 make dist           # cross-compile every supported platform into dist/
 
-./.build/goscheme -v   # GoScheme 1.2.1 (R7RS)
+./.build/goscheme -v   # GoScheme 1.9.0 (R7RS)
 ```
 
 The version comes from `cmd/goscheme/VERSION`, which is embedded in the binary,
@@ -64,6 +65,28 @@ Run a program, evaluate an expression, or start a REPL:
 ./.build/goscheme                             # interactive REPL
 ./.build/goscheme -i program.scm              # load, then REPL
 ```
+
+## Examples
+
+`examples/` is a tour of the dialect that runs: the numeric tower, proper tail
+calls, hash tables, Go flavoured concurrency, running other programs, what a
+script sees, and libraries loaded from files.
+
+```sh
+./examples/run-all.sh                    # run them all, report the failures
+./.build/goscheme examples/numbers.scm   # or one at a time
+```
+
+Every file is commented and prints what it is doing, so they are meant to be read
+as much as run; `examples/README.md` says what each one shows.  A Go test runs
+them all, so they cannot quietly rot.  Two are worth calling out:
+
+* `examples/libraries/main.scm` imports `(lib greet)` from `lib/greet.sld`, and
+  `goscheme build -static` turns it into one executable that needs no library
+  files at all;
+* `examples/script-args.scm` shows the shape of `(command-line)`, why the
+  interpreter's own name is not in it, and how `(assert ...)` and
+  `#!unspecified` behave.
 
 ## Command line
 
@@ -225,7 +248,7 @@ test/scheme/              Scheme level tests
   run-r7rs.scm            drivers: goscheme run-r7rs.scm
   run-goscheme.scm
   run-concurrency.scm
-examples/                 runnable examples, e.g. examples/concurrency.scm
+examples/                 runnable examples and their runner (see examples/README.md)
 dist/                     `make dist` output: the release binaries, which are
                           attached to GitHub Releases and not tracked by git
 scripts/build-dist.sh     cross-compilation script used by `make dist`

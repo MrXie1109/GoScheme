@@ -25,6 +25,7 @@ $ goscheme -e '(display (map (lambda (x) (* x x)) (list 1 2 3 4))) (newline)'
 ## 目录
 
 - [快速开始](#快速开始)
+- [示例](#示例)
 - [命令行](#命令行)
 - [独立可执行文件](#独立可执行文件)
 - [仓库结构](#仓库结构)
@@ -45,7 +46,7 @@ make build          # 或者：go build -o .build/goscheme ./cmd/goscheme
 make test           # Go 单元测试 + 两个 Scheme 测试套件
 make dist           # 交叉编译全部目标平台到 dist/
 
-./.build/goscheme -v   # GoScheme 1.2.1 (R7RS)
+./.build/goscheme -v   # GoScheme 1.9.0 (R7RS)
 ```
 
 版本号来自 `cmd/goscheme/VERSION`，并被内嵌进二进制，因此即使直接用 `go build`
@@ -59,6 +60,25 @@ make dist           # 交叉编译全部目标平台到 dist/
 ./.build/goscheme                             # 交互式 REPL
 ./.build/goscheme -i program.scm              # 载入文件后进入 REPL
 ```
+
+## 示例
+
+`examples/` 是一趟能跑起来的方言之旅：数值塔、真尾调用、哈希表、Go 风味并发、
+调用外部程序、脚本能看到什么，以及从文件加载库。
+
+```sh
+./examples/run-all.sh                    # 全部跑一遍，报告失败的
+./.build/goscheme examples/numbers.scm   # 或者一个一个跑
+```
+
+每个文件都有注释、并把自己在做什么打印出来，所以它们既是给你跑的也是给你读的；
+`examples/README.md` 说明每个示例展示什么。有一个 Go 测试会把它们全部跑一遍，
+所以它们不会悄悄失效。其中两个值得单独一提：
+
+* `examples/libraries/main.scm` 从 `lib/greet.sld` 导入 `(lib greet)`，用
+  `goscheme build -static` 就能变成一个完全不需要库文件的可执行文件；
+* `examples/script-args.scm` 展示 `(command-line)` 的形状、解释器名字为何不在其中，
+  以及 `(assert ...)` 与 `#!unspecified` 的行为。
 
 ## 命令行
 
@@ -206,7 +226,7 @@ test/scheme/              Scheme 层测试
   run-r7rs.scm            驱动：goscheme run-r7rs.scm
   run-goscheme.scm
   run-concurrency.scm
-examples/                 可直接运行的示例，如 examples/concurrency.scm
+examples/                 可直接运行的示例与运行脚本（见 examples/README_zh.md）
 dist/                     `make dist` 的产物：发布用二进制，只挂在 GitHub
                           Release 上，不纳入 git 跟踪
 scripts/build-dist.sh     `make dist` 使用的交叉编译脚本

@@ -204,3 +204,35 @@ func TestUncaughtError(t *testing.T) {
 		t.Fatal("expected an error")
 	}
 }
+
+// The examples double as documentation, so they have to keep running.  A
+// failure here means examples/ has rotted, not that an assertion regressed.
+func TestExamples(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join("..", "..", "examples", "*.scm"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files = append(files, filepath.Join("..", "..", "examples", "libraries", "main.scm"))
+	if len(files) < 2 {
+		t.Fatalf("no examples found: %v", files)
+	}
+	for _, file := range files {
+		file := file
+		name := filepath.Base(file) + "-" + filepath.Base(filepath.Dir(file))
+		t.Run(name, func(t *testing.T) {
+			out := NewOutputStringPort()
+			m := NewMachine()
+			m.CurOut = out
+			m.OutParam.values[0] = out
+			// (command-line) as the command line interpreter would set it, so
+			// an example that reports its own arguments still works.
+			m.Args = []string{file}
+			if err := runFile(m, file); err != nil {
+				t.Fatalf("example failed: %v\n%s", err, out.OutputString())
+			}
+			if strings.TrimSpace(out.OutputString()) == "" {
+				t.Fatal("example printed nothing")
+			}
+		})
+	}
+}

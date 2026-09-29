@@ -42,6 +42,10 @@ vet:
 repl: build
 	./$(BUILD)/$(BIN)
 
+## examples: run every example in examples/
+examples: build
+	@GOSCHEME=./$(BUILD)/$(BIN) ./examples/run-all.sh
+
 ## dist: cross compile for every supported platform into dist/
 dist:
 	@mkdir -p $(DIST)
