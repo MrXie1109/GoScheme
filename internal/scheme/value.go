@@ -389,6 +389,10 @@ type RecordTypeDescriptor struct {
 	Type *RecordType
 }
 
+// ffiAvailable reports whether the (goscheme ffi) procedures can load shared
+// libraries; the cgo and non-cgo builds set it.
+var ffiAvailable bool
+
 // ---------------------------------------------------------------------------
 // Errors and conditions
 // ---------------------------------------------------------------------------

@@ -1597,6 +1597,9 @@ func (m *Machine) Features() []string {
 		"r7rs", "exact-closed", "exact-complex", "ratios", "ieee-float",
 		"full-unicode", "goscheme",
 	}
+	if ffiAvailable {
+		feats = append(feats, "ffi")
+	}
 	feats = append(feats, platformFeatures()...)
 	return feats
 }

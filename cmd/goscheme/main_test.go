@@ -540,3 +540,98 @@ func TestBundleDefaultOutputName(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------- -static
+
+func writeTree(t *testing.T, root string, files map[string]string) {
+	t.Helper()
+	for name, body := range files {
+		p := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+const staticGreet = "(define-library (lib greet) (export greet) (import (scheme base))\n" +
+	"  (begin (define (greet who) (string-append \"hi \" who))))\n"
+
+// -static must bake in every library the script imports, dependencies first,
+// with includes inlined, so the executable needs nothing beside it.
+func TestStaticResolve(t *testing.T) {
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{
+		"lib/greet.sld": staticGreet,
+		"lib/math.sld": "(define-library (lib math) (export square) (import (scheme base) (lib greet))\n" +
+			"  (begin (define (square x) (* x x))))\n",
+		"lib/body.scm": "(define (twice f x) (f (f x)))\n",
+		"lib/inc.sld":  "(define-library (lib inc) (export twice) (import (scheme base)) (include \"body.scm\"))\n",
+		"app.scm":      "(import (scheme base) (lib greet) (lib math) (lib inc))\n(display (greet \"x\"))\n",
+	})
+	script, err := os.ReadFile(filepath.Join(dir, "app.scm"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := resolveStatic(filepath.Join(dir, "app.scm"), script, []string{dir})
+	if err != nil {
+		t.Fatalf("resolveStatic: %v", err)
+	}
+	got := string(out)
+
+	greet := strings.Index(got, "(define-library (lib greet)")
+	math := strings.Index(got, "(define-library (lib math)")
+	inc := strings.Index(got, "(define-library (lib inc)")
+	if greet < 0 || math < 0 || inc < 0 {
+		t.Fatalf("a library is missing from the prelude:\n%s", got)
+	}
+	if greet > math {
+		t.Errorf("(lib greet) must come before the library that imports it:\n%s", got)
+	}
+	if strings.Contains(got, "include") {
+		t.Errorf("include was not inlined:\n%s", got)
+	}
+	if !strings.Contains(got, "(define (twice f x) (f (f x)))") {
+		t.Errorf("the included file's forms are missing:\n%s", got)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(got), `(display (greet "x"))`) {
+		t.Errorf("the script must come last:\n%s", got)
+	}
+}
+
+func TestStaticResolveSkipsBuiltins(t *testing.T) {
+	dir := t.TempDir()
+	src := "(import (scheme base) (scheme write))\n(display 1)\n"
+	writeTree(t, dir, map[string]string{"app.scm": src})
+	out, err := resolveStatic(filepath.Join(dir, "app.scm"), []byte(src), []string{dir})
+	if err != nil {
+		t.Fatalf("resolveStatic: %v", err)
+	}
+	if strings.Contains(string(out), "define-library") {
+		t.Errorf("built-in libraries must not be baked in:\n%s", out)
+	}
+}
+
+func TestStaticResolveErrors(t *testing.T) {
+	dir := t.TempDir()
+	// a missing library is a build error, not a runtime surprise
+	writeTree(t, dir, map[string]string{"app.scm": "(import (no such lib))\n"})
+	if _, err := resolveStatic(filepath.Join(dir, "app.scm"),
+		[]byte("(import (no such lib))\n"), []string{dir}); err == nil {
+		t.Error("a missing library was accepted")
+	}
+
+	// and so is a cycle
+	dir2 := t.TempDir()
+	writeTree(t, dir2, map[string]string{
+		"lib/a.sld": "(define-library (lib a) (export a) (import (scheme base) (lib b)) (begin (define a 1)))\n",
+		"lib/b.sld": "(define-library (lib b) (export b) (import (scheme base) (lib a)) (begin (define b 2)))\n",
+		"app.scm":   "(import (lib a))\n",
+	})
+	if _, err := resolveStatic(filepath.Join(dir2, "app.scm"),
+		[]byte("(import (lib a))\n"), []string{dir2}); err == nil {
+		t.Error("a circular import was accepted")
+	}
+}

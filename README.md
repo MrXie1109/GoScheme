@@ -162,6 +162,12 @@ verbatim, so a bundle is exactly `interpreter + script + trailer` bytes.
 * `-i, --interpreter FILE` binds a different interpreter, which is how one
   machine can produce executables for another:
   `-i dist/goscheme-windows-amd64.exe` writes a `.exe`.
+* `-static` bakes the libraries in.  Every library the script imports, and
+  everything those libraries `include`, is resolved at **build** time and
+  written in front of the script, so the executable needs no library files
+  beside it — and a library that cannot be found is a build error rather than a
+  surprise on the user's machine.  Without it, a bundle looks for its libraries
+  next to the executable (see [Loading libraries from files](#loading-libraries-from-files)).
 * A bundled program's `(command-line)` is `(program arg ...)`, the program as
   it was invoked — see above — and `include` / `load` resolve relative to the
   executable, so data files can be shipped beside it.
@@ -178,6 +184,8 @@ cmd/goscheme/             command line driver
   version.go              embeds VERSION so any build reports it
   main.go                 file execution, -e, the REPL loop
   bundle.go               goscheme build: binding a script to an interpreter
+  static.go               goscheme build -static: resolving libraries up front
+  ffi_cgo.go / ffi_stub.go  load-shared-library and foreign-function
   lineedit.go             raw mode line editor and bracketed paste
   term_linux.go           termios raw mode (Linux)
   term_darwin.go          termios raw mode (macOS)
@@ -458,6 +466,31 @@ Beyond R7RS-small the interpreter also provides:
   (guard (e ((file-error? e) (display "no such program")))
     (system* "/nonexistent"))
   ```
+* `(goscheme ffi)` — load a shared library and call a C function in it:
+
+  ```scheme
+  (define libm (load-shared-library "libm.so.6"))
+  (define cbrt (foreign-function libm 'cbrt 'double 'double))
+  (cbrt 27.0)                                    ; => 3.0000000000000004
+
+  (define strlen (foreign-function (load-shared-library #f) 'strlen 'long 'string))
+  (strlen "hello")                               ; => 5
+  ```
+
+  `(load-shared-library name)` opens a library; `#f` means the running program's
+  own symbols, which is where libc lives.  `(foreign-function lib name
+  return-type arg-type ...)` returns a procedure that calls the symbol.  The
+  types are `void`, `int`/`long`, `double`, `string` (a C `char *`) and
+  `pointer`; arguments must be either all integral or all double, with up to
+  four integral or three double arguments (every return type works with
+  either).  A missing library or symbol, or a mistaken argument type, is an
+  ordinary condition.
+
+  This needs **cgo**: a static Go binary cannot call into a shared library, and
+  the released binaries are `CGO_ENABLED=0` so that they stay static and
+  cross-compilable.  Those builds still provide the names and raise a clear
+  error telling you to rebuild with `CGO_ENABLED=1`; `(features)` reports `ffi`
+  when it is available.
 * `(assert expr)`, `#!unspecified`, shebang lines (`#!/usr/bin/env goscheme`),
   and the alternative exponent markers `s f d l` accepted by the reader.
 

@@ -141,6 +141,7 @@ func writeBundle(interpreter, out, name string, script []byte) error {
 // runBuild implements "goscheme build script.scm [-o output] [-i interpreter]".
 func runBuild(args []string) int {
 	var scriptPath, out, interpreter string
+	static := false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		need := func(what string) (string, bool) {
@@ -164,6 +165,8 @@ func runBuild(args []string) int {
 				return 2
 			}
 			interpreter = v
+		case "-static", "--static":
+			static = true
 		case "-h", "--help":
 			buildUsage(os.Stdout)
 			return 0
@@ -204,6 +207,13 @@ func runBuild(args []string) int {
 		fmt.Fprintf(os.Stderr, "goscheme build: refusing to overwrite the script %s\n", scriptPath)
 		return 1
 	}
+	if static {
+		script, err = resolveStatic(scriptPath, script, staticSearchPath(scriptPath))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "goscheme build: %v\n", err)
+			return 1
+		}
+	}
 	if err := writeBundle(interpreter, out, filepath.Base(scriptPath), script); err != nil {
 		fmt.Fprintf(os.Stderr, "goscheme build: %v\n", err)
 		return 1
@@ -217,6 +227,21 @@ func runBuild(args []string) int {
 // defaultOutput is the name used when -o is omitted: a.out, or a.exe when
 // binding a Windows interpreter, in the current directory — the same default a
 // C compiler uses.
+// staticSearchPath is where -static looks for libraries: the script's own
+// directory, then GOSCHEME_LIBRARY_PATH, then the working directory — the same
+// order the interpreter uses at run time.
+func staticSearchPath(scriptPath string) []string {
+	dirs := []string{dirOf(scriptPath)}
+	if env := os.Getenv("GOSCHEME_LIBRARY_PATH"); env != "" {
+		for _, d := range strings.Split(env, string(os.PathListSeparator)) {
+			if d != "" {
+				dirs = append(dirs, d)
+			}
+		}
+	}
+	return append(dirs, ".")
+}
+
 func defaultOutput(interpreter string) string {
 	if strings.HasSuffix(strings.ToLower(interpreter), ".exe") {
 		return "a.exe"
@@ -237,7 +262,7 @@ func sameFile(a, b string) (bool, error) {
 }
 
 func buildUsage(w io.Writer) {
-	fmt.Fprintln(w, "usage: goscheme build <script> [-o <output>] [-i <interpreter>]")
+	fmt.Fprintln(w, "usage: goscheme build <script> [-o <output>] [-i <interpreter>] [-static]")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Writes a standalone executable that runs <script>: a copy of the")
 	fmt.Fprintln(w, "interpreter with the script bound to it.  The result needs nothing")
@@ -248,4 +273,7 @@ func buildUsage(w io.Writer) {
 	fmt.Fprintln(w, "  -i, --interpreter FILE  interpreter to bind (default: this program;")
 	fmt.Fprintln(w, "                          use e.g. dist/goscheme-windows-amd64.exe to")
 	fmt.Fprintln(w, "                          produce an executable for another platform)")
+	fmt.Fprintln(w, "  -static                 bake in every library the script imports, so")
+	fmt.Fprintln(w, "                          the executable needs no library files beside")
+	fmt.Fprintln(w, "                          it (they are resolved at build time)")
 }

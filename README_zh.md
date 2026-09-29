@@ -146,6 +146,10 @@ argv: ("./hello" "world")
   若绑定的解释器是 Windows 二进制，则为 `a.exe`。
 * `-i, --interpreter FILE` 绑定另一个解释器——一台机器可以借此为另一个平台产出
   可执行文件：`-i dist/goscheme-windows-amd64.exe` 会写出 `.exe`。
+* `-static` 把库一起烘进去：脚本导入的所有库、以及这些库 `include` 的内容，都在
+  **构建期**解析出来并写在脚本前面，因此可执行文件旁边不需要任何库文件；库找不到
+  会在**构建期**报错，而不是到用户机器上才出意外。不加 `-static` 时，打包程序会在
+  可执行文件旁边查找库（见[从文件加载库](#从文件加载库)）。
 * 打包程序的 `(command-line)` 是 `(program arg ...)`，即被调用时的程序名（见上）；
   `include` / `load` 相对可执行文件所在目录解析，所以可以把数据文件与它放在一起
   分发。
@@ -161,6 +165,8 @@ cmd/goscheme/             命令行入口
   version.go              内嵌 VERSION，使任何构建方式都能报告版本
   main.go                 文件执行、-e 求值、REPL 主循环
   bundle.go               goscheme build：把脚本绑定到解释器
+  static.go               goscheme build -static：构建期解析全部库
+  ffi_cgo.go / ffi_stub.go  load-shared-library 与 foreign-function
   lineedit.go             raw 模式行编辑器与 bracketed paste
   term_linux.go           termios raw 模式（Linux）
   term_darwin.go          termios raw 模式（macOS）
@@ -411,6 +417,27 @@ $ goscheme -e '(let loop ((i 0)) (if (= i 2000000) i (loop (+ i 1))))'
   (guard (e ((file-error? e) (display "没有这个程序")))
     (system* "/nonexistent"))
   ```
+* `(goscheme ffi)` —— 加载共享库并调用其中的 C 函数：
+
+  ```scheme
+  (define libm (load-shared-library "libm.so.6"))
+  (define cbrt (foreign-function libm 'cbrt 'double 'double))
+  (cbrt 27.0)                                    ; => 3.0000000000000004
+
+  (define strlen (foreign-function (load-shared-library #f) 'strlen 'long 'string))
+  (strlen "hello")                               ; => 5
+  ```
+
+  `(load-shared-library name)` 打开一个库；`#f` 表示当前程序自身的符号表（libc 就在
+  那里）。`(foreign-function lib name 返回类型 参数类型 ...)` 返回一个调用该符号的
+  过程。类型有 `void`、`int`/`long`、`double`、`string`（C 的 `char *`）与
+  `pointer`；参数必须**要么全为整数类、要么全为 double**，最多 4 个整数类参数或
+  3 个 double 参数（返回类型与两种都可以组合）。库或符号找不到、参数类型写错，
+  都是普通条件。
+
+  这需要 **cgo**：静态 Go 二进制无法调用共享库，而发布产物是 `CGO_ENABLED=0`，
+  以保持静态与可交叉编译。那种构建里这些名字仍然存在，但会给出明确提示让你用
+  `CGO_ENABLED=1` 重新构建；可用时 `(features)` 会包含 `ffi`。
 * `(assert expr)`、`#!unspecified`、shebang 行
   （`#!/usr/bin/env goscheme`），以及读取器额外接受的指数标记 `s f d l`。
 

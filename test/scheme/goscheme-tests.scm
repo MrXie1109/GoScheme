@@ -479,4 +479,43 @@
 
 (test-end)
 
+
+;; ----------------------------------------------------- foreign functions
+;; Loading C functions needs a build made with cgo; the static binaries say so
+;; instead of failing obscurely, so this section checks both behaviours.
+(test-begin "Foreign functions")
+
+(if (memq 'ffi (features))
+    (begin
+      (import (goscheme ffi))
+      (define math-lib
+        (load-shared-library (if (memq 'darwin (features)) "libSystem.B.dylib" "libm.so.6")))
+      (define cbrt (foreign-function math-lib 'cbrt 'double 'double))
+      (define pow (foreign-function math-lib 'pow 'double 'double 'double))
+      (define lround (foreign-function math-lib 'lround 'long 'double))
+      (test 3 (lround (cbrt 27.0)))
+      (test 1024.0 (pow 2.0 10.0))
+
+      ;; the running program's own symbols, where libc lives
+      (define self (load-shared-library #f))
+      (define strlen (foreign-function self 'strlen 'long 'string))
+      (define strtod (foreign-function self 'strtod 'double 'string 'pointer))
+      (define getpid (foreign-function self 'getpid 'long))
+      (test 5 (strlen "hello"))
+      (test 3.5 (strtod "3.5" 0))
+      (test #t (exact? (getpid)))
+
+      (test #t (foreign-library? math-lib))
+      (test #f (foreign-library? 5))
+      (test 'missing (guard (e (#t 'missing)) (foreign-function math-lib 'no_such_symbol 'long)))
+      (test 'no-library (guard (e (#t 'no-library)) (load-shared-library "libdoes-not-exist.so")))
+      (test 'mixed (guard (e (#t 'mixed))
+                     (foreign-function math-lib 'pow 'double 'double 'long))))
+    (begin
+      ;; Built without cgo: the names exist and explain how to get them.
+      (test #t (guard (e (#t (string? (error-object-message e))))
+                 (load-shared-library "libm.so.6")))))
+
+(test-end)
+
 (test-end)
