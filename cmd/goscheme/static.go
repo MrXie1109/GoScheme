@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"goscheme/internal/scheme"
+	"github.com/MrXie1109/GoScheme/internal/scheme"
 )
 
 // staticBuilder resolves the libraries a script imports, transitively, so that

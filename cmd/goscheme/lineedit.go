@@ -74,6 +74,7 @@ const (
 	keyCtrlL
 	keyCtrlU
 	keyCtrlW
+	keyTab
 	keyPasteStart
 	keyPasteEnd
 	keyUnknown
@@ -108,6 +109,10 @@ type lineEditor struct {
 	// pasteCR remembers a carriage return that ended a chunk, in case the
 	// following chunk starts with a line feed.
 	pasteCR bool
+	// complete supplies Tab completion.  It is given the line and the cursor
+	// and returns where the word being completed starts, and the candidates
+	// that extend it.  Nil means Tab does nothing.
+	complete func(line []rune, pos int) (int, []string)
 }
 
 func newLineEditor(in io.Reader, out *lineTracker) *lineEditor {
@@ -191,6 +196,9 @@ func (e *lineEditor) ReadLine(prompt string) (string, error) {
 			e.line = append(e.line[:0], e.line[e.pos:]...)
 			e.pos = 0
 
+		case keyTab:
+			e.completeWord()
+
 		case keyCtrlW:
 			start := e.pos
 			for start > 0 && e.line[start-1] == ' ' {
@@ -237,6 +245,69 @@ func (e *lineEditor) ReadLine(prompt string) (string, error) {
 		}
 		e.render()
 	}
+}
+
+// completeWord asks the completer about the word before the cursor.  One
+// candidate replaces the word; several insert what they have in common and, if
+// that adds nothing, are listed above the redrawn line, as a shell does.
+func (e *lineEditor) completeWord() {
+	if e.complete == nil {
+		return
+	}
+	start, candidates := e.complete(e.line, e.pos)
+	if len(candidates) == 0 {
+		return
+	}
+	word := string(e.line[start:e.pos])
+	if len(candidates) == 1 {
+		e.replaceWord(start, candidates[0])
+		e.render()
+		return
+	}
+	common := commonPrefix(candidates)
+	if len(common) > len(word) {
+		e.replaceWord(start, common)
+		e.render()
+		return
+	}
+	e.out.newLine()
+	col := 0
+	for _, c := range candidates {
+		if col > 0 && col+len(c)+2 > 78 {
+			fmt.Fprint(e.out, "\n")
+			col = 0
+		}
+		fmt.Fprintf(e.out, "%s  ", c)
+		col += len(c) + 2
+	}
+	fmt.Fprint(e.out, "\n")
+	e.render()
+}
+
+// replaceWord replaces line[start:pos] with text and leaves the cursor after it.
+func (e *lineEditor) replaceWord(start int, text string) {
+	rs := []rune(text)
+	rest := append([]rune(nil), e.line[e.pos:]...)
+	e.line = append(e.line[:start], rs...)
+	e.line = append(e.line, rest...)
+	e.pos = start + len(rs)
+}
+
+// commonPrefix is the longest string every candidate starts with.
+func commonPrefix(candidates []string) string {
+	if len(candidates) == 0 {
+		return ""
+	}
+	prefix := candidates[0]
+	for _, c := range candidates[1:] {
+		for !strings.HasPrefix(c, prefix) {
+			prefix = prefix[:len(prefix)-1]
+			if prefix == "" {
+				return ""
+			}
+		}
+	}
+	return prefix
 }
 
 // remember records a submitted line, skipping an immediate repeat.
@@ -467,6 +538,9 @@ func (e *lineEditor) readKey() (key, error) {
 	case c == 0x17:
 		_, _ = e.in.ReadByte()
 		return key{kind: keyCtrlW}, nil
+	case c == '\t':
+		_, _ = e.in.ReadByte()
+		return key{kind: keyTab}, nil
 	case c < 0x20:
 		_, _ = e.in.ReadByte()
 		return key{kind: keyUnknown}, nil

@@ -594,6 +594,18 @@ func (m *Machine) RunForms(forms []Value, env *Env) (Value, error) {
 	return m.Run(List(body...), env)
 }
 
+// DefineGoFunc binds name to a Go function, which is how a host program offers
+// its own procedures to Scheme.  maxArgs may be -1 for no limit.  An error
+// returned by fn becomes an ordinary Scheme condition.
+func (m *Machine) DefineGoFunc(name string, minArgs, maxArgs int, fn func([]Value) (Value, error)) {
+	m.defSimple(name, minArgs, maxArgs, fn)
+}
+
+// LookupGlobal reports the value bound to a top level name.
+func (m *Machine) LookupGlobal(name string) (Value, bool) {
+	return m.Global.Lookup(Intern(name))
+}
+
 // SetStandardInput replaces the current input port.
 func (m *Machine) SetStandardInput(p *Port) {
 	m.CurIn = p

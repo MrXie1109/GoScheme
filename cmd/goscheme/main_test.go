@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"goscheme/internal/scheme"
+	"github.com/MrXie1109/GoScheme/internal/scheme"
 )
 
 // lineFeeder hands out one line per Read call, which is how a terminal
@@ -633,5 +633,177 @@ func TestStaticResolveErrors(t *testing.T) {
 	if _, err := resolveStatic(filepath.Join(dir2, "app.scm"),
 		[]byte("(import (lib a))\n"), []string{dir2}); err == nil {
 		t.Error("a circular import was accepted")
+	}
+}
+
+// ------------------------------------------------------------------ REPL extras
+
+func contains(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+// Tab completes Scheme names, library names after (import, and the comma
+// commands.
+func TestCompletionCandidates(t *testing.T) {
+	m := scheme.NewMachine()
+	if _, err := m.EvalString("(define my-thing 1)"); err != nil {
+		t.Fatal(err)
+	}
+	c := &replCompleter{m: m}
+
+	t.Run("scheme name", func(t *testing.T) {
+		start, names := c.complete([]rune("hash-table-re"), len("hash-table-re"))
+		if start != 0 {
+			t.Errorf("start = %d, want 0", start)
+		}
+		if !contains(names, "hash-table-ref") || !contains(names, "hash-table-ref/default") {
+			t.Errorf("candidates = %v", names)
+		}
+	})
+
+	t.Run("name defined in the session", func(t *testing.T) {
+		_, names := c.complete([]rune("my-"), len("my-"))
+		if !contains(names, "my-thing") {
+			t.Errorf("candidates = %v", names)
+		}
+	})
+
+	t.Run("library name", func(t *testing.T) {
+		line := []rune("(import (goscheme s")
+		start, names := c.complete(line, len(line))
+		if start != len("(import ") {
+			t.Errorf("start = %d, want the library's opening parenthesis", start)
+		}
+		for _, want := range []string{"(goscheme socket)", "(goscheme sync)"} {
+			if !contains(names, want) {
+				t.Errorf("candidates = %v, want %s", names, want)
+			}
+		}
+	})
+
+	t.Run("comma command", func(t *testing.T) {
+		_, names := c.complete([]rune(",li"), len(",li"))
+		if !contains(names, ",libraries") {
+			t.Errorf("candidates = %v", names)
+		}
+	})
+
+	t.Run("nothing to offer", func(t *testing.T) {
+		if _, names := c.complete([]rune("zzz-nothing-"), len("zzz-nothing-")); len(names) != 0 {
+			t.Errorf("candidates = %v, want none", names)
+		}
+	})
+}
+
+// Tab in the line editor: one candidate is inserted, several insert what they
+// share.
+func TestTabCompletionInEditor(t *testing.T) {
+	ed, _ := editorFor("he\t\r")
+	ed.complete = func(line []rune, pos int) (int, []string) {
+		return 0, []string{"hello"}
+	}
+	line, err := ed.ReadLine(primaryPrompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if line != "hello" {
+		t.Errorf("got %q, want %q", line, "hello")
+	}
+
+	ed, _ = editorFor("he\t\r")
+	ed.complete = func(line []rune, pos int) (int, []string) {
+		return 0, []string{"hello", "help"}
+	}
+	line, err = ed.ReadLine(primaryPrompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if line != "hel" {
+		t.Errorf("ambiguous completion gave %q, want the shared prefix %q", line, "hel")
+	}
+
+	// Without a completer, Tab is simply ignored.
+	ed, _ = editorFor("he\t\r")
+	line, err = ed.ReadLine(primaryPrompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if line != "he" {
+		t.Errorf("got %q, want %q", line, "he")
+	}
+}
+
+func TestHistoryFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history")
+
+	defer func(old int) { historyLimit = old }(historyLimit)
+	historyLimit = 3
+
+	for _, line := range []string{"one", "two", "three", "four", "five"} {
+		appendHistory(path, line)
+	}
+	// A pasted multi-line program is not a line, so it is not remembered.
+	appendHistory(path, "(+ 1\n2)")
+
+	got := loadHistory(path)
+	want := []string{"three", "four", "five"}
+	if len(got) != len(want) {
+		t.Fatalf("loadHistory = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("loadHistory = %v, want %v", got, want)
+		}
+	}
+
+	// Trimming leaves the most recent entries and nothing else.
+	trimHistory(path)
+	if got := loadHistory(path); len(got) != 3 || got[2] != "five" {
+		t.Errorf("after trim: %v", got)
+	}
+
+	// A path of "" disables the file rather than failing.
+	if got := loadHistory(""); got != nil {
+		t.Errorf("loadHistory(\"\") = %v", got)
+	}
+	appendHistory("", "ignored")
+}
+
+func TestCommaCommands(t *testing.T) {
+	t.Setenv("GOSCHEME_HISTORY", filepath.Join(t.TempDir(), "history"))
+
+	m := scheme.NewMachine()
+	var out, errOut bytes.Buffer
+	tracker := newLineTracker(&out)
+	m.SetStandardOutput(scheme.NewPortFromFile("stdout", tracker, false, true))
+	ed := newLineEditor(strings.NewReader(
+		",help\r,libraries\r,time (+ 1 2)\r,nope\r,quit\r(display 'after)\r"), tracker)
+
+	replEdited(m, ed, tracker, &errOut, nil)
+
+	got := out.String()
+	for _, want := range []string{",bindings", "(goscheme match)", "ms\n"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output is missing %q:\n%s", want, got)
+		}
+	}
+	// ,time evaluated the expression, so its value was printed.
+	if !strings.Contains(got, "3") {
+		t.Errorf(",time did not evaluate its expression:\n%s", got)
+	}
+	if !strings.Contains(errOut.String(), "unknown command ,nope") {
+		t.Errorf("an unknown command was not reported: %q", errOut.String())
+	}
+
+	// ,quit ended the session, so the form after it was never read.  (The
+	// command itself is echoed by the editor, which is why it is not asserted
+	// on.)
+	if strings.Contains(got, "after") {
+		t.Errorf("input after ,quit was read:\n%s", got)
 	}
 }

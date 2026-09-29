@@ -26,7 +26,7 @@ import (
 	"strings"
 	"time"
 
-	"goscheme/internal/scheme"
+	"github.com/MrXie1109/GoScheme/internal/scheme"
 )
 
 func main() {
@@ -295,6 +295,16 @@ func repl(m *scheme.Machine, quiet bool) {
 func replEdited(m *scheme.Machine, ed *lineEditor, stdout, stderr io.Writer, sigint <-chan os.Signal) {
 	var buf strings.Builder
 	prompt := primaryPrompt
+
+	// The conveniences: Tab completion, and a history that outlives the
+	// session.  Both are best effort — a REPL must still work when, say, the
+	// home directory cannot be written.
+	ed.complete = (&replCompleter{m: m}).complete
+	histPath := historyPath()
+	for _, entry := range loadHistory(histPath) {
+		ed.history = append(ed.history, entry)
+	}
+
 	for {
 		line, err := ed.ReadLine(prompt)
 		if err != nil {
@@ -304,6 +314,19 @@ func replEdited(m *scheme.Machine, ed *lineEditor, stdout, stderr io.Writer, sig
 			fmt.Fprintln(stdout)
 			return
 		}
+		// A comma command is handled here rather than by the reader, and only
+		// when no continuation is pending.
+		if buf.Len() == 0 {
+			if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, ",") {
+				appendHistory(histPath, line)
+				if runCommaCommand(m, trimmed, stdout, stderr, sigint) {
+					return
+				}
+				continue
+			}
+		}
+		appendHistory(histPath, line)
+
 		buf.WriteString(line)
 		buf.WriteString("\n")
 
