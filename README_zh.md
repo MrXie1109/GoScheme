@@ -26,6 +26,7 @@ $ goscheme -e '(display (map (lambda (x) (* x x)) (list 1 2 3 4))) (newline)'
 
 - [快速开始](#快速开始)
 - [命令行](#命令行)
+- [独立可执行文件](#独立可执行文件)
 - [仓库结构](#仓库结构)
 - [语言覆盖](#语言覆盖)
 - [实现要点](#实现要点)
@@ -62,6 +63,7 @@ make dist           # 交叉编译全部目标平台到 dist/
 
 ```
 goscheme [选项] [文件] [参数 ...]
+goscheme build <脚本> [-o <输出>] [-i <解释器>]
 
   -e, --eval 表达式    求值表达式（可重复，按顺序求值）
   -i, --interactive    载入文件后进入 REPL
@@ -104,6 +106,40 @@ REPL 会退回到按行读取的实现。
 
 退出码：正常为 `0`，`(exit n)` 为 `n`，`(exit #f)` 与未捕获的错误为 `1`。
 
+## 独立可执行文件
+
+`goscheme build` 通过**把解释器绑定到脚本上**，把一份脚本变成单个自包含的可执行
+文件：它复制解释器、把脚本附加在后面，因此运行它的机器上既不需要 Go，也不需要
+goscheme。
+
+```sh
+$ goscheme build hello.scm        # 生成 ./hello，与脚本同目录
+$ ./hello world
+hello from a bundled program
+argv: ("./hello" "world")
+```
+
+产物就是一张普通的解释器镜像加一段尾部数据：
+
+```
+[ 解释器 ][ 脚本 ][ 脚本名 ][ magic ][ 尾部长度 ]
+```
+
+往 ELF / PE / Mach-O 镜像末尾追加数据是无害的——加载器只读它认识的头部、忽略尾巴
+——所以这个文件仍然会启动解释器；解释器在启动时检查自己的尾部，发现里面有脚本就
+运行脚本，而不是走命令行。整个过程不重新编译，脚本按原样存放，因此产物大小正好是
+`解释器 + 脚本 + 尾部`。
+
+* `-o, --output FILE` 指定输出名；默认是脚本去掉 `.scm` 后的名字，与脚本同目录。
+* `-i, --interpreter FILE` 绑定另一个解释器——一台机器可以借此为另一个平台产出
+  可执行文件：`-i dist/goscheme-windows-amd64.exe` 会写出 `.exe`。
+* 打包程序的 `(command-line)` 是 `(program arg ...)`，没有额外的脚本名，和编译出来
+  的程序完全一致；`include` / `load` 相对可执行文件所在目录解析，所以可以把数据
+  文件与它放在一起分发。
+* 在 macOS 上，追加数据会让链接器生成的代码签名失效，因此 `goscheme build` 会在
+  可用时用 `codesign --force --sign -` 重新做 ad-hoc 签名，做不到时给出警告：
+  Apple silicon 拒绝运行被修改过且未签名的二进制。
+
 ## 仓库结构
 
 ```
@@ -111,6 +147,7 @@ cmd/goscheme/             命令行入口
   VERSION                 `-v` 与 REPL banner 使用的版本号
   version.go              内嵌 VERSION，使任何构建方式都能报告版本
   main.go                 文件执行、-e 求值、REPL 主循环
+  bundle.go               goscheme build：把脚本绑定到解释器
   lineedit.go             raw 模式行编辑器与 bracketed paste
   term_linux.go           termios raw 模式（Linux）
   term_darwin.go          termios raw 模式（macOS）

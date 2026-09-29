@@ -30,6 +30,7 @@ $ goscheme -e '(display (map (lambda (x) (* x x)) (list 1 2 3 4))) (newline)'
 
 - [Quick start](#quick-start)
 - [Command line](#command-line)
+- [Standalone executables](#standalone-executables)
 - [Repository layout](#repository-layout)
 - [Language coverage](#language-coverage)
 - [Implementation notes](#implementation-notes)
@@ -67,6 +68,7 @@ Run a program, evaluate an expression, or start a REPL:
 
 ```
 goscheme [options] [file] [argument ...]
+goscheme build <script> [-o <output>] [-i <interpreter>]
 
   -e, --eval EXPR     evaluate EXPR (may be repeated, evaluated in order)
   -i, --interactive   enter the REPL after loading FILE
@@ -115,6 +117,46 @@ line-oriented reader.
 Exit status: `0` on success, the argument of `(exit n)`, `1` for `(exit #f)` or
 for an uncaught error.
 
+## Standalone executables
+
+`goscheme build` turns a script into a single self-contained executable by
+**binding an interpreter to it**: it copies the interpreter and appends the
+script, so the result needs neither Go nor goscheme on the machine that runs
+it.
+
+```sh
+$ goscheme build hello.scm        # writes ./hello, next to the script
+$ ./hello world
+hello from a bundled program
+argv: ("./hello" "world")
+```
+
+The result is an ordinary interpreter image with a trailer:
+
+```
+[ interpreter ][ script ][ script name ][ magic ][ trailer length ]
+```
+
+Appending to an ELF, PE or Mach-O image is harmless — the loader reads the
+headers it knows and ignores the tail — so the file still runs the interpreter,
+which at startup checks its own tail and, finding a script there, runs that
+instead of the command line.  Nothing is recompiled and the script is stored
+verbatim, so a bundle is exactly `interpreter + script + trailer` bytes.
+
+* `-o, --output FILE` names the executable; the default is the script's name
+  without its `.scm` extension, next to the script.
+* `-i, --interpreter FILE` binds a different interpreter, which is how one
+  machine can produce executables for another:
+  `-i dist/goscheme-windows-amd64.exe` writes a `.exe`.
+* A bundled program's `(command-line)` is `(program arg ...)` — there is no
+  separate script name, exactly as for a compiled program — and `include` /
+  `load` resolve relative to the executable, so data files can be shipped
+  beside it.
+* On macOS the appended data invalidates the code signature the linker
+  produced, so `goscheme build` re-signs the result ad hoc
+  (`codesign --force --sign -`) when it can, and warns when it cannot: Apple
+  silicon refuses to run a modified, unsigned binary.
+
 ## Repository layout
 
 ```
@@ -122,6 +164,7 @@ cmd/goscheme/             command line driver
   VERSION                 the version reported by -v and the REPL banner
   version.go              embeds VERSION so any build reports it
   main.go                 file execution, -e, the REPL loop
+  bundle.go               goscheme build: binding a script to an interpreter
   lineedit.go             raw mode line editor and bracketed paste
   term_linux.go           termios raw mode (Linux)
   term_darwin.go          termios raw mode (macOS)

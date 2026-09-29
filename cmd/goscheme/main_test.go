@@ -2,8 +2,11 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
+	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -401,6 +404,107 @@ func TestREPLEvaluationCanBeInterrupted(t *testing.T) {
 	for _, dump := range []string{"fatal error", "goroutine ", "deadlock"} {
 		if strings.Contains(got, dump) || strings.Contains(errOut.String(), dump) {
 			t.Errorf("a raw Go error leaked (%q):\nstdout: %s\nstderr: %s", dump, got, errOut.String())
+		}
+	}
+}
+
+// ------------------------------------------------------------------ bundles
+
+func TestBundleTrailerRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	interp := filepath.Join(dir, "interp")
+	const fake = "FAKE-INTERPRETER-BYTES"
+	if err := os.WriteFile(interp, []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := []byte("(display (+ 1 2))\n")
+	out := filepath.Join(dir, "prog")
+
+	if err := writeBundle(interp, out, "prog.scm", script); err != nil {
+		t.Fatalf("writeBundle: %v", err)
+	}
+	info, err := readBundle(out)
+	if err != nil {
+		t.Fatalf("readBundle: %v", err)
+	}
+	if string(info.Script) != string(script) {
+		t.Errorf("script = %q, want %q", info.Script, script)
+	}
+	if info.Name != "prog.scm" {
+		t.Errorf("name = %q, want %q", info.Name, "prog.scm")
+	}
+
+	// The interpreter is copied verbatim, so the bundle still runs.
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(data, []byte(fake)) {
+		t.Error("the interpreter was not copied verbatim")
+	}
+	if want := len(fake) + 16 + len(script) + len("prog.scm") + len(bundleMagic) + 8; len(data) != want {
+		t.Errorf("bundle is %d bytes, want %d", len(data), want)
+	}
+
+	// A plain executable is not a bundle.
+	if _, err := readBundle(interp); !errors.Is(err, errNotBundled) {
+		t.Errorf("readBundle(interpreter) = %v, want errNotBundled", err)
+	}
+}
+
+// A damaged trailer must be refused rather than trusted: the lengths in it
+// drive how much is read.
+func TestBundleRejectsCorruptTrailer(t *testing.T) {
+	dir := t.TempDir()
+	interp := filepath.Join(dir, "interp")
+	if err := os.WriteFile(interp, []byte("INTERP"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	good := filepath.Join(dir, "good")
+	if err := writeBundle(interp, good, "s.scm", []byte("(display 1)\n")); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(good)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := map[string][]byte{
+		"truncated":       data[:len(data)-8],
+		"bad magic":       append(append([]byte{}, data[:len(data)-len(bundleMagic)-8]...), []byte("XXXXXXXXX")...),
+		"absurd length":   nil, // built below
+		"length mismatch": nil,
+	}
+	absurd := append([]byte{}, data...)
+	binary.BigEndian.PutUint64(absurd[len(absurd)-8:], uint64(1)<<40)
+	cases["absurd length"] = absurd
+	mismatch := append([]byte{}, data...)
+	binary.BigEndian.PutUint64(mismatch[len(mismatch)-8-len(bundleMagic):], uint64(len(data))) // scriptLen way off
+	cases["length mismatch"] = mismatch
+
+	for name, b := range cases {
+		path := filepath.Join(dir, "broken")
+		if err := os.WriteFile(path, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if info, err := readBundle(path); err == nil {
+			t.Errorf("%s: readBundle accepted a damaged trailer: %+v", name, info)
+		}
+	}
+}
+
+func TestBundleDefaultOutputName(t *testing.T) {
+	cases := []struct{ script, interp, want string }{
+		{"prog.scm", "/usr/bin/goscheme", "prog"},
+		{"prog.scm", "/x/goscheme-windows-amd64.exe", "prog.exe"},
+		{"prog", "/usr/bin/goscheme", "prog"},
+		{"dir/a.sld", "/usr/bin/goscheme", "dir/a"},
+		{"dir/a.scm", "/x/goscheme.exe", "dir/a.exe"},
+		{"a.exe", "/x/goscheme.exe", "a.exe"},
+	}
+	for _, c := range cases {
+		if got := defaultOutput(c.script, c.interp); got != c.want {
+			t.Errorf("defaultOutput(%q, %q) = %q, want %q", c.script, c.interp, got, c.want)
 		}
 	}
 }

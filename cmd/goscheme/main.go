@@ -43,7 +43,18 @@ func runGuarded() (code int) {
 }
 
 func run() int {
+	// A standalone executable produced by "goscheme build" carries its script
+	// in its own tail; if this binary has one, run it.
+	if exe, err := os.Executable(); err == nil {
+		if info, err := readBundle(exe); err == nil {
+			return runBundled(exe, info)
+		}
+	}
+
 	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "build" {
+		return runBuild(args[1:])
+	}
 	var files []string
 	var exprs []string
 	interactive := false
@@ -117,6 +128,29 @@ func run() int {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: goscheme [-i] [-q] [-e expr] [file] [args...]")
+	fmt.Fprintln(os.Stderr, "       goscheme build <script> [-o <output>] [-i <interpreter>]")
+}
+
+// runBundled runs the script bound into this executable.  There is no separate
+// script name — the program *is* the script — so (command-line) reports
+// (program arg ...), exactly as a compiled program would.
+func runBundled(exe string, info *bundleInfo) int {
+	m := scheme.NewMachine()
+	m.Args = append([]string{exe}, os.Args[1:]...)
+
+	r := scheme.NewStringReader(string(info.Script))
+	r.Source = info.Name
+	forms, err := r.ReadAll()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", info.Name, err)
+		return 1
+	}
+	// Files shipped next to the executable are found by include and load.
+	m.AddLoadPath(filepath.Dir(exe))
+	if _, err := m.RunForms(forms, m.Global); err != nil {
+		return reportError(err)
+	}
+	return 0
 }
 
 func evalString(m *scheme.Machine, src, name string) int {
