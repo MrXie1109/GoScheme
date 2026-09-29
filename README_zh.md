@@ -113,8 +113,8 @@ REPL 会退回到按行读取的实现。
 goscheme。
 
 ```sh
-$ goscheme build hello.scm        # 生成 ./hello，与脚本同目录
-$ ./hello world
+$ goscheme build hello.scm        # 生成 ./a.out，与 C 编译器一致
+$ ./a.out world
 hello from a bundled program
 argv: ("./hello" "world")
 ```
@@ -130,7 +130,8 @@ argv: ("./hello" "world")
 运行脚本，而不是走命令行。整个过程不重新编译，脚本按原样存放，因此产物大小正好是
 `解释器 + 脚本 + 尾部`。
 
-* `-o, --output FILE` 指定输出名；默认是脚本去掉 `.scm` 后的名字，与脚本同目录。
+* `-o, --output FILE` 指定输出名。默认与 C 编译器一致：当前目录下的 `a.out`；
+  若绑定的解释器是 Windows 二进制，则为 `a.exe`。
 * `-i, --interpreter FILE` 绑定另一个解释器——一台机器可以借此为另一个平台产出
   可执行文件：`-i dist/goscheme-windows-amd64.exe` 会写出 `.exe`。
 * 打包程序的 `(command-line)` 是 `(program arg ...)`，没有额外的脚本名，和编译出来

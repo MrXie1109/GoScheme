@@ -494,17 +494,17 @@ func TestBundleRejectsCorruptTrailer(t *testing.T) {
 }
 
 func TestBundleDefaultOutputName(t *testing.T) {
-	cases := []struct{ script, interp, want string }{
-		{"prog.scm", "/usr/bin/goscheme", "prog"},
-		{"prog.scm", "/x/goscheme-windows-amd64.exe", "prog.exe"},
-		{"prog", "/usr/bin/goscheme", "prog"},
-		{"dir/a.sld", "/usr/bin/goscheme", "dir/a"},
-		{"dir/a.scm", "/x/goscheme.exe", "dir/a.exe"},
-		{"a.exe", "/x/goscheme.exe", "a.exe"},
+	// A C compiler writes a.out, or a.exe when targeting Windows.
+	cases := []struct{ interp, want string }{
+		{"/usr/bin/goscheme", "a.out"},
+		{"/x/goscheme-linux-arm64", "a.out"},
+		{"/x/goscheme-darwin-arm64", "a.out"},
+		{"/x/goscheme-windows-amd64.exe", "a.exe"},
+		{"/x/GOSCHEME.EXE", "a.exe"},
 	}
 	for _, c := range cases {
-		if got := defaultOutput(c.script, c.interp); got != c.want {
-			t.Errorf("defaultOutput(%q, %q) = %q, want %q", c.script, c.interp, got, c.want)
+		if got := defaultOutput(c.interp); got != c.want {
+			t.Errorf("defaultOutput(%q) = %q, want %q", c.interp, got, c.want)
 		}
 	}
 }

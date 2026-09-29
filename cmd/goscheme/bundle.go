@@ -196,7 +196,7 @@ func runBuild(args []string) int {
 		return 1
 	}
 	if out == "" {
-		out = defaultOutput(scriptPath, interpreter)
+		out = defaultOutput(interpreter)
 	}
 	if same, err := sameFile(scriptPath, out); err == nil && same {
 		fmt.Fprintf(os.Stderr, "goscheme build: refusing to overwrite the script %s\n", scriptPath)
@@ -212,22 +212,14 @@ func runBuild(args []string) int {
 	return 0
 }
 
-// defaultOutput derives the executable name from the script and the
-// interpreter, next to the script: dir/prog.scm -> dir/prog (or dir/prog.exe
-// when bundling for Windows).
-func defaultOutput(scriptPath, interpreter string) string {
-	out := scriptPath
-	for _, ext := range []string{".scm", ".ss", ".sls", ".sld"} {
-		if strings.HasSuffix(strings.ToLower(out), ext) {
-			out = out[:len(out)-len(ext)]
-			break
-		}
+// defaultOutput is the name used when -o is omitted: a.out, or a.exe when
+// binding a Windows interpreter, in the current directory — the same default a
+// C compiler uses.
+func defaultOutput(interpreter string) string {
+	if strings.HasSuffix(strings.ToLower(interpreter), ".exe") {
+		return "a.exe"
 	}
-	if strings.HasSuffix(strings.ToLower(interpreter), ".exe") &&
-		!strings.HasSuffix(strings.ToLower(out), ".exe") {
-		out += ".exe"
-	}
-	return out
+	return "a.out"
 }
 
 func sameFile(a, b string) (bool, error) {
@@ -249,8 +241,8 @@ func buildUsage(w io.Writer) {
 	fmt.Fprintln(w, "interpreter with the script bound to it.  The result needs nothing")
 	fmt.Fprintln(w, "else on the machine that runs it.")
 	fmt.Fprintln(w, "")
-	fmt.Fprintln(w, "  -o, --output FILE       name of the executable (default: the script")
-	fmt.Fprintln(w, "                          name without its .scm extension)")
+	fmt.Fprintln(w, "  -o, --output FILE       name of the executable (default: a.out, or")
+	fmt.Fprintln(w, "                          a.exe when binding a Windows interpreter)")
 	fmt.Fprintln(w, "  -i, --interpreter FILE  interpreter to bind (default: this program;")
 	fmt.Fprintln(w, "                          use e.g. dist/goscheme-windows-amd64.exe to")
 	fmt.Fprintln(w, "                          produce an executable for another platform)")

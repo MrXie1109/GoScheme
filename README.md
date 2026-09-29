@@ -125,8 +125,8 @@ script, so the result needs neither Go nor goscheme on the machine that runs
 it.
 
 ```sh
-$ goscheme build hello.scm        # writes ./hello, next to the script
-$ ./hello world
+$ goscheme build hello.scm        # writes ./a.out, as a C compiler would
+$ ./a.out world
 hello from a bundled program
 argv: ("./hello" "world")
 ```
@@ -143,8 +143,9 @@ which at startup checks its own tail and, finding a script there, runs that
 instead of the command line.  Nothing is recompiled and the script is stored
 verbatim, so a bundle is exactly `interpreter + script + trailer` bytes.
 
-* `-o, --output FILE` names the executable; the default is the script's name
-  without its `.scm` extension, next to the script.
+* `-o, --output FILE` names the executable.  Like a C compiler, the default is
+  `a.out` in the current directory — or `a.exe` when the bound interpreter is a
+  Windows binary.
 * `-i, --interpreter FILE` binds a different interpreter, which is how one
   machine can produce executables for another:
   `-i dist/goscheme-windows-amd64.exe` writes a `.exe`.
