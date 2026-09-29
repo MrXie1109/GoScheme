@@ -2,7 +2,7 @@
 ;;; Network extension: TCP sockets, and a concurrent server built from them.
 
 (import (scheme base) (scheme write) (scheme char) (chibi test)
-        (goscheme socket) (goscheme sync))
+        (goscheme socket) (goscheme sync) (goscheme http))
 
 (test-begin "Network")
 
@@ -101,6 +101,69 @@
 (go-wait)
 (test 3 (atomic-ref served))
 (test 0 (waitgroup-count handlers))
+
+(test-end)
+
+;; ---------------------------------------------------------------------- http
+(test-begin "HTTP")
+
+;; One route per behaviour.  The handler is an ordinary procedure and runs on
+;; its own interpreter thread, one per request, so raising is contained.
+(define server
+  (http-serve
+   0
+   (lambda (req)
+     (cond
+      ((string=? (http-request-path req) "/json")
+       (http-response 200 "{\"ok\":true}" "application/json"))
+      ((string=? (http-request-path req) "/echo")
+       (http-request-body req))
+      ((string=? (http-request-path req) "/boom")
+       (raise 'handler-failed))
+      (else
+       (string-append "path: " (http-request-path req)))))))
+
+(define base
+  (string-append "http://127.0.0.1:" (number->string (http-server-port server))))
+
+(test #t (http-server? server))
+(test #f (http-server? 5))
+(test #t (> (http-server-port server) 0))
+(test #t (string? (http-server-address server)))
+
+;; A handler that returns a string is a 200 with that body.
+(test "path: /hello" (http-get (string-append base "/hello")))
+
+;; The whole response is there when the status or a header matters.
+(define json (http-request "GET" (string-append base "/json")))
+(test #t (http-response? json))
+(test 200 (http-response-status json))
+(test "{\"ok\":true}" (http-response-body json))
+(test "application/json" (http-response-header json "content-type"))
+(test "application/json" (http-response-content-type json))
+(test #f (http-response-header json "x-missing"))
+
+;; A request body reaches the handler, and the method with it.
+(test "ping" (http-post (string-append base "/echo") "ping"))
+(define posted (http-request "POST" (string-append base "/echo") "pong"))
+(test 200 (http-response-status posted))
+(test "pong" (http-response-body posted))
+
+;; A query string is kept apart from the path.
+(define query (http-request "GET" (string-append base "/search?q=scheme")))
+(test "path: /search" (http-response-body query))
+
+;; A handler that raises becomes a 500 instead of a dead server.
+(test 500 (http-response-status (http-request "GET" (string-append base "/boom"))))
+
+;; ... and the server is still serving afterwards.
+(test "path: /after" (http-get (string-append base "/after")))
+
+(test 7 (http-server-requests server))
+
+;; A closed server refuses connections, which is a file error like any other.
+(http-server-close server)
+(test 'closed (guard (e ((file-error? e) 'closed)) (http-get (string-append base "/x"))))
 
 (test-end)
 

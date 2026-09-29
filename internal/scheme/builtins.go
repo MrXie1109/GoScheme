@@ -70,6 +70,16 @@ func callSimple(name string, fn func([]Value) (Value, error), args []Value) (v V
 	return v, err
 }
 
+// installerHooks holds the installers that the extension files register in
+// their init functions.  Registration keeps this file from being the single
+// place every new library has to be threaded through.
+var installerHooks []func(*Machine)
+
+// registerInstaller adds fn to the list run when a machine is built.
+func registerInstaller(fn func(*Machine)) {
+	installerHooks = append(installerHooks, fn)
+}
+
 // defSyntax records a syntactic keyword as exported by a library.
 func (m *Machine) defSyntax(lib string, names ...string) {
 	for _, n := range names {
@@ -236,6 +246,11 @@ func installBuiltins(m *Machine) {
 	installSockets(m)
 	installProcess(m)
 	installFFI(m)
+	// Libraries that register themselves, so that adding one means adding a
+	// file rather than editing this list.
+	for _, install := range installerHooks {
+		install(m)
+	}
 	installR5RS(m)
 	installSyntaxExports(m)
 }

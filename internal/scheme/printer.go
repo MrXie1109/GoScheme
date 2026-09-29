@@ -281,6 +281,12 @@ func (p *printer) printRaw(sb *strings.Builder, v Value) {
 		fmt.Fprintf(sb, "#<atomic %d>", x.n.Load())
 	case *TcpListener:
 		fmt.Fprintf(sb, "#<tcp-listener %s>", x.ln.Addr().String())
+	case *HTTPServer:
+		fmt.Fprintf(sb, "#<http-server %s>", x.ln.Addr().String())
+	case *HTTPRequest:
+		fmt.Fprintf(sb, "#<http-request %s %s>", x.method, x.path)
+	case *HTTPResponse:
+		fmt.Fprintf(sb, "#<http-response %d, %d bytes>", x.status, len(x.body))
 	case *MultipleValues:
 		for i, mv := range x.Values {
 			if i > 0 {
