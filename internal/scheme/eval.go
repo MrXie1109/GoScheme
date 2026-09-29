@@ -1585,9 +1585,7 @@ func FeatureMatch(m *Machine, req Value) bool {
 			if len(items) != 1 {
 				return false
 			}
-			name := LibraryNameString(items[0])
-			_, ok := m.Libraries[name]
-			return ok
+			return m.libraryAvailable(items[0])
 		}
 	}
 	return false

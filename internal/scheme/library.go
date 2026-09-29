@@ -4,7 +4,9 @@ package scheme
 
 import (
 	"os"
+	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 // Library is an R7RS library.
@@ -140,6 +142,14 @@ func (m *Machine) resolveImportSet(spec Value) (map[*Symbol]Value, error) {
 	name := LibraryNameString(spec)
 	lib, ok := m.Libraries[name]
 	if !ok {
+		// Not registered yet: look for it on the library search path, which is
+		// how a program imports a library that lives in its own files.
+		if err := m.loadLibrary(name, spec); err != nil {
+			return nil, err
+		}
+		lib, ok = m.Libraries[name]
+	}
+	if !ok {
 		return nil, NewError("import: unknown library", spec)
 	}
 	out := make(map[*Symbol]Value, len(lib.Exports))
@@ -147,6 +157,104 @@ func (m *Machine) resolveImportSet(spec Value) (map[*Symbol]Value, error) {
 		out[Intern(s.Name)] = v
 	}
 	return out, nil
+}
+
+// loadLibrary finds the definition of a library on the search path, evaluates
+// the file, and leaves the library registered.  A library that is not found is
+// not an error here: the caller reports the unknown library, which is the
+// better message.
+func (m *Machine) loadLibrary(name string, spec Value) error {
+	path, found := m.findLibraryFile(spec)
+	if !found {
+		return nil
+	}
+	if m.libLoading == nil {
+		m.libLoading = map[string]bool{}
+	}
+	if m.libLoading[name] {
+		return NewError("import: circular dependency between libraries", spec)
+	}
+	m.libLoading[name] = true
+	defer delete(m.libLoading, name)
+
+	forms, err := ReadFileForms(m, path, false)
+	if err != nil {
+		return err
+	}
+	// A library is evaluated on its own interpreter thread: it has its own
+	// continuation stack, so loading it cannot disturb the evaluation that
+	// asked for the import.  Libraries, the global environment and the load
+	// path are shared, and the file's directory is added so that include and
+	// nested imports resolve relative to it.
+	sub := m.Child()
+	sub.AddLoadPath(dirOf(path))
+	if _, err := sub.RunForms(forms, sub.Global); err != nil {
+		return err
+	}
+	if _, ok := m.Libraries[name]; !ok {
+		return NewFileError("library file does not define "+name, NewString(path))
+	}
+	return nil
+}
+
+// findLibraryFile maps a library name to a file: (a b c) is looked for as
+// a/b/c.sld, a/b/c.scm or a/b/c.sls in each directory of the search path.
+func (m *Machine) findLibraryFile(spec Value) (string, bool) {
+	parts, ok := ListToSlice(spec)
+	if !ok || len(parts) == 0 {
+		return "", false
+	}
+	segs := make([]string, 0, len(parts))
+	for _, p := range parts {
+		switch x := p.(type) {
+		case *Symbol:
+			segs = append(segs, x.Name)
+		case *Integer:
+			segs = append(segs, x.String())
+		case *String:
+			segs = append(segs, x.Value())
+		default:
+			return "", false
+		}
+	}
+	rel := filepath.Join(segs...)
+	for _, dir := range m.librarySearchPath() {
+		for _, ext := range []string{".sld", ".scm", ".sls", ".ss"} {
+			p := filepath.Join(dir, rel+ext)
+			if fileExists(p) {
+				return p, true
+			}
+		}
+	}
+	return "", false
+}
+
+// librarySearchPath is where libraries are looked for: the directories of the
+// load path, innermost first, then GOSCHEME_LIBRARY_PATH, then the working
+// directory.
+func (m *Machine) librarySearchPath() []string {
+	var dirs []string
+	for i := len(m.LoadPath) - 1; i >= 0; i-- {
+		dirs = append(dirs, m.LoadPath[i])
+	}
+	if env := os.Getenv("GOSCHEME_LIBRARY_PATH"); env != "" {
+		for _, d := range strings.Split(env, string(os.PathListSeparator)) {
+			if d != "" {
+				dirs = append(dirs, d)
+			}
+		}
+	}
+	return append(dirs, ".")
+}
+
+// libraryAvailable reports whether a library is registered or can be found on
+// the search path; cond-expand's (library ...) requirement uses it.
+func (m *Machine) libraryAvailable(spec Value) bool {
+	if _, ok := m.Libraries[LibraryNameString(spec)]; ok {
+		return true
+	}
+	_, found := m.findLibraryFile(spec)
+	return found
 }
 
 // ReadFileForms reads every datum in a file.

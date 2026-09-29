@@ -29,6 +29,10 @@ type Machine struct {
 
 	libExports map[string][]string
 
+	// libLoading holds the libraries currently being loaded, so that a cycle
+	// is reported instead of recursing forever.
+	libLoading map[string]bool
+
 	Global    *Env
 	Builtin   *Env
 	Libraries map[string]*Library
@@ -208,9 +212,12 @@ func (f *fAppArgs) resume(m *Machine, v Value) {
 // Run evaluates expr in env until the continuation stack is exhausted.
 func (m *Machine) Run(expr Value, env *Env) (Value, error) {
 	return m.guardedRun(func() (Value, error) {
-		base := len(m.stack)
+		// Run may be re-entered while the machine is already evaluating (a
+		// library is loaded, say); the frames below base belong to the outer
+		// evaluation and must survive.
+		baseStack, baseWinds, baseHands := len(m.stack), len(m.winds), len(m.hands)
 		m.Eval(expr, env)
-		return m.runLoop(base)
+		return m.runLoop(baseStack, baseWinds, baseHands)
 	})
 }
 
@@ -241,25 +248,38 @@ func (m *Machine) guardedRun(fn func() (Value, error)) (result Value, err error)
 	return fn()
 }
 
-func (m *Machine) runLoop(base int) (Value, error) {
+// runLoop drives the machine until the continuation stack is back to the
+// depth it had on entry.  baseStack, baseWinds and baseHands are that entry
+// state: everything above them belongs to this run and is dropped on the way
+// out, everything below belongs to the caller and is left alone.
+func (m *Machine) runLoop(baseStack, baseWinds, baseHands int) (Value, error) {
+	restore := func() {
+		if len(m.stack) > baseStack {
+			m.stack = m.stack[:baseStack]
+		}
+		if len(m.winds) > baseWinds {
+			m.winds = m.winds[:baseWinds]
+		}
+		if len(m.hands) > baseHands {
+			m.hands = m.hands[:baseHands]
+		}
+	}
 	for {
 		if m.pending != nil {
 			if !m.dispatchError() {
 				err := m.pending
 				m.pending = nil
-				m.stack = m.stack[:0]
-				m.winds = m.winds[:0]
-				m.hands = m.hands[:0]
 				m.returning = false
+				restore()
 				return nil, err
 			}
 			continue
 		}
 		if m.returning {
 			v := m.retVal
-			if len(m.stack) <= base {
-				m.stack = m.stack[:0]
+			if len(m.stack) <= baseStack {
 				m.returning = false
+				restore()
 				return v, nil
 			}
 			f := m.stack[len(m.stack)-1]

@@ -255,6 +255,44 @@ combination of `#b #o #d #x` and `#e #i` prefixes.
 plus the extension libraries `(goscheme hash-table)`, `(goscheme channel)`
 and `(goscheme process)`.
 
+### Loading libraries from files
+
+A library that is not built in is **loaded from the search path**, so a program
+can import a library that lives in its own files.  The name `(lib greet)` maps
+to `lib/greet.sld` (`.scm`, `.sls` and `.ss` are accepted too), searched in
+
+1. the load path, innermost first — the directory of the script being run, and
+   of every file reached through `load` or `include`;
+2. the directories in `GOSCHEME_LIBRARY_PATH`, separated by the platform's path
+   separator;
+3. the working directory.
+
+```scheme
+;; lib/greet.sld
+(define-library (lib greet)
+  (export greet)
+  (import (scheme base))
+  (begin (define (greet who) (string-append "hello " who))))
+```
+
+```scheme
+;; main.scm
+(import (scheme base) (scheme write) (lib greet))
+(display (greet "world")) (newline)
+```
+
+Libraries are loaded as they are imported, **recursively**: a library that
+imports another one pulls it in, and `include` inside a library resolves
+relative to the file that defines it.  A cycle between libraries is reported as
+an error rather than recursing forever, and a file that does not define the
+library an import asked for is an error too.  An error raised while a library
+loads is an ordinary condition, so `guard` around the `import` catches it.
+
+`cond-expand`'s `(library ...)` requirement asks whether a library is
+registered *or* findable on the search path.  A program built with
+`goscheme build` searches next to the executable, so libraries can be shipped
+beside it.
+
 ### Data types
 
 Booleans; numbers (exact integers, exact rationals, inexact reals, complex);

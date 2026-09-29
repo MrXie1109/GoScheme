@@ -235,6 +235,38 @@ Makefile                 构建、测试与打包目标
 
 外加扩展库 `(goscheme hash-table)`、`(goscheme channel)` 与 `(goscheme process)`。
 
+### 从文件加载库
+
+不是内置的库会**从搜索路径加载**，因此程序可以导入自己文件里的库。名字
+`(lib greet)` 对应 `lib/greet.sld`（也接受 `.scm`、`.sls`、`.ss`），按以下顺序查找：
+
+1. 加载路径，最内层优先——正在执行的脚本所在目录，以及通过 `load` 或 `include`
+   到达的每个文件所在目录；
+2. `GOSCHEME_LIBRARY_PATH` 中的目录（用平台的路径分隔符分隔）；
+3. 当前工作目录。
+
+```scheme
+;; lib/greet.sld
+(define-library (lib greet)
+  (export greet)
+  (import (scheme base))
+  (begin (define (greet who) (string-append "hello " who))))
+```
+
+```scheme
+;; main.scm
+(import (scheme base) (scheme write) (lib greet))
+(display (greet "world")) (newline)
+```
+
+库在导入时按需加载，并且是**递归**的：一个库导入另一个库会把它一并拉进来；
+库文件里的 `include` 相对定义它的文件解析。库之间形成环会**报错**而不是无限递归；
+文件里定义的库与导入请求的名字不符同样是错误。加载过程中抛出的错误就是普通条件，
+所以把 `import` 放进 `guard` 里可以捕获。
+
+`cond-expand` 的 `(library ...)` 要求会同时检查库是否已注册**或**在搜索路径上找得到。
+用 `goscheme build` 打包的程序会在可执行文件旁边查找，因此库可以随它一起分发。
+
 ### 数据类型
 
 布尔；数值（精确整数、精确有理数、非精确实数、复数）；完整 Unicode 大小写映射

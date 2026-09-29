@@ -447,4 +447,36 @@
 
 (test-end)
 
+
+;; -------------------------------------------------- libraries from files
+;; A library that is not built in is looked for on the search path: (lib greet)
+;; is lib/greet.sld relative to this file's directory.
+(test-begin "Libraries from files")
+
+(import (lib greet) (lib math) (lib use-include))
+(test "hello world" (greet "world"))
+(test "HELLO WORLD" (greet-loud "world"))
+(test 49 (square-of-sum 3 4))              ;; (lib math) imports (lib greet)
+(test 20 (twice (lambda (x) (* x 2)) 5))   ;; include inside a library
+
+;; The import modifiers work on libraries loaded from files too.
+(import (prefix (lib greet) g:))
+(test "hello p" (g:greet "p"))
+(import (only (lib math) square-of-sum))
+(test 9 (square-of-sum 1 2))
+(import (rename (lib greet) (greet hi)))
+(test "hello r" (hi "r"))
+(import (except (lib greet) greet-loud))
+
+;; cond-expand can ask whether a library is available.
+(test #t (cond-expand ((library (lib greet)) #t) (else #f)))
+(test #f (cond-expand ((library (no such library)) #t) (else #f)))
+
+;; A cycle between libraries is an error, not a hang.
+(test 'caught (guard (e (#t 'caught)) (import (lib cycle-a))))
+;; A file that defines a different library is an error too.
+(test 'caught (guard (e (#t 'caught)) (import (lib mismatch))))
+
+(test-end)
+
 (test-end)

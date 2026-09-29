@@ -48,18 +48,23 @@ func (c *Channel) markClosed() bool {
 // stack.  It is the interpreter thread created by (go ...).
 func (m *Machine) Child() *Machine {
 	return &Machine{
-		Global:     m.Global,
-		Builtin:    m.Builtin,
-		Libraries:  m.Libraries,
-		LoadPath:   m.LoadPath,
-		Args:       m.Args,
-		CurIn:      m.CurIn,
-		CurOut:     m.CurOut,
-		CurErr:     m.CurErr,
-		InParam:    m.InParam,
-		OutParam:   m.OutParam,
-		ErrParam:   m.ErrParam,
+		Global:    m.Global,
+		Builtin:   m.Builtin,
+		Libraries: m.Libraries,
+		// The load path is copied so that a thread (or a library being
+		// loaded) cannot disturb the directories its parent is searching.
+		LoadPath: append([]string(nil), m.LoadPath...),
+		Args:     m.Args,
+		CurIn:    m.CurIn,
+		CurOut:   m.CurOut,
+		CurErr:   m.CurErr,
+		InParam:  m.InParam,
+		OutParam: m.OutParam,
+		ErrParam: m.ErrParam,
+		// Libraries and the set of libraries being loaded are shared: a cycle
+		// must be visible across the threads that load a chain of libraries.
 		libExports: m.libExports,
+		libLoading: m.libLoading,
 		wg:         m.wg,
 	}
 }
@@ -68,11 +73,14 @@ func (m *Machine) Child() *Machine {
 // application completes.  It is used to start an interpreter thread.
 func (m *Machine) RunApply(proc Value, args []Value, env *Env) (Value, error) {
 	return m.guardedRun(func() (Value, error) {
+		// The state is cleared first, so the run starts from empty: the base
+		// must be measured before apply, which may push frames of its own.
 		m.stack = m.stack[:0]
 		m.winds = m.winds[:0]
 		m.hands = m.hands[:0]
+		baseStack, baseWinds, baseHands := len(m.stack), len(m.winds), len(m.hands)
 		m.apply(proc, args)
-		return m.runLoop(0)
+		return m.runLoop(baseStack, baseWinds, baseHands)
 	})
 }
 
