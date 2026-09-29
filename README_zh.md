@@ -440,9 +440,14 @@ $ goscheme -e '(let loop ((i 0)) (if (= i 2000000) i (loop (+ i 1))))'
   *指向自己的某个参数*（`strchr` 就是这样），拿到手时已经悬空 —— 只有当这块内存
   由 C 自己持有时（例如 `getenv` 返回的指针），才能把它再传回 C。
 
-  这需要 **cgo**：静态 Go 二进制无法调用共享库，而发布产物是 `CGO_ENABLED=0`，
-  以保持静态与可交叉编译。那种构建里这些名字仍然存在，但会给出明确提示让你用
-  `CGO_ENABLED=1` 重新构建；可用时 `(features)` 会包含 `ffi`。
+  这需要 **cgo**，而发布产物是 `CGO_ENABLED=0`，以保持静态与可交叉编译。那种构建里
+  这些名字仍然存在，但会给出明确提示让你用 `CGO_ENABLED=1` 重新构建；可用时
+  `(features)` 会包含 `ffi`。
+
+  加载共享库是动态加载器的职责，静态链接的程序里没有它可用：在 ELF 平台上，
+  FFI 与静态链接无法兼得，换任何工具链都一样。`docs/ffi-design.md` 记录了得出
+  这个结论的实测过程（musl 与 glibc 各自的行为），以及将来上游要变成什么样才有
+  可能实现。
 * `(assert expr)`、`#!unspecified`、shebang 行
   （`#!/usr/bin/env goscheme`），以及读取器额外接受的指数标记 `s f d l`。
 
