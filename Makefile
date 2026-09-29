@@ -11,10 +11,16 @@ VERSION := $(shell cat cmd/goscheme/VERSION)
 # The platforms that `make dist` produces binaries for.
 PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
+# The platforms that also get a dynamic (cgo) build, which is the flavour with
+# (goscheme ffi).  Each one needs a C compiler for the target; the compilers and
+# the CC_<os>_<arch> overrides are in scripts/build-dist.sh.  Platforms without
+# one are skipped with a message, so this list may name more than you can build.
+DYNAMIC_PLATFORMS ?= linux/amd64 linux/arm64
+
 LDFLAGS := -s -w -X main.version=$(VERSION)
 GOFLAGS := -trimpath
 
-.PHONY: all build test test-short fmt vet clean dist list-dist repl
+.PHONY: all build test test-short fmt vet clean dist list-dist repl examples
 
 all: build
 
@@ -46,22 +52,14 @@ repl: build
 examples: build
 	@GOSCHEME=./$(BUILD)/$(BIN) ./examples/run-all.sh
 
-## dist: cross compile for every supported platform into dist/
+## dist: build every platform into dist/, static and, where a C compiler exists, dynamic
 dist:
-	@mkdir -p $(DIST)
-	@set -e; for p in $(PLATFORMS); do \
-	  os=$${p%%/*}; arch=$${p##*/}; \
-	  out=$(DIST)/goscheme-$$os-$$arch; \
-	  if [ "$$os" = "windows" ]; then out=$$out.exe; fi; \
-	  echo "building $$out"; \
-	  GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $$out ./cmd/goscheme; \
-	done
-	@cd $(DIST) && rm -f SHA256SUMS && sha256sum ./* > SHA256SUMS
-	@ls -l $(DIST)
+	@GO=$(GO) DYNAMIC_PLATFORMS="$(DYNAMIC_PLATFORMS)" ./scripts/build-dist.sh
 
-## list-dist: show the platform matrix
+## list-dist: show the platform matrix, both flavours
 list-dist:
 	@for p in $(PLATFORMS); do echo goscheme-$${p%%/*}-$${p##*/}; done
+	@for p in $(DYNAMIC_PLATFORMS); do echo goscheme-$${p%%/*}-$${p##*/}-dynamic; done
 
 ## clean: remove build artifacts
 clean:

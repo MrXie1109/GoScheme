@@ -516,10 +516,10 @@ Beyond R7RS-small the interpreter also provides:
   you hold it — pass such a pointer straight back to C only if C itself owns
   the memory, as with the pointer `getenv` returns.
 
-  This needs **cgo**, and the released binaries are `CGO_ENABLED=0` so that they
-  stay static and cross-compilable.  Those builds still provide the names and
-  raise a clear error telling you to rebuild with `CGO_ENABLED=1`; `(features)`
-  reports `ffi` when it is available.
+  This needs **cgo**, so it is available in the `-dynamic` builds and in any
+  build you make with `CGO_ENABLED=1`; `(features)` reports `ffi` when it is
+  there.  The static builds still provide the names, and calling one raises a
+  clear error telling you which binary to use instead.
 
   Loading a shared library is the dynamic loader's job, and a statically linked
   program has no loader to do it with: on ELF platforms FFI and static linking
@@ -571,20 +571,40 @@ The concurrency suite also passes under the Go race detector
 
 ## Cross-compilation
 
-`make dist` (or `scripts/build-dist.sh`) builds statically linked binaries for
-every supported target into `dist/`. No cgo, no external toolchain.
+`make dist` (or `scripts/build-dist.sh`) produces two flavours of binary for
+every supported target into `dist/`.
 
-| Artifact | Platform |
-|---|---|
-| `goscheme-linux-amd64` | Linux x86-64 |
-| `goscheme-linux-arm64` | Linux AArch64 |
-| `goscheme-darwin-amd64` | macOS Intel |
-| `goscheme-darwin-arm64` | macOS Apple Silicon |
-| `goscheme-windows-amd64.exe` | Windows x86-64 |
-| `goscheme-windows-arm64.exe` | Windows on ARM |
+| Artifact | Platform | Flavour |
+|---|---|---|
+| `goscheme-linux-amd64` | Linux x86-64 | static |
+| `goscheme-linux-arm64` | Linux AArch64 | static |
+| `goscheme-darwin-amd64` | macOS Intel | static |
+| `goscheme-darwin-arm64` | macOS Apple Silicon | static |
+| `goscheme-windows-amd64.exe` | Windows x86-64 | static |
+| `goscheme-windows-arm64.exe` | Windows on ARM | static |
+| `goscheme-linux-amd64-dynamic` | Linux x86-64 | dynamic, with FFI |
+| `goscheme-linux-arm64-dynamic` | Linux AArch64 | dynamic, with FFI |
 
-Build flags: `GOOS=<os> GOARCH=<arch> CGO_ENABLED=0 go build -trimpath -ldflags "-s -w"`.
-`dist/SHA256SUMS` records the checksum of every artifact.
+The **static** binaries are `CGO_ENABLED=0`: no dependencies at run time and no
+FFI, so `(features)` does not report `ffi`.  The **dynamic** ones are
+`CGO_ENABLED=1`, linked against the platform's C library, and are the only
+flavour that can load shared libraries, so they are the ones with
+`(goscheme ffi)`; they need that C library at run time, and the Linux binaries
+here were built against glibc 2.34, so they need a glibc at least that new.
+
+A dynamic build needs a C compiler *for the target*, which is why only the two
+Linux targets get one by default.  Name the others in `DYNAMIC_PLATFORMS` if you
+have the cross compilers — `CC_<os>_<arch>` overrides the compiler for each
+target, and a target whose compiler is missing is skipped with a message rather
+than failing the run:
+
+```sh
+DYNAMIC_PLATFORMS="linux/amd64" make dist
+CC_windows_amd64=x86_64-w64-mingw32-gcc make dist
+```
+
+Build flags: `GOOS=<os> GOARCH=<arch> CGO_ENABLED=<0|1> go build -trimpath
+-ldflags "-s -w"`.  `dist/SHA256SUMS` records the checksum of every artifact.
 
 ## Requirements
 

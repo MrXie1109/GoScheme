@@ -460,9 +460,9 @@ $ goscheme -e '(let loop ((i 0)) (if (= i 2000000) i (loop (+ i 1))))'
   *指向自己的某个参数*（`strchr` 就是这样），拿到手时已经悬空 —— 只有当这块内存
   由 C 自己持有时（例如 `getenv` 返回的指针），才能把它再传回 C。
 
-  这需要 **cgo**，而发布产物是 `CGO_ENABLED=0`，以保持静态与可交叉编译。那种构建里
-  这些名字仍然存在，但会给出明确提示让你用 `CGO_ENABLED=1` 重新构建；可用时
-  `(features)` 会包含 `ffi`。
+  这需要 **cgo**，所以它在 `-dynamic` 产物里、以及你自己用 `CGO_ENABLED=1` 构建的
+  版本里可用；可用时 `(features)` 会包含 `ffi`。静态产物里这些名字仍然存在，调用时
+  会给出明确提示，告诉你该换哪个二进制。
 
   加载共享库是动态加载器的职责，静态链接的程序里没有它可用：在 ELF 平台上，
   FFI 与静态链接无法兼得，换任何工具链都一样。`docs/ffi-design.md` 记录了得出
@@ -507,19 +507,35 @@ go test -short ./...                          # 跳过参考套件
 
 ## 交叉编译
 
-`make dist`（或 `scripts/build-dist.sh`）会把所有目标平台的静态链接可执行文件
-输出到 `dist/`，不依赖 cgo，也不需要额外的工具链。
+`make dist`（或 `scripts/build-dist.sh`）会为每个目标平台产出**两种风味**的产物，
+输出到 `dist/`。
 
-| 产物 | 平台 |
-|---|---|
-| `goscheme-linux-amd64` | Linux x86-64 |
-| `goscheme-linux-arm64` | Linux AArch64 |
-| `goscheme-darwin-amd64` | macOS Intel |
-| `goscheme-darwin-arm64` | macOS Apple Silicon |
-| `goscheme-windows-amd64.exe` | Windows x86-64 |
-| `goscheme-windows-arm64.exe` | Windows on ARM |
+| 产物 | 平台 | 风味 |
+|---|---|---|
+| `goscheme-linux-amd64` | Linux x86-64 | 静态 |
+| `goscheme-linux-arm64` | Linux AArch64 | 静态 |
+| `goscheme-darwin-amd64` | macOS Intel | 静态 |
+| `goscheme-darwin-arm64` | macOS Apple Silicon | 静态 |
+| `goscheme-windows-amd64.exe` | Windows x86-64 | 静态 |
+| `goscheme-windows-arm64.exe` | Windows on ARM | 静态 |
+| `goscheme-linux-amd64-dynamic` | Linux x86-64 | 动态，带 FFI |
+| `goscheme-linux-arm64-dynamic` | Linux AArch64 | 动态，带 FFI |
 
-编译参数：`GOOS=<os> GOARCH=<arch> CGO_ENABLED=0 go build -trimpath -ldflags "-s -w"`。
+**静态**产物是 `CGO_ENABLED=0`：运行时无依赖、也没有 FFI，`(features)` 不含
+`ffi`。**动态**产物是 `CGO_ENABLED=1`，链接平台自身的 C 库，是唯一能加载共享库的
+风味，也就是带 `(goscheme ffi)` 的那一个；它运行时需要该 C 库，而这里的 Linux 产物
+是针对 glibc 2.34 构建的，所以需要不低于该版本的 glibc。
+
+动态构建需要**目标平台的** C 编译器，所以默认只有两个 Linux 目标有；如果你有对应的
+交叉编译器，把其它目标写进 `DYNAMIC_PLATFORMS` 即可，每个目标的编译器可用
+`CC_<os>_<arch>` 覆盖，找不到编译器时会给出提示并跳过该目标，而不是让整轮构建失败：
+
+```sh
+DYNAMIC_PLATFORMS="linux/amd64" make dist
+CC_windows_amd64=x86_64-w64-mingw32-gcc make dist
+```
+
+编译参数：`GOOS=<os> GOARCH=<arch> CGO_ENABLED=<0|1> go build -trimpath -ldflags "-s -w"`。
 `dist/SHA256SUMS` 记录每个产物的校验和。
 
 ## 环境要求
