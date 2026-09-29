@@ -25,6 +25,7 @@ $ goscheme -e '(display (map (lambda (x) (* x x)) (list 1 2 3 4))) (newline)'
 ## 目录
 
 - [快速开始](#快速开始)
+- [在 Go 程序里嵌入](#在-go-程序里嵌入)
 - [示例](#示例)
 - [命令行](#命令行)
 - [独立可执行文件](#独立可执行文件)
@@ -46,7 +47,7 @@ make build          # 或者：go build -o .build/goscheme ./cmd/goscheme
 make test           # Go 单元测试 + 两个 Scheme 测试套件
 make dist           # 交叉编译全部目标平台到 dist/
 
-./.build/goscheme -v   # GoScheme 1.9.0 (R7RS)
+./.build/goscheme -v   # GoScheme 2.0.0 (R7RS)
 ```
 
 版本号来自 `cmd/goscheme/VERSION`，并被内嵌进二进制，因此即使直接用 `go build`
@@ -60,6 +61,34 @@ make dist           # 交叉编译全部目标平台到 dist/
 ./.build/goscheme                             # 交互式 REPL
 ./.build/goscheme -i program.scm              # 载入文件后进入 REPL
 ```
+
+## 在 Go 程序里嵌入
+
+仓库根包就是作为库的解释器，所以 Go 程序可以用 Scheme 做配置或插件语言：
+
+```go
+import goscheme "github.com/MrXie1109/GoScheme"
+
+i := goscheme.New()
+i.Define("double", 1, 1, func(args []goscheme.Value) (goscheme.Value, error) {
+    n, ok := args[0].Int()
+    if !ok {
+        return goscheme.Value{}, fmt.Errorf("double: 需要整数")
+    }
+    return goscheme.Int(n * 2), nil
+})
+
+v, _ := i.Eval("(double 21)")           // 42
+square, _ := i.Lookup("square")
+v, _ = i.Call(square, goscheme.Int(12)) // Go 调用 Scheme 过程
+```
+
+全部接口就是 `Eval`、`EvalFile`、`Define`、`Lookup`、`Call`、`SetOutput`、
+`SetArgs`；`Value` 提供带类型的取值方法（`Int`、`Float`、`Str`、`Bool`、
+`Slice`、`IsNil`、`IsFalse`、`IsProcedure`），读结果不需要写类型分支。宿主函数
+返回的 error 会变成普通 Scheme 条件，Scheme 侧可以用 `guard` 捕获。每个 `Interp`
+有独立环境，两个解释器互相看不见对方的定义。`examples/embed/main.go` 用到了全部
+这些。
 
 ## 示例
 
@@ -411,6 +440,43 @@ $ goscheme -e '(let loop ((i 0)) (if (= i 2000000) i (loop (+ i 1))))'
 普通 Scheme 数据（序对、字符串、向量、记录）**没有**同步——请通过通信共享内存。
 
 ### 扩展
+
+* `(goscheme sync)` —— 并发故事的另一半：`make-mutex`、`mutex-lock!`、
+  `mutex-unlock!`、`with-mutex`（无论 body 怎样离开都会释放锁）、
+  `make-waitgroup` 与 `waitgroup-add!`/`-done!`/`-wait`、`make-once` 与
+  `once-run!`，以及无锁的 `make-atomic` 计数器。
+* `(goscheme socket)` —— `(tcp-listen port [host])`、`(tcp-accept listener
+  [mode])`、`(tcp-connect host port [mode])`、`tcp-listener-port`、
+  `tcp-close-listener`。连接就是双向的普通端口，所以 `read-line` 与
+  `write-string` 就是全部协议词汇，而 `(go ...)` 让监听器变成服务器。host 默认
+  是回环地址；mode 是 `'textual` 或 `'binary`。
+* `(goscheme http)` —— `http-get`、`http-post`、`http-put`、`http-delete`、
+  `http-head` 返回正文；`http-request` 返回整个响应（`http-response-status`、
+  `-body`、`-header`、`-content-type`）。`(http-serve port handler [host])`
+  启动服务器，handler 就是接收请求的普通过程（`http-request-method`、`-path`、
+  `-query`、`-header`、`-body`）；net/http 为每个请求开一个解释器线程，handler
+  抛错会变成 500 而不是整个进程崩掉。
+* `(goscheme json)` —— `json-parse` 与 `json-write`。对象是字符串键的 `equal?`
+  哈希表，数组是向量，JSON 的 `null` 是符号 `null`；整数字面量无论多少位都保持精确。
+* `(goscheme regexp)` —— `regexp`、`regexp-match`（含捕获组）、`regexp-match?`、
+  `regexp-match-positions`、`regexp-replace`（可用 `$1`）、`regexp-replace-all`、
+  `regexp-split`，底层是 Go 的 RE2 引擎。
+* `(goscheme time)` —— `sleep`、`current-millisecond`、`monotonic-millisecond`、
+  `time-format`、`time-parse`、`time-utc-parts`。时长以毫秒为单位，与
+  `(after ms)` 一致。
+* `(goscheme fs)` —— `glob`、`directory-walk`、`directory-list`、
+  `create-directory`、`create-directory-tree`、`delete-directory`、
+  `delete-directory-tree`、`path-join`、`path-directory`、`path-base`、
+  `path-extension`、`path-absolute`、`file-size`。
+* `(goscheme match)` —— 模式匹配：`_`、符号（做绑定）、`(quote datum)`、字面量、
+  `()`、`(p ... . rest)`、`#(p ...)`，以及 `(and ...)`、`(or ...)`、`(not ...)`。
+  一个 clause 写作 `(pattern body ...)` 或 `(pattern (guard test) body ...)`——
+  guard 跟在 pattern 后面，不在它里面：`((n (guard #t)) body)` 是在匹配一个二元
+  列表。
+* `(goscheme process)` —— 在 `system`/`system*` 之上补上 `popen` 那一对：
+  `(open-input-process program arg ...)` 是子进程输出的端口，
+  `(open-output-process program arg ...)` 是其输入的端口，
+  `(process-status port)` 在端口关闭后给出退出状态。两个用循环接起来就是管道。
 
 除 R7RS-small 之外，解释器还提供：
 

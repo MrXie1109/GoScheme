@@ -40,6 +40,10 @@ $ GOSCHEME=./dist/goscheme-linux-amd64 ./examples/run-all.sh
 | `processes.scm` | `(goscheme process)`: `system` through the shell versus `system*` directly, exit statuses including signal deaths, inherited standard streams, and a missing program as a file error. |
 | `script-args.scm` | `(command-line)` and why the interpreter's name is not in it, `(assert ...)` as a catchable condition, `#!unspecified`, and `(features)`. |
 | `libraries/main.scm` | Importing libraries from files: `(lib greet)` is read from `lib/greet.sld`, and `(lib namer)` imports it in turn. |
+| `tcp-server.scm` | `(goscheme socket)` and `(goscheme sync)`: one thread accepts, one thread per connection echoes, and three clients talk to it at once. |
+| `http-server.scm` | `(goscheme http)`: routes, a JSON response, a header check, a 500 from a handler that raises, and the client half. |
+| `pipes.scm` | `(goscheme process)`: two children joined into a pipeline with `open-input-process` and `open-output-process`. |
+| `embed/main.go` | A Go program using the interpreter as a library — `go run ./examples/embed`. |
 
 ## Libraries from files
 

@@ -28,6 +28,30 @@ VERSION=$(cat "$ROOT/cmd/goscheme/VERSION")
 LDFLAGS="-s -w -X main.version=$VERSION"
 GOFLAGS=${GOFLAGS:--trimpath}
 
+# The released binaries are packed with UPX when it is installed, which takes
+# them from about 7M to about 2.8M.  A packed binary unpacks itself on every
+# start (a few milliseconds) and some virus scanners dislike the packer, so
+# UPX=0 turns it off.  It is compatible with `goscheme build`: the trailer that
+# build appends is still found by the unpacked program.
+UPX=${UPX:-auto}
+pack() {
+    # $1 is the file, $2 the target OS.  macOS is left alone on purpose: UPX
+    # refuses it without --force-macos, and a packed Mach-O cannot be code
+    # signed, which macOS insists on.  Windows on ARM is also left alone,
+    # because UPX does not pack PE/AArch64.
+    if [ "$UPX" = "0" ] || [ "$2" = "darwin" ]; then
+        return 0
+    fi
+    if ! command -v upx >/dev/null 2>&1; then
+        if [ "$UPX" = "auto" ]; then
+            return 0
+        fi
+        echo "upx not found, but UPX=$UPX was asked for" >&2
+        return 1
+    fi
+    upx -q --best "$1" >/dev/null 2>&1 || true
+}
+
 # The C compiler for a dynamic build of each platform.  The defaults are the
 # names the usual cross toolchains install as; override with CC_<os>_<arch>.
 cc_for() {
@@ -40,6 +64,20 @@ cc_for() {
     windows/arm64) echo "${CC_windows_arm64:-aarch64-w64-mingw32-gcc}" ;;
     *) echo "${CC:-cc}" ;;
     esac
+}
+
+# packState says whether a file ended up packed, so that a target UPX cannot
+# handle is visible in the build log instead of looking like a failure.
+packState() {
+    if [ "$UPX" = "0" ] || [ "$2" = "darwin" ]; then
+        echo unpacked
+        return
+    fi
+    if command -v upx >/dev/null 2>&1 && upx -l "$1" >/dev/null 2>&1; then
+        echo packed
+    else
+        echo unpacked
+    fi
 }
 
 mkdir -p "$DIST"
@@ -59,7 +97,8 @@ for p in $platforms; do
     out="$DIST/goscheme-$os-$arch$suffix"
     printf 'building %-36s ' "$(basename "$out")"
     GOOS=$os GOARCH=$arch CGO_ENABLED=0 "$GO" build $GOFLAGS -ldflags "$LDFLAGS" -o "$out" ./cmd/goscheme
-    printf 'ok\n'
+    pack "$out" "$os"
+    printf 'ok (%s %s)\n' "$(packState "$out" "$os")" "$(du -h "$out" | cut -f1)"
 
     case " $DYNAMIC_PLATFORMS " in
     *" $p "*)
@@ -71,7 +110,8 @@ for p in $platforms; do
         out="$DIST/goscheme-$os-$arch-dynamic$suffix"
         printf 'building %-36s ' "$(basename "$out")"
         GOOS=$os GOARCH=$arch CGO_ENABLED=1 CC=$cc "$GO" build $GOFLAGS -ldflags "$LDFLAGS" -o "$out" ./cmd/goscheme
-        printf 'ok\n'
+        pack "$out" "$os"
+        printf 'ok (%s %s)\n' "$(packState "$out" "$os")" "$(du -h "$out" | cut -f1)"
         ;;
     esac
 done

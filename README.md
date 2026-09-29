@@ -29,6 +29,7 @@ $ goscheme -e '(display (map (lambda (x) (* x x)) (list 1 2 3 4))) (newline)'
 ## Table of contents
 
 - [Quick start](#quick-start)
+- [Embedding in a Go program](#embedding-in-a-go-program)
 - [Examples](#examples)
 - [Command line](#command-line)
 - [Standalone executables](#standalone-executables)
@@ -50,7 +51,7 @@ make build          # or: go build -o .build/goscheme ./cmd/goscheme
 make test           # Go unit tests + both Scheme test suites
 make dist           # cross-compile every supported platform into dist/
 
-./.build/goscheme -v   # GoScheme 1.9.0 (R7RS)
+./.build/goscheme -v   # GoScheme 2.0.0 (R7RS)
 ```
 
 The version comes from `cmd/goscheme/VERSION`, which is embedded in the binary,
@@ -65,6 +66,36 @@ Run a program, evaluate an expression, or start a REPL:
 ./.build/goscheme                             # interactive REPL
 ./.build/goscheme -i program.scm              # load, then REPL
 ```
+
+## Embedding in a Go program
+
+The repository's root package is the interpreter as a library, so a Go program
+can use Scheme for configuration or as a plugin language:
+
+```go
+import goscheme "github.com/MrXie1109/GoScheme"
+
+i := goscheme.New()
+i.Define("double", 1, 1, func(args []goscheme.Value) (goscheme.Value, error) {
+    n, ok := args[0].Int()
+    if !ok {
+        return goscheme.Value{}, fmt.Errorf("double: expected an integer")
+    }
+    return goscheme.Int(n * 2), nil
+})
+
+v, _ := i.Eval("(double 21)")          // 42
+square, _ := i.Lookup("square")
+v, _ = i.Call(square, goscheme.Int(12)) // Go driving a Scheme procedure
+```
+
+`Eval`, `EvalFile`, `Define`, `Lookup`, `Call`, `SetOutput` and `SetArgs` are
+the whole surface; `Value` has typed accessors (`Int`, `Float`, `Str`, `Bool`,
+`Slice`, `IsNil`, `IsFalse`, `IsProcedure`) so reading a result back does not
+need a type switch.  An error returned by a host function becomes an ordinary
+Scheme condition, which the Scheme side may catch with `guard`.  Each `Interp`
+has its own environment, so two interpreters cannot see each other's
+definitions.  `examples/embed/main.go` is a program that uses all of it.
 
 ## Examples
 
@@ -461,6 +492,47 @@ strings, vectors, records) is *not* synchronised — share memory by
 communicating.
 
 ### Extensions
+
+* `(goscheme sync)` — the other half of the concurrency story: `make-mutex`,
+  `mutex-lock!`, `mutex-unlock!`, `with-mutex` (which releases the lock however
+  the body leaves), `make-waitgroup` with `waitgroup-add!`/`-done!`/`-wait`,
+  `make-once` with `once-run!`, and lock-free `make-atomic` counters.
+* `(goscheme socket)` — `(tcp-listen port [host])`, `(tcp-accept listener
+  [mode])`, `(tcp-connect host port [mode])`, `tcp-listener-port`,
+  `tcp-close-listener`.  A connection is an ordinary port in both directions, so
+  `read-line` and `write-string` are the whole protocol vocabulary, and `(go
+  ...)` turns a listener into a server.  The host defaults to the loopback
+  address; `mode` is `'textual` or `'binary`.
+* `(goscheme http)` — `http-get`, `http-post`, `http-put`, `http-delete`,
+  `http-head` return the body; `http-request` returns the whole response
+  (`http-response-status`, `-body`, `-header`, `-content-type`).  `(http-serve
+  port handler [host])` starts a server whose handler is an ordinary procedure
+  taking a request (`http-request-method`, `-path`, `-query`, `-header`,
+  `-body`); net/http runs one interpreter thread per request, and a handler that
+  raises becomes a 500 rather than a dead process.
+* `(goscheme json)` — `json-parse` and `json-write`.  Objects are `equal?` hash
+  tables with string keys, arrays are vectors, and JSON `null` is the symbol
+  `null`; integral literals stay exact however many digits they have.
+* `(goscheme regexp)` — `regexp`, `regexp-match` (with capture groups),
+  `regexp-match?`, `regexp-match-positions`, `regexp-replace` (with `$1`),
+  `regexp-replace-all`, `regexp-split`, using Go's RE2 engine.
+* `(goscheme time)` — `sleep`, `current-millisecond`, `monotonic-millisecond`,
+  `time-format`, `time-parse`, `time-utc-parts`.  Durations are milliseconds,
+  the same unit `(after ms)` takes.
+* `(goscheme fs)` — `glob`, `directory-walk`, `directory-list`,
+  `create-directory`, `create-directory-tree`, `delete-directory`,
+  `delete-directory-tree`, `path-join`, `path-directory`, `path-base`,
+  `path-extension`, `path-absolute`, `file-size`.
+* `(goscheme match)` — pattern matching: `_`, symbols (which bind), `(quote
+  datum)`, literals, `()`, `(p ... . rest)`, `#(p ...)`, and `(and ...)`,
+  `(or ...)`, `(not ...)`.  A clause is `(pattern body ...)` or `(pattern
+  (guard test) body ...)` — the guard follows the pattern, it is not inside it:
+  `((n (guard #t)) body)` is a pattern matching a two-element list.
+* `(goscheme process)` — the `popen` pair on top of `system`/`system*`:
+  `(open-input-process program arg ...)` is a port on the child's output,
+  `(open-output-process program arg ...)` a port on its input, and
+  `(process-status port)` its exit status once the port is closed.  Two of them
+  joined by a loop are a pipeline.
 
 Beyond R7RS-small the interpreter also provides:
 

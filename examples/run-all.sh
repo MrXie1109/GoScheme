@@ -46,6 +46,9 @@ run script-args.scm    "$here/script-args.scm" alpha beta
 run numbers.scm        "$here/numbers.scm"
 run recursion.scm      "$here/recursion.scm"
 run concurrency.scm    "$here/concurrency.scm"
+run tcp-server.scm     "$here/tcp-server.scm"
+run http-server.scm    "$here/http-server.scm"
+run pipes.scm          "$here/pipes.scm"
 run libraries/main.scm "$here/libraries/main.scm"
 
 echo

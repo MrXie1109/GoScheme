@@ -39,6 +39,10 @@ $ GOSCHEME=./dist/goscheme-linux-amd64 ./examples/run-all.sh
 | `processes.scm` | `(goscheme process)`：走 shell 的 `system` 与直接执行的 `system*`、退出状态（含被信号杀死的情况）、子进程继承标准流，以及"程序不存在"是文件错误。 |
 | `script-args.scm` | `(command-line)` 以及解释器名字为何不在其中、`(assert ...)` 是可捕获的普通条件、`#!unspecified`、`(features)`。 |
 | `libraries/main.scm` | 从文件加载库：`(lib greet)` 从 `lib/greet.sld` 读取，而 `(lib namer)` 又导入了它。 |
+| `tcp-server.scm` | `(goscheme socket)` 与 `(goscheme sync)`：一个线程 accept，每个连接一个线程回显，三个客户端同时访问。 |
+| `http-server.scm` | `(goscheme http)`：路由、JSON 响应、头部检查、handler 抛错变成 500，以及客户端那一半。 |
+| `pipes.scm` | `(goscheme process)`：用 `open-input-process` 与 `open-output-process` 把两个子进程接成管道。 |
+| `embed/main.go` | 把解释器当库用的 Go 程序 —— `go run ./examples/embed`。 |
 
 ## 从文件加载库
 
