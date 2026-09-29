@@ -26,7 +26,7 @@ all: build
 
 ## build: compile the interpreter for the host platform
 build:
-	$(GO) build $(GOFLAGS) -ldflags "-X main.version=$(VERSION)" -o $(BUILD)/$(BIN) ./cmd/goscheme
+	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD)/$(BIN) ./cmd/goscheme
 
 ## test: run the Go unit tests and the Scheme test suites
 test:

@@ -67,6 +67,30 @@ func NewPortFromFile(name string, f interface{}, input bool, textual bool) *Port
 	return p
 }
 
+// NewPortFromStream wraps a bidirectional stream — a socket, a pipe, a child
+// process — as a port that may be both read and written.  Whatever directions
+// the stream supports are the directions the port has, and closing the port
+// closes the stream, which is what makes a TCP connection usable with the
+// ordinary Scheme input and output procedures.
+func NewPortFromStream(name string, stream interface{}, textual bool) *Port {
+	p := &Port{Name: name, Line: 1}
+	if r, ok := stream.(io.Reader); ok {
+		p.IsInput = true
+		p.rd = bufio.NewReaderSize(r, 8192)
+	}
+	if w, ok := stream.(io.Writer); ok {
+		p.IsOut = true
+		p.wr = w
+	}
+	if !textual {
+		p.Binary = true
+	}
+	if c, ok := stream.(io.Closer); ok {
+		p.closer = c
+	}
+	return p
+}
+
 // NewInputStringPort builds a textual input port over a string.
 func NewInputStringPort(s string) *Port {
 	b := bytes.NewBufferString(s)

@@ -66,34 +66,32 @@ func TestR7RSReferenceSuite(t *testing.T) {
 	t.Log(strings.TrimSpace(out))
 }
 
-func TestGoSchemeSuite(t *testing.T) {
-	path := filepath.Join("..", "..", "test", "scheme", "goscheme-tests.scm")
-	if _, err := os.Stat(path); err != nil {
-		t.Skipf("suite not available: %v", err)
-	}
-	out, code, err := runSuite(t, path)
-	if err != nil {
-		t.Fatalf("suite aborted: %v\n%s", err, out)
-	}
-	if code != 0 {
-		t.Fatalf("suite reported failures:\n%s", out)
-	}
-	t.Log(strings.TrimSpace(out))
+// extensionSuites are the suites for the extensions this interpreter adds to
+// R7RS.  Each is run as its own subtest, so a failure names the suite.
+var extensionSuites = []string{
+	"goscheme-tests.scm",
+	"goscheme-concurrency-tests.scm",
+	"goscheme-network-tests.scm",
 }
 
-func TestGoSchemeConcurrencySuite(t *testing.T) {
-	path := filepath.Join("..", "..", "test", "scheme", "goscheme-concurrency-tests.scm")
-	if _, err := os.Stat(path); err != nil {
-		t.Skipf("suite not available: %v", err)
+func TestExtensionSuites(t *testing.T) {
+	for _, name := range extensionSuites {
+		name := name
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join("..", "..", "test", "scheme", name)
+			if _, err := os.Stat(path); err != nil {
+				t.Skipf("suite not available: %v", err)
+			}
+			out, code, err := runSuite(t, path)
+			if err != nil {
+				t.Fatalf("suite aborted: %v\n%s", err, out)
+			}
+			if code != 0 {
+				t.Fatalf("suite reported failures:\n%s", out)
+			}
+			t.Log(strings.TrimSpace(out))
+		})
 	}
-	out, code, err := runSuite(t, path)
-	if err != nil {
-		t.Fatalf("suite aborted: %v\n%s", err, out)
-	}
-	if code != 0 {
-		t.Fatalf("concurrency suite reported failures:\n%s", out)
-	}
-	t.Log(strings.TrimSpace(out))
 }
 
 func TestReader(t *testing.T) {

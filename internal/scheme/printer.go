@@ -279,6 +279,8 @@ func (p *printer) printRaw(sb *strings.Builder, v Value) {
 		fmt.Fprintf(sb, "#<once %s>", state)
 	case *Atomic:
 		fmt.Fprintf(sb, "#<atomic %d>", x.n.Load())
+	case *TcpListener:
+		fmt.Fprintf(sb, "#<tcp-listener %s>", x.ln.Addr().String())
 	case *MultipleValues:
 		for i, mv := range x.Values {
 			if i > 0 {
