@@ -232,6 +232,7 @@ func installBuiltins(m *Machine) {
 	installSystem(m)
 	installHashtables(m)
 	installConcurrency(m)
+	installSync(m)
 	installProcess(m)
 	installFFI(m)
 	installR5RS(m)

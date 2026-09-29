@@ -230,4 +230,86 @@
 
 (test-end)
 
+;; ------------------------------------------------------- sync: mutex and friends
+(test-begin "Sync")
+
+(test #t (mutex? (make-mutex)))
+(test #f (mutex? 5))
+
+;; with-mutex runs its body under the lock and returns its value.
+(test 3 (with-mutex (make-mutex) (+ 1 2)))
+
+;; The lock is released however the body leaves, so a raise does not leave it
+;; held forever.
+(define mu (make-mutex))
+(test 'raised (guard (e (#t 'raised)) (with-mutex mu (raise 'boom))))
+(test 'usable (with-mutex mu 'usable))
+
+;; The explicit pair works too.
+(mutex-lock! mu)
+(test 'locked (begin (mutex-unlock! mu) 'locked))
+
+;; A lock actually serialises threads: every increment is seen.
+(define shared 0)
+(define guards (make-mutex))
+(define threads (make-waitgroup))
+(let loop ((i 0))
+  (if (< i 200)
+      (begin
+        (waitgroup-add! threads)
+        (go (with-mutex guards (set! shared (+ shared 1)))
+            (waitgroup-done! threads))
+        (loop (+ i 1)))))
+(waitgroup-wait threads)
+(test 200 shared)
+(test 0 (waitgroup-count threads))
+(test #t (waitgroup? threads))
+(test #f (waitgroup? mu))
+
+;; add!/done! keep the count honest instead of panicking in Go.
+(test 'negative (guard (e (#t 'negative)) (waitgroup-add! (make-waitgroup) -1)))
+(test 'underflow (guard (e (#t 'underflow)) (waitgroup-done! (make-waitgroup))))
+
+;; once-run! runs the thunk the first time and remembers the value.
+(define once-ran 0)
+(define o (make-once))
+(test #t (once? o))
+(test #f (once? 5))
+(test 7 (once-run! o (lambda () (set! once-ran (+ once-ran 1)) 7)))
+(test 7 (once-run! o (lambda () (set! once-ran (+ once-ran 1)) 99)))
+(test 1 once-ran)
+(test #t (once-done? o))
+
+;; A thunk that raises does not count as the first run.
+(define o2 (make-once))
+(test 'boom (guard (e (#t 'boom)) (once-run! o2 (lambda () (raise 'boom)))))
+(test #f (once-done? o2))
+(test 5 (once-run! o2 (lambda () 5)))
+
+;; Atomics need no lock, and every increment lands.
+(define counter (make-atomic))
+(test #t (atomic? counter))
+(test 0 (atomic-ref counter))
+(atomic-set! counter 10)
+(test 10 (atomic-ref counter))
+(test 15 (atomic-add! counter 5))
+(test 15 (atomic-swap! counter 3))
+(test 3 (atomic-ref counter))
+(test #t (atomic-compare-and-set! counter 3 4))
+(test #f (atomic-compare-and-set! counter 99 5))
+(test 4 (atomic-ref counter))
+
+(define hits (make-atomic))
+(define bumpers (make-waitgroup))
+(let loop ((i 0))
+  (if (< i 200)
+      (begin
+        (waitgroup-add! bumpers)
+        (go (atomic-add! hits 1) (waitgroup-done! bumpers))
+        (loop (+ i 1)))))
+(waitgroup-wait bumpers)
+(test 200 (atomic-ref hits))
+
+(test-end)
+
 (test-end)

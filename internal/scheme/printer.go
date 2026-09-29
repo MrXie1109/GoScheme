@@ -267,6 +267,18 @@ func (p *printer) printRaw(sb *strings.Builder, v Value) {
 		fmt.Fprintf(sb, "#<channel cap=%d %s>", x.capacity, state)
 	case *ForeignLibrary:
 		fmt.Fprintf(sb, "#<foreign-library %s>", x.Name)
+	case *Mutex:
+		sb.WriteString("#<mutex>")
+	case *WaitGroup:
+		fmt.Fprintf(sb, "#<waitgroup count=%d>", x.count)
+	case *Once:
+		state := "not run"
+		if x.done {
+			state = "done"
+		}
+		fmt.Fprintf(sb, "#<once %s>", state)
+	case *Atomic:
+		fmt.Fprintf(sb, "#<atomic %d>", x.n.Load())
 	case *MultipleValues:
 		for i, mv := range x.Values {
 			if i > 0 {
