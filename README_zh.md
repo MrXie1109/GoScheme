@@ -34,6 +34,7 @@ $ goscheme -e '(display (map (lambda (x) (* x x)) (list 1 2 3 4))) (newline)'
 - [交叉编译](#交叉编译)
 - [环境要求](#环境要求)
 - [已知限制](#已知限制)
+- [许可证](#许可证)
 
 ## 快速开始
 
@@ -439,3 +440,9 @@ go test -short ./...                          # 跳过参考套件
 * 按报告允许的行为，`write-simple` 作用于环状数据时可能不会终止。
 * 并发扩展遵循 Go 而不是 R7RS/R6RS 的线程提案：没有互斥量、条件变量，也没有
   线程局部的动态状态，`(go-wait)` 是“等待全部”的粗粒度操作。
+
+## 许可证
+
+MIT，详见 [LICENSE](LICENSE)。
+
+Copyright (c) 2026 MrXie1109。

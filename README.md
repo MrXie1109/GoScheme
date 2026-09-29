@@ -38,6 +38,7 @@ $ goscheme -e '(display (map (lambda (x) (* x x)) (list 1 2 3 4))) (newline)'
 - [Cross-compilation](#cross-compilation)
 - [Requirements](#requirements)
 - [Known limitations](#known-limitations)
+- [License](#license)
 
 ## Quick start
 
@@ -489,3 +490,9 @@ Build flags: `GOOS=<os> GOARCH=<arch> CGO_ENABLED=0 go build -trimpath -ldflags 
 * The concurrency extension follows Go rather than the R7RS/R6RS thread
   proposals: there are no mutexes, condition variables or thread-local dynamic
   state, and `(go-wait)` is a blunt "wait for everything".
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+Copyright (c) 2026 MrXie1109.
