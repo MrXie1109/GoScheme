@@ -53,6 +53,10 @@ type Reader struct {
 	src      RuneScanner
 	FoldCase bool
 	labels   map[int]Value
+	// pending holds a datum that skipAtmosphere recognised while skipping, as
+	// #!unspecified is a datum even though other #! words are directives.
+	pending    Value
+	hasPending bool
 	// Source is used in error messages.
 	Source string
 	Line   int
@@ -98,6 +102,16 @@ func (r *Reader) peekRune() (rune, bool) {
 	}
 	r.unget(ch)
 	return ch, true
+}
+
+// takePending reports a datum that skipAtmosphere recognised while skipping.
+func (r *Reader) takePending() (Value, bool) {
+	if !r.hasPending {
+		return nil, false
+	}
+	v := r.pending
+	r.pending, r.hasPending = nil, false
+	return v, true
 }
 
 // errMsg renders a reader error message, including the source position.
@@ -200,6 +214,13 @@ func (r *Reader) skipAtmosphere() error {
 					r.FoldCase = true
 				case "no-fold-case":
 					r.FoldCase = false
+				case "unspecified":
+					// Not a directive but a datum, and the only way to get a
+					// value out of skipAtmosphere is to leave it here: the
+					// printer writes the unspecified value as #!unspecified, so
+					// the reader has to accept it back.
+					r.pending, r.hasPending = UnspecifiedValue, true
+					return nil
 				default:
 					return r.errf("unknown directive #!%s", word)
 				}
@@ -241,6 +262,9 @@ func (r *Reader) skipBlockComment() error {
 func (r *Reader) readDatum() (Value, error) {
 	if err := r.skipAtmosphere(); err != nil {
 		return nil, err
+	}
+	if v, ok := r.takePending(); ok {
+		return v, nil
 	}
 	ch, ok := r.readRune()
 	if !ok {
@@ -305,7 +329,22 @@ func (r *Reader) readList(close rune) (Value, error) {
 	// A leading dot is invalid; handled by readDatum returning an error.
 	for {
 		if err := r.skipAtmosphere(); err != nil {
-			return nil, r.incompletef("unterminated list")
+			// Only a real end of input means the list is unfinished; a syntax
+			// error inside the list is reported as itself.
+			if err == io.EOF {
+				return nil, r.incompletef("unterminated list")
+			}
+			return nil, err
+		}
+		if v, ok := r.takePending(); ok {
+			cell := &Pair{Car: v, Cdr: Nil}
+			if head == nil {
+				head = cell
+			} else {
+				tail.Cdr = cell
+			}
+			tail = cell
+			continue
 		}
 		ch, ok := r.readRune()
 		if !ok {
@@ -346,7 +385,10 @@ func (r *Reader) readList(close rune) (Value, error) {
 			}
 			tail.Cdr = t
 			if err := r.skipAtmosphere(); err != nil {
-				return nil, r.incompletef("unterminated list")
+				if err == io.EOF {
+					return nil, r.incompletef("unterminated list")
+				}
+				return nil, err
 			}
 			c, ok := r.readRune()
 			if !ok || (c != close && !(close == ')' && c == ']') && !(close == ']' && c == ')')) {
@@ -506,6 +548,18 @@ func (r *Reader) readHash() (Value, error) {
 		}
 		items, _ := ListToSlice(lst)
 		return NewVectorFrom(items), nil
+	case '!':
+		// #!unspecified is a datum, not a directive, and the printer writes the
+		// unspecified value in exactly this form, so the reader must accept it.
+		// Every other #! word is atmosphere and never reaches the datum reader.
+		word, err := r.readToken()
+		if err != nil {
+			return nil, err
+		}
+		if word == "unspecified" {
+			return UnspecifiedValue, nil
+		}
+		return nil, r.errf("unknown directive #!%s", word)
 	case 'u', 'U':
 		// #u8(
 		word := []rune{ch}

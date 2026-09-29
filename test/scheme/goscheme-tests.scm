@@ -375,6 +375,42 @@
 
 (test 2 (hash-table-size (alist->hash-table '((a . 1) (b . 2)))))
 
+;; hash returns a non-negative exact integer, equal keys agree, and an optional
+;; bound restricts the result (SRFI 125).
+(test #t (exact? (hash 'x)))
+(test #t (>= (hash 'x) 0))
+(test #t (= (hash '(1 2)) (hash (list 1 2))))
+(test 0 (hash 'x 1))
+(test #t (let ((h (hash "anything" 16))) (and (<= 0 h) (< h 16))))
+(test #t (guard (e (#t #t)) (hash 'x 0)))
+(test #t (guard (e (#t #t)) (hash 'x -1)))
+
+(test-end)
+
+;;; -------------------------------------------------------------- reader odds
+(test-begin "Reader")
+
+;; The unspecified value is printed as #!unspecified, so it has to read back,
+;; on its own and as a list element.
+(test #t (eq? #!unspecified (if #f #f)))
+(test #t (eq? #!unspecified (read (open-input-string "#!unspecified"))))
+(test 2 (length (list 1 #!unspecified)))
+(test 1 (length (list #!unspecified)))
+(test "#!unspecified"
+      (let ((o (open-output-string))) (write (if #f #f) o) (get-output-string o)))
+
+;; A shebang line is skipped, so a script can be executable directly.
+(test 'ok (read (open-input-string "#!/usr/bin/env goscheme\nok")))
+
+;; A bad #! word is reported as itself, even inside a list, instead of being
+;; reported as an unterminated list.
+(test "string:1: unknown directive #!bogus"
+      (guard (e (#t (error-object-message e)))
+        (read (open-input-string "(#!bogus)"))))
+
+;; A genuinely unfinished list is still an unfinished list.
+(test #t (guard (e (#t #t)) (read (open-input-string "(1 2"))))
+
 (test-end)
 
 ;; ------------------------------------------------------------------ records of

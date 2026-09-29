@@ -363,13 +363,23 @@ func installHashtables(m *Machine) {
 	// hash is a convenience used by SRFI 69 style code.
 	m.defSimple("hash", 1, 2, func(a []Value) (Value, error) {
 		s := fmt.Sprintf("%v", hashKey(a[0], "equal"))
-		var h int64 = 5381
+		// A uint64 accumulator keeps the result non-negative without the
+		// negation overflowing on the most negative value.
+		var h uint64 = 5381
 		for i := 0; i < len(s); i++ {
-			h = h*33 + int64(s[i])
+			h = h*33 + uint64(s[i])
 		}
-		if h < 0 {
-			h = -h
+		if len(a) == 2 {
+			// SRFI 125: with a bound, the result is less than the bound.
+			bound := wantIndex("hash", a[1])
+			if bound == 0 {
+				return nil, errf("hash", "expected a positive bound but got 0")
+			}
+			return Int(int64(h % uint64(bound))), nil
 		}
-		return Int(h), nil
+		return Int(int64(h & maxInt64)), nil
 	}, lib)
 }
+
+// maxInt64 masks the sign bit, so a hash stays a non-negative exact integer.
+const maxInt64 = uint64(1)<<63 - 1
