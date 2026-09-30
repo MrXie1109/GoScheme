@@ -26,6 +26,10 @@ type SyntaxKeyword struct {
 // addExport records that lib exports name.  Libraries are materialised by
 // finishLibraries once every builtin has been registered.
 func (m *Machine) addExport(lib, name string) {
+	// The export table is shared by every interpreter thread, and a library
+	// loaded from two threads at once used to append to it without a lock.
+	m.libMu.Lock()
+	defer m.libMu.Unlock()
 	if m.libExports == nil {
 		m.libExports = map[string][]string{}
 	}
@@ -42,7 +46,7 @@ func (m *Machine) finishLibraries() {
 				lib.Exports[sym] = v
 			}
 		}
-		m.Libraries[name] = lib
+		m.registerLibrary(name, lib)
 	}
 }
 
@@ -140,14 +144,14 @@ func (m *Machine) resolveImportSet(spec Value) (map[*Symbol]Value, error) {
 		}
 	}
 	name := LibraryNameString(spec)
-	lib, ok := m.Libraries[name]
+	lib, ok := m.lookupLibrary(name)
 	if !ok {
 		// Not registered yet: look for it on the library search path, which is
 		// how a program imports a library that lives in its own files.
 		if err := m.loadLibrary(name, spec); err != nil {
 			return nil, err
 		}
-		lib, ok = m.Libraries[name]
+		lib, ok = m.lookupLibrary(name)
 	}
 	if !ok {
 		return nil, NewError("import: unknown library", spec)
@@ -168,14 +172,24 @@ func (m *Machine) loadLibrary(name string, spec Value) error {
 	if !found {
 		return nil
 	}
+	// The lock is held only for the bookkeeping: evaluating the library body
+	// below may import another library in the same thread, which must not
+	// deadlock on it.
+	m.libMu.Lock()
 	if m.libLoading == nil {
 		m.libLoading = map[string]bool{}
 	}
 	if m.libLoading[name] {
+		m.libMu.Unlock()
 		return NewError("import: circular dependency between libraries", spec)
 	}
 	m.libLoading[name] = true
-	defer delete(m.libLoading, name)
+	m.libMu.Unlock()
+	defer func() {
+		m.libMu.Lock()
+		delete(m.libLoading, name)
+		m.libMu.Unlock()
+	}()
 
 	forms, err := ReadFileForms(m, path, false)
 	if err != nil {
@@ -191,7 +205,7 @@ func (m *Machine) loadLibrary(name string, spec Value) error {
 	if _, err := sub.RunForms(forms, sub.Global); err != nil {
 		return err
 	}
-	if _, ok := m.Libraries[name]; !ok {
+	if _, ok := m.lookupLibrary(name); !ok {
 		return NewFileError("library file does not define "+name, NewString(path))
 	}
 	return nil
@@ -250,7 +264,7 @@ func (m *Machine) librarySearchPath() []string {
 // libraryAvailable reports whether a library is registered or can be found on
 // the search path; cond-expand's (library ...) requirement uses it.
 func (m *Machine) libraryAvailable(spec Value) bool {
-	if _, ok := m.Libraries[LibraryNameString(spec)]; ok {
+	if _, ok := m.lookupLibrary(LibraryNameString(spec)); ok {
 		return true
 	}
 	_, found := m.findLibraryFile(spec)

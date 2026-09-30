@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 )
 
@@ -29,6 +30,10 @@ type Machine struct {
 
 	libExports map[string][]string
 
+	// libMu guards Libraries and libLoading.  Interpreter threads share both —
+	// (go ...) makes that routine — and an unsynchronised map write is a Go
+	// runtime fatal error, not something a Scheme handler can catch.
+	libMu *sync.Mutex
 	// libLoading holds the libraries currently being loaded, so that a cycle
 	// is reported instead of recursing forever.
 	libLoading map[string]bool
@@ -69,7 +74,7 @@ type handlerFrame struct {
 
 // NewMachine builds a machine with the standard environment installed.
 func NewMachine() *Machine {
-	m := &Machine{Libraries: map[string]*Library{}, wg: &sync.WaitGroup{}}
+	m := &Machine{Libraries: map[string]*Library{}, libMu: &sync.Mutex{}, wg: &sync.WaitGroup{}}
 	m.CurIn = NewPortFromFile("stdin", os.Stdin, true, true)
 	m.CurOut = NewPortFromFile("stdout", os.Stdout, false, true)
 	m.CurErr = NewPortFromFile("stderr", os.Stderr, false, true)
@@ -588,6 +593,34 @@ func (m *Machine) RunForms(forms []Value, env *Env) (Value, error) {
 	}
 	body := append([]Value{Intern("begin")}, forms...)
 	return m.Run(List(body...), env)
+}
+
+// registerLibrary records a library.  Every write to the registry goes through
+// here, because the map is shared by every interpreter thread.
+func (m *Machine) registerLibrary(name string, lib *Library) {
+	m.libMu.Lock()
+	m.Libraries[name] = lib
+	m.libMu.Unlock()
+}
+
+// lookupLibrary reads the registry under the same lock.
+func (m *Machine) lookupLibrary(name string) (*Library, bool) {
+	m.libMu.Lock()
+	defer m.libMu.Unlock()
+	lib, ok := m.Libraries[name]
+	return lib, ok
+}
+
+// LibraryNames lists the registered libraries, sorted.
+func (m *Machine) LibraryNames() []string {
+	m.libMu.Lock()
+	defer m.libMu.Unlock()
+	out := make([]string, 0, len(m.Libraries))
+	for name := range m.Libraries {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // DefineGoFunc binds name to a Go function, which is how a host program offers

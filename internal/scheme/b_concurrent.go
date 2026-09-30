@@ -51,6 +51,7 @@ func (m *Machine) Child() *Machine {
 		Global:    m.Global,
 		Builtin:   m.Builtin,
 		Libraries: m.Libraries,
+		libMu:     m.libMu,
 		// The load path is copied so that a thread (or a library being
 		// loaded) cannot disturb the directories its parent is searching.
 		LoadPath: append([]string(nil), m.LoadPath...),

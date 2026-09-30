@@ -35,7 +35,7 @@ func resolveStatic(scriptPath string, script []byte, search []string) ([]byte, e
 		visiting: map[string]bool{},
 		search:   search,
 	}
-	for name := range m.Libraries {
+	for _, name := range m.LibraryNames() {
 		b.builtin[name] = true
 	}
 

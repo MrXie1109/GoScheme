@@ -83,7 +83,7 @@ func (m *Machine) evalStep() {
 		if s, ok := x.Car.(*Symbol); ok {
 			if v, bound := env.Lookup(s); bound {
 				if mac, isMac := v.(*Macro); isMac {
-					expanded, err := mac.Expand(expr)
+					expanded, err := mac.Expand(expr, env)
 					if err != nil {
 						m.RaiseError(err)
 						return
@@ -1759,7 +1759,7 @@ func evalDefineLibrary(m *Machine, form Value, env *Env) {
 			}
 		}
 	}
-	m.Libraries[name] = lib
+	m.registerLibrary(name, lib)
 	for _, d := range declFileDirs {
 		m.AddLoadPath(d)
 	}

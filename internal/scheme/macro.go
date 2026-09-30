@@ -35,6 +35,9 @@ type matchVal struct {
 }
 
 type matcher struct {
+	// useEnv is where the macro is being used, which is what a literal such as
+	// else has to be compared in: R7RS compares the binding, not the name.
+	useEnv   *Env
 	m        *Macro
 	binds    map[*Symbol]*matchVal
 	literals map[string]*Symbol
@@ -86,13 +89,13 @@ func (m *Macro) isEllipsis(v Value) bool {
 }
 
 // Expand applies the macro to the given form (which includes the keyword).
-func (m *Macro) Expand(form Value) (Value, error) {
+func (m *Macro) Expand(form Value, useEnv *Env) (Value, error) {
 	// Special case: a macro used as an identifier reference `(m)` is just an
 	// application; `(m ...)` with no arguments still must match a rule.
 	args := form
 	for _, rule := range m.Rules {
 		binds := map[*Symbol]*matchVal{}
-		mt := &matcher{m: m, binds: binds}
+		mt := &matcher{m: m, binds: binds, useEnv: useEnv}
 		// Both the pattern and the form start with the keyword, which is
 		// ignored per R7RS: match the tails.
 		patTail := cdr(rule.Pattern)
@@ -108,6 +111,26 @@ func (m *Macro) Expand(form Value) (Value, error) {
 	return nil, NewError(fmt.Sprintf("%s: no matching syntax-rules pattern", m.Name), form)
 }
 
+// sameBinding reports whether an identifier at the use site refers to the same
+// binding as the literal at the macro definition site.  Two names that are both
+// unbound are the same binding (the common case: else, =>, ...); if either is
+// bound, they must be bound to the same thing, which is what makes
+// (let ((else #f)) (macro-using-else)) not match.
+func (m *Macro) sameBinding(defSym, useSym *Symbol, useEnv *Env) bool {
+	defVal, defBound := m.Env.Lookup(defSym)
+	if useEnv == nil {
+		return defSym.Name == useSym.Name
+	}
+	useVal, useBound := useEnv.Lookup(useSym)
+	if defBound != useBound {
+		return false
+	}
+	if !defBound {
+		return defSym.Name == useSym.Name
+	}
+	return defVal == useVal
+}
+
 // ---------------------------------------------------------------------------
 // Pattern matching
 // ---------------------------------------------------------------------------
@@ -117,7 +140,10 @@ func (mt *matcher) match(pat, in Value) bool {
 	case *Symbol:
 		if mt.m.isLiteral(p) {
 			s, ok := in.(*Symbol)
-			return ok && s.Name == p.Name
+			if !ok {
+				return false
+			}
+			return mt.m.sameBinding(p, s, mt.useEnv)
 		}
 		if p.Name == "_" && !p.IsMarked() {
 			return true
@@ -197,7 +223,7 @@ func (mt *matcher) matchList(pat, in Value) bool {
 	collectPatternVars(subPat, mt.m, vars)
 	var perIter []map[*Symbol]*matchVal
 	for _, it := range mid {
-		sub := &matcher{m: mt.m, binds: map[*Symbol]*matchVal{}}
+		sub := &matcher{m: mt.m, binds: map[*Symbol]*matchVal{}, useEnv: mt.useEnv}
 		if !sub.match(subPat, it) {
 			return false
 		}

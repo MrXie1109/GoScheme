@@ -156,12 +156,7 @@ func (c *replCompleter) schemeNames() []string {
 // libraryNames is every library that can be imported: the ones built in, and
 // the ones already loaded from files.
 func (c *replCompleter) libraryNames() []string {
-	out := make([]string, 0, len(c.m.Libraries))
-	for name := range c.m.Libraries {
-		out = append(out, name)
-	}
-	sort.Strings(out)
-	return out
+	return c.m.LibraryNames()
 }
 
 // withPrefix keeps the candidates that extend prefix, and drops an exact match
