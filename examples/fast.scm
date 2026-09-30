@@ -92,6 +92,24 @@
 (define search-go (timed (lambda () (string-contains haystack "xxxxy"))))
 (report "searching a 50000 character string" search-scheme search-go)
 
+;;; ------------------------------------------- batch arithmetic, measured
+;;; One Go pass over the whole vector, against the same loop written out one
+;;; element at a time.  There is no SIMD here, but the per-element type checks,
+;;; the boxing and the interpreted steps all disappear.
+(define wide-a (vector-iota 200000))
+(define wide-b (vector-iota 200000 1))
+(define (add-in-scheme a b)
+  (let* ((n (vector-length a)) (out (make-vector n 0)))
+    (let loop ((i 0))
+      (if (= i n)
+          out
+          (begin (vector-set! out i (+ (vector-ref a i) (vector-ref b i)))
+                 (loop (+ i 1)))))))
+(define add-scheme (timed (lambda () (vector-ref (add-in-scheme wide-a wide-b) 199999))))
+(define add-go (timed (lambda () (vector-ref (vector-add wide-a wide-b) 199999))))
+(report "adding two 200000 element vectors" add-scheme add-go)
+(show "  the same last element:" (= (car add-scheme) (car add-go)))
+
 ;;; --------------------------------------------------------- the rest of it
 (show "iota:" (iota 5) (iota 3 10 10))
 (show "aggregates:" (sum (iota 101)) (product '(1 2 3 4)) (min-of '(3 1 2)) (max-of '(3 1 2)))
@@ -110,6 +128,42 @@
 (show "encodings:" (hex-encode #u8(1 255)) (base64-encode #u8(104 105))
       (base64-decode "aGk="))
 (show "a random token of 16 bytes:" (bytevector-length (random-bytes 16)))
+
+;;; ------------------------------------------------------- lists and numbers
+(show "lists:" (take 3 '(1 2 3 4)) (drop 3 '(1 2 3 4)) (last '(1 2 3))
+      (flatten '(1 (2 #(3)))))
+(show "select:" (list-index even? '(1 3 4)) (find even? '(1 3 4))
+      (delete-duplicates '(1 2 1 3)))
+(show "folds:" (fold-left + 0 '(1 2 3 4)) (fold-right - 0 '(1 2 3)))
+(show "sort-by:" (sort-by string-length '("ccc" "a" "bb")))
+(show "statistics:" (mean '(1 2 3)) (median '(1 2 3 4)) (stddev '(1 2 3))
+      (mode '(1 2 2 3)))
+(show "bits:" (bit-and 12 10) (bit-shift 1 20) (bit-count 255) (integer-length 1000))
+(show "primes:" (prime? 1000003) (length (primes 100000)) (factor 1234567890))
+(show "modular:" (expt-mod 2 1000 1000000007) (isqrt 1000000))
+
+;;; ------------------------------------------------------------- batch vectors
+(show "batch:" (vector-add #(1 2 3) #(10 20 30)) (vector-prefix-sum #(1 2 3))
+      (vector-norm #(3 4)))
+(show "batch, more:" (vector-argmax #(3 9 2)) (vector-clamp #(-1 5 15) 0 10)
+      (vector-compare #(1 2) #(1 3)) (vector-binary-search-insert #(1 3 5) 4))
+(define scratch (vector 1 2 3))
+(vector-scale! scratch 2)
+(vector-negate! scratch)
+(show "in place:" scratch (vector-sample #(1 2 3 4 5) 2))
+
+;;; ---------------------------------------------------------------- text, bytes
+(show "text:" (string-reverse "abc") (string-count "banana" #\a)
+      (string-fields " a  b ") (string-sort "caba"))
+(show "text, more:" (string-lines "a\r\nb\r\n") (string-titlecase "hello WORLD")
+      (string-chunk "abcdef" 3) (string-find-all "aaaa" "aa"))
+(show "text, more still:" (string-integer? "-42") (string-pad-center "ab" 6 #\-)
+      (string-replace-first "aaa" "a" "b") (string-byte-length "héllo"))
+(show "hashing:" (sha1 "abc") (hmac-sha256 "key" "msg") (crc32 "abc"))
+(show "encodings, more:" (base64url-encode #u8(251 255)) (base32-encode #u8(104 105))
+      (bytes-xor #u8(1 2 3) #u8(255)))
+(show "random:" (string-length (uuid)) (string-length (random-string 16))
+      (< (random-int 100) 100) (length (shuffle '(1 2 3 4))))
 
 (newline)
 (display "fast: end of tour") (newline)

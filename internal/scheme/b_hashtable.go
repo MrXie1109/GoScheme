@@ -16,6 +16,27 @@ import (
 // eq?, eqv? and equal?.
 // ---------------------------------------------------------------------------
 
+// equivalenceKind maps a symbol or procedure naming eq?, eqv? or equal? to the
+// kind of hash table it asks for.
+func equivalenceKind(v Value) (string, bool) {
+	name := ""
+	switch x := v.(type) {
+	case *Primitive:
+		name = x.Name
+	case *Symbol:
+		name = x.Name
+	}
+	switch strings.TrimSuffix(name, "?") {
+	case "eq":
+		return "eq", true
+	case "eqv":
+		return "eqv", true
+	case "equal":
+		return "equal", true
+	}
+	return "", false
+}
+
 // hashKey maps a value to a comparable Go value, so that it can be used as a
 // map key.  For the identity based tables only the value's identity is used;
 // for equal?-based tables the key is derived from the structure.
@@ -192,8 +213,29 @@ func installHashtables(m *Machine) {
 	m.defSimple("make-eq-hashtable", 0, 1, kindOf("eq"), lib)
 	m.defSimple("make-eqv-hashtable", 0, 1, kindOf("eqv"), lib)
 	m.defSimple("make-equal-hashtable", 0, 1, kindOf("equal"), lib)
+	// (make-hash-table [size-hint [equivalence]]) builds an equal? table, the
+	// way SRFI 69's make-hash-table does.  A symbol or procedure naming eq?,
+	// eqv? or equal? selects the equivalence; an exact integer is the size
+	// hint, which this implementation takes as a hint and does not need.
+	// Anything else raises rather than being silently ignored.
 	m.defSimple("make-hash-table", 0, 2, func(a []Value) (Value, error) {
-		return NewHashtable("equal"), nil
+		kind := "equal"
+		for _, arg := range a {
+			if i, ok := arg.(*Integer); ok {
+				if _, small := i.Int64(); !small {
+					panic(errf("make-hash-table", "the size hint is too large: %s", WriteToString(arg)))
+				}
+				continue
+			}
+			if k, ok := equivalenceKind(arg); ok {
+				kind = k
+				continue
+			}
+			panic(errf("make-hash-table",
+				"expected a size hint or an equivalence (eq?, eqv?, equal?) but got %s",
+				WriteToString(arg)))
+		}
+		return NewHashtable(kind), nil
 	}, lib)
 
 	m.defSimple("hashtable?", 1, 1, func(a []Value) (Value, error) {
@@ -365,9 +407,18 @@ func installHashtables(m *Machine) {
 			m.Return(UnspecifiedValue)
 		})
 	}, lib)
+	// (alist->hash-table alist [table]) adds the associations to the given
+	// table and returns it, or builds a fresh equal? table when none is given.
 	m.defSimple("alist->hash-table", 1, 2, func(a []Value) (Value, error) {
 		items := wantList("alist->hash-table", a[0])
 		h := NewHashtable("equal")
+		if len(a) == 2 {
+			given, ok := a[1].(*Hashtable)
+			if !ok {
+				panic(errf("alist->hash-table", "expected a hash table but got %s", WriteToString(a[1])))
+			}
+			h = given
+		}
 		for _, it := range items {
 			p, ok := it.(*Pair)
 			if !ok {

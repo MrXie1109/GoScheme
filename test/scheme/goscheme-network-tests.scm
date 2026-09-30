@@ -149,6 +149,15 @@
 (test 200 (http-response-status posted))
 (test "pong" (http-response-body posted))
 
+;; DELETE takes (url [body [headers]]): a string in the second position is the
+;; body, an alist is the headers.  Both used to be read from the same argument.
+(test "drop-me" (http-delete (string-append base "/echo") "drop-me"))
+(test 200 (http-response-status (http-request "DELETE" (string-append base "/echo"))))
+(test #t (string? (http-delete (string-append base "/hello") '())))
+(test 'arity (guard (e (#t 'arity))
+               ;; GET and HEAD carry no body, so they take no third argument.
+               (http-get (string-append base "/hello") '() '())))
+
 ;; A query string is kept apart from the path.
 (define query (http-request "GET" (string-append base "/search?q=scheme")))
 (test "path: /search" (http-response-body query))
@@ -159,7 +168,11 @@
 ;; ... and the server is still serving afterwards.
 (test "path: /after" (http-get (string-append base "/after")))
 
-(test 7 (http-server-requests server))
+;; The counter counts what has been served, so compare it against a snapshot
+;; rather than a fixed number that every new request above would change.
+(define served-before (http-server-requests server))
+(http-get (string-append base "/counted"))
+(test (+ served-before 1) (http-server-requests server))
 
 ;; A closed server refuses connections, which is a file error like any other.
 (http-server-close server)

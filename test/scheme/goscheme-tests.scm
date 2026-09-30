@@ -377,6 +377,18 @@
 (test 'not-there (hash-table-ref/default eh (list 'x) 'not-there))
 
 (test 2 (hash-table-size (alist->hash-table '((a . 1) (b . 2)))))
+;; make-hash-table takes a size hint and an equivalence (eq?, eqv? or equal?).
+(define eqv-table (make-hash-table 'eqv))
+(hash-table-set! eqv-table 1.0 'float)
+(test 'float (hash-table-ref/default eqv-table 1.0 'missing))
+(test 'missing (hash-table-ref/default eqv-table 1 'missing))
+(test 0 (hash-table-size (make-hash-table 64)))
+(test 'bad-equivalence (guard (e (#t 'bad-equivalence)) (make-hash-table "not an equivalence")))
+;; alist->hash-table fills the table it is given and returns it.
+(define target (make-eq-hashtable))
+(test #t (eq? target (alist->hash-table '((a . 1) (b . 2)) target)))
+(test 1 (hash-table-ref/default target 'a 'missing))
+(test 2 (hash-table-size target))
 
 ;; hash returns a non-negative exact integer, equal keys agree, and an optional
 ;; bound restricts the result (SRFI 125).

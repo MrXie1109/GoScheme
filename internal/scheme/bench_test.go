@@ -81,6 +81,42 @@ var fastPrograms = map[string]string{
 	 (find hay "xxxy")`,
 	"ContainsFast": `(import (scheme base) (goscheme fast))
 	 (string-contains (make-string 20000 #\x) "xxxy")`,
+
+	// Batch arithmetic: one Go pass over the whole vector against the same loop
+	// written out one element at a time.
+	"VectorAddScheme": `(import (scheme base) (goscheme fast))
+	 (define a (vector-iota 20000))
+	 (define b (vector-iota 20000 1))
+	 (define out (make-vector 20000 0))
+	 (let loop ((i 0))
+	   (if (= i 20000) (vector-ref out 19999)
+	       (begin (vector-set! out i (+ (vector-ref a i) (vector-ref b i)))
+	              (loop (+ i 1)))))`,
+	"VectorAddFast": `(import (scheme base) (goscheme fast))
+	 (vector-ref (vector-add (vector-iota 20000) (vector-iota 20000 1)) 19999)`,
+
+	// Number theory: trial division in Scheme against the Go sieve.
+	"PrimesScheme": `(import (scheme base))
+	 (define (prime? n)
+	   (and (> n 1)
+	        (let loop ((d 2))
+	          (cond ((> (* d d) n) #t)
+	                ((= 0 (modulo n d)) #f)
+	                (else (loop (+ d 1)))))))
+	 (let loop ((i 2) (count 0))
+	   (if (= i 30000) count (loop (+ i 1) (if (prime? i) (+ count 1) count))))`,
+	"PrimesFast": `(import (scheme base) (goscheme fast)) (length (primes 30000))`,
+
+	// Deduplication: the O(n^2) member scan against the keyed Go pass.
+	"DedupeScheme": `(import (scheme base) (goscheme fast))
+	 (define (dedupe l)
+	   (let loop ((l l) (out '()))
+	     (cond ((null? l) (reverse out))
+	           ((member (car l) out) (loop (cdr l) out))
+	           (else (loop (cdr l) (cons (car l) out))))))
+	 (length (dedupe (map (lambda (i) (modulo i 500)) (iota 4000))))`,
+	"DedupeFast": `(import (scheme base) (goscheme fast))
+	 (length (delete-duplicates (map (lambda (i) (modulo i 500)) (iota 4000))))`,
 }
 
 func BenchmarkFast(b *testing.B) {

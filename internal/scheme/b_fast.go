@@ -25,10 +25,19 @@ func installFast(m *Machine) {
 	const lib = "(goscheme fast)"
 	installFastOrdering(m, lib)
 	installFastSequences(m, lib)
+	installFastLists(m, lib)
+	installFastVectors(m, lib)
+	installFastBatch(m, lib)
 	installFastSelection(m, lib)
 	installFastAggregates(m, lib)
+	installFastStats(m, lib)
+	installFastNumberTheory(m, lib)
 	installFastStrings(m, lib)
+	installFastText(m, lib)
 	installFastBytes(m, lib)
+	installFastHashing(m, lib)
+	installFastEncoding(m, lib)
+	installFastRandom(m, lib)
 }
 
 // ---------------------------------------------------------------------------
@@ -38,10 +47,7 @@ func installFast(m *Machine) {
 // defaultLess is the < primitive, which the ordering procedures use when no
 // comparison is given.
 func defaultLess(m *Machine) Value {
-	if v, ok := m.Builtin.Lookup(Intern("<")); ok {
-		return v
-	}
-	return False
+	return builtinProc(m, "<")
 }
 
 // builtinName is the name of a primitive, or "" for anything else.
@@ -167,15 +173,20 @@ func newFastCaller(m *Machine, proc Value) *fastCaller {
 	return &fastCaller{m: m, proc: proc, child: m.Child()}
 }
 
-// call applies the procedure and reports its value as a truth value.
-func (c *fastCaller) call(args ...Value) bool {
+// apply calls the procedure and returns its value.
+func (c *fastCaller) apply(args ...Value) Value {
 	v, err := c.child.RunApply(c.proc, args, c.child.Global)
 	if err != nil {
 		// Panicking turns the condition into one raised by the primitive that
 		// is running, which is what the caller sees either way.
 		panic(err)
 	}
-	return IsTrue(v)
+	return v
+}
+
+// call applies the procedure and reports its value as a truth value.
+func (c *fastCaller) call(args ...Value) bool {
+	return IsTrue(c.apply(args...))
 }
 
 // less is a comparison function that uses the fast lane when it can.
@@ -549,15 +560,23 @@ func installFastAggregates(m *Machine, lib string) {
 // ---------------------------------------------------------------------------
 
 func installFastStrings(m *Machine, lib string) {
-	// (string-split string [separator]) splits on separator, which is "" by
-	// default to split into characters.
-	m.defSimple("string-split", 1, 2, func(a []Value) (Value, error) {
+	// (string-split string [separator [limit]]) splits on separator, which is
+	// "" by default to split into characters.  A limit keeps the tail whole:
+	// with a limit of 2, "a:b:c" splits into "a" and "b:c".
+	m.defSimple("string-split", 1, 3, func(a []Value) (Value, error) {
 		s := wantString("string-split", a[0]).Value()
 		sep := ""
-		if len(a) == 2 {
+		if len(a) > 1 {
 			sep = wantString("string-split", a[1]).Value()
 		}
 		parts := strings.Split(s, sep)
+		if len(a) == 3 {
+			limit := wantIndex("string-split", a[2])
+			if limit < 1 {
+				panic(errf("string-split", "the limit must be at least 1"))
+			}
+			parts = strings.SplitN(s, sep, limit)
+		}
 		out := make([]Value, len(parts))
 		for i, p := range parts {
 			out[i] = NewString(p)

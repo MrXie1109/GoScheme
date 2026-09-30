@@ -53,19 +53,25 @@ func installHTTP(m *Machine) {
 	// ------------------------------------------------------------- requests
 	// (http-get url [headers]) returns the body.  headers is an alist of
 	// strings, which is enough for the usual "authorization" or "accept" case.
+	// The methods that can carry a body take (url [body [headers]]); a body is
+	// recognised by being a string, so (http-delete url headers) and
+	// (http-delete url body headers) both mean what they look like.
 	for _, method := range []string{"GET", "POST", "PUT", "DELETE", "HEAD"} {
 		name := "http-" + strings.ToLower(method)
-		m.def(name, 1, 3, func(m *Machine, a []Value) {
+		sendsBody := method == "POST" || method == "PUT" || method == "DELETE"
+		maxArgs := 2
+		if sendsBody {
+			maxArgs = 3
+		}
+		m.def(name, 1, maxArgs, func(m *Machine, a []Value) {
 			url := wantString(name, a[0]).Value()
 			body := ""
-			if method != "GET" && method != "HEAD" && len(a) > 1 {
+			headerIndex := 1
+			if sendsBody && len(a) > 1 {
 				if s, ok := a[1].(*String); ok {
 					body = s.Value()
+					headerIndex = 2
 				}
-			}
-			headerIndex := 1
-			if method == "POST" || method == "PUT" {
-				headerIndex = 2
 			}
 			req, err := http.NewRequest(method, url, strings.NewReader(body))
 			if err != nil {
