@@ -5,6 +5,7 @@ package scheme
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // ---------------------------------------------------------------------------
@@ -466,6 +467,12 @@ func installStrings(m *Machine) {
 		}
 		if start > end || end > len(b.Bytes) {
 			panic(errf("utf8->string", "invalid range"))
+		}
+		// R7RS: it is an error for the bytes not to be valid UTF-8.  Silently
+		// substituting U+FFFD, which is what a plain conversion does, hides a
+		// corrupt input.
+		if !utf8.Valid(b.Bytes[start:end]) {
+			panic(errf("utf8->string", "bytevector is not valid UTF-8"))
 		}
 		return NewString(string(b.Bytes[start:end])), nil
 	}, libBase)

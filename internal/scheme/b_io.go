@@ -15,6 +15,26 @@ func (m *Machine) defValue(name string, v Value, libs ...string) Value {
 	return v
 }
 
+// wantOpenInput checks for an input port that is still open: reading from a
+// closed port is an error, not an end of file.
+func wantOpenInput(name string, p *Port) *Port {
+	if p.IsClosed() {
+		panic(errf(name, "port is closed"))
+	}
+	if !p.IsInput {
+		panic(errf(name, "expected an input port"))
+	}
+	return p
+}
+
+// wantBinaryPort checks for a binary port, which the byte procedures need.
+func wantBinaryPort(name string, p *Port) *Port {
+	if !p.Binary {
+		panic(errf(name, "expected a binary port"))
+	}
+	return p
+}
+
 func installIO(m *Machine) {
 	m.defValue("current-input-port", m.InParam, libBase)
 	m.defValue("current-output-port", m.OutParam, libBase)
@@ -100,7 +120,7 @@ func installIO(m *Machine) {
 	m.defSimple("read-char", 0, 1, func(a []Value) (Value, error) {
 		p := m.CurIn
 		if len(a) == 1 {
-			p = wantTextual("read-char", a[0])
+			p = wantOpenInput("read-char", wantTextual("read-char", a[0]))
 			if !p.IsInput {
 				panic(errf("read-char", "expected an input port"))
 			}
@@ -117,7 +137,7 @@ func installIO(m *Machine) {
 	m.defSimple("peek-char", 0, 1, func(a []Value) (Value, error) {
 		p := m.CurIn
 		if len(a) == 1 {
-			p = wantTextual("peek-char", a[0])
+			p = wantOpenInput("peek-char", wantTextual("peek-char", a[0]))
 			if !p.IsInput {
 				panic(errf("peek-char", "expected an input port"))
 			}
@@ -134,7 +154,7 @@ func installIO(m *Machine) {
 	m.defSimple("read-line", 0, 1, func(a []Value) (Value, error) {
 		p := m.CurIn
 		if len(a) == 1 {
-			p = wantTextual("read-line", a[0])
+			p = wantOpenInput("read-line", wantTextual("read-line", a[0]))
 			if !p.IsInput {
 				panic(errf("read-line", "expected an input port"))
 			}
@@ -152,7 +172,7 @@ func installIO(m *Machine) {
 		k := wantIndex("read-string", a[0])
 		p := m.CurIn
 		if len(a) == 2 {
-			p = wantTextual("read-string", a[1])
+			p = wantOpenInput("read-string", wantTextual("read-string", a[1]))
 			if !p.IsInput {
 				panic(errf("read-string", "expected an input port"))
 			}
@@ -173,13 +193,16 @@ func installIO(m *Machine) {
 		p := m.CurIn
 		if len(a) == 1 {
 			p = wantTextual("char-ready?", a[0])
+			// Asking about a closed port, or an output port, is an error
+			// rather than a hopeful #t.
+			p = wantOpenInput("char-ready?", p)
 		}
 		return BooleanOf(p.Ready()), nil
 	}, libBase, libR5RS)
 	m.defSimple("read-u8", 0, 1, func(a []Value) (Value, error) {
 		p := m.CurIn
 		if len(a) == 1 {
-			p = wantInputPort("read-u8", a[0])
+			p = wantBinaryPort("read-u8", wantOpenInput("read-u8", wantInputPort("read-u8", a[0])))
 		}
 		b, err := p.ReadByte()
 		if err != nil {

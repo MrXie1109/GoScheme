@@ -116,11 +116,29 @@ func NewHashtable(kind string) *Hashtable {
 func (h *Hashtable) lookup(key Value) (int, bool) {
 	k := hashKey(key, h.Kind)
 	for _, i := range h.index[k] {
-		if !h.dead[i] {
+		if h.dead[i] {
+			continue
+		}
+		// The hash only narrows the search: two different keys can share one,
+		// and the key equivalence has the last word.  Without this check a
+		// collision returned the wrong value, and an eqv? table could even
+		// answer for +nan.0, which is not eqv? to itself.
+		if tableKeyEqual(key, h.keys[i], h.Kind) {
 			return i, true
 		}
 	}
 	return 0, false
+}
+
+// tableKeyEqual applies the table's key equivalence.
+func tableKeyEqual(a, b Value, kind string) bool {
+	switch kind {
+	case "eq":
+		return Eq(a, b)
+	case "eqv":
+		return Eqv(a, b)
+	}
+	return Equal(a, b)
 }
 
 func (h *Hashtable) set(key, val Value) {

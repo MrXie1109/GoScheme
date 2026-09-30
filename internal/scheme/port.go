@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"os"
 	"sync"
 )
 
@@ -224,7 +225,25 @@ func (p *Port) Ready() bool {
 	if p.rd == nil {
 		return true
 	}
-	return p.rd.Buffered() > 0 || p.closer == nil
+	if p.rd.Buffered() > 0 || p.closer == nil {
+		return true
+	}
+	// A regular file never blocks: either a byte is there or the file has
+	// ended, and R7RS says char-ready? is true at end of file.  A terminal, a
+	// socket or a pipe can block, so nothing buffered means not ready.
+	if f, ok := p.closer.(*os.File); ok {
+		if st, err := f.Stat(); err == nil && st.Mode().IsRegular() {
+			return true
+		}
+	}
+	return false
+}
+
+// IsClosed reports whether the port has been closed.
+func (p *Port) IsClosed() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.closed
 }
 
 // ReadByte reads one byte from a binary input port.

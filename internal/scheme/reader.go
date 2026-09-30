@@ -629,11 +629,14 @@ func (r *Reader) readHash() (Value, error) {
 					*ph = *p
 					return ph, nil
 				}
-				if _, isVec := v.(*Vector); isVec {
-					ph.Car = v
-					ph.Cdr = Nil
-					r.labels[label] = v
-					return v, nil
+				if vec, isVec := v.(*Vector); isVec {
+					// The label was registered before the vector was read, so
+					// the elements that referred to it hold the placeholder.
+					// Replace those references with the vector itself, which
+					// is what makes '#1=#(1 #1#) circular.
+					replaceDatum(vec, ph, vec)
+					r.labels[label] = vec
+					return vec, nil
 				}
 				r.labels[label] = v
 				return v, nil
@@ -658,6 +661,33 @@ func (r *Reader) readHash() (Value, error) {
 			return n, nil
 		}
 		return nil, r.errf("unknown # syntax %s", tok)
+	}
+}
+
+// replaceDatum replaces every occurrence of old with repl inside v, without
+// descending into a replacement (which may be v itself, and is where a cycle
+// would otherwise send this into the ground).
+func replaceDatum(v, old, repl Value) {
+	switch x := v.(type) {
+	case *Pair:
+		if x.Car == old {
+			x.Car = repl
+		} else {
+			replaceDatum(x.Car, old, repl)
+		}
+		if x.Cdr == old {
+			x.Cdr = repl
+		} else {
+			replaceDatum(x.Cdr, old, repl)
+		}
+	case *Vector:
+		for i := range x.Items {
+			if x.Items[i] == old {
+				x.Items[i] = repl
+			} else {
+				replaceDatum(x.Items[i], old, repl)
+			}
+		}
 	}
 }
 
