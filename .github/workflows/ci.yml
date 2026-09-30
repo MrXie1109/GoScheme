@@ -147,7 +147,10 @@ jobs:
           go-version: '1.22'
 
       - name: build the six static binaries
-        run: make dist DYNAMIC_PLATFORMS=
+        # GO is passed explicitly: the Makefile defaults to /usr/bin/go, which
+        # a hosted runner does not necessarily have — setup-go puts the
+        # toolchain on PATH instead.
+        run: make dist DYNAMIC_PLATFORMS= GO="$(command -v go)"
 
       # Run the artifact that actually ships, rather than trusting the
       # cross-build: the version must be the tag and the suites must pass

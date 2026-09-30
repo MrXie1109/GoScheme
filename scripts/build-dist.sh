@@ -18,7 +18,16 @@
 #   CC_windows_amd64=x86_64-w64-mingw32-gcc scripts/build-dist.sh
 set -eu
 
-GO=${GO:-/usr/bin/go}
+# /usr/bin/go is the system toolchain on the machine this was written on; a CI
+# runner or another distribution may only have `go` on PATH, so fall back to it
+# rather than failing with "no such file".
+if [ -z "${GO:-}" ]; then
+    if [ -x /usr/bin/go ]; then
+        GO=/usr/bin/go
+    else
+        GO=go
+    fi
+fi
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 DIST="$ROOT/dist"
 
