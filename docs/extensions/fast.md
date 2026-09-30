@@ -79,7 +79,7 @@ section of the README, and `examples/fast.scm` times itself.
 | `delete` | `(delete x sequence [equal?])` | A list without the elements equal to `x`. |
 | `delete-duplicates` | `(delete-duplicates list [equal?])` | Keeps the first of each group of equal elements, in order.  Atoms go through a map keyed by printed form — a shortcut that is only sound for `equal?`, `eqv?` and `eq?`, the comparisons under which two atoms with different printed forms are never equal; any other comparison falls back to the linear scan that defines the procedure. |
 | `partition` | `(partition pred list)` | Returns two values: the matching elements and the rest, each in order. |
-| `vector-partition` | `(vector-partition pred vector)` | Returns two values: a new vector holding the accepted elements followed by the rejected ones, and how many were accepted.  This is SRFI-133's shape (`(srfi 133)` exports the same binding), and it replaced the earlier two-vector result in 3.0. |
+| `vector-partition` | `(vector-partition pred vector)` | Returns two values: a new vector holding the accepted elements followed by the rejected ones, and how many were accepted.  This is SRFI-133's shape (`(srfi 133)` exports the same binding), and it replaced the earlier two-vector result in 2.5. |
 | `vector-index-of` | `(vector-index-of vector x [equal?])` | The index of the first element equal to `x`, or `#f`. |
 | `zip` | `(zip sequence ...)` | A list of the rows of several sequences, stopping at the shortest one. |
 | `unzip` | `(unzip rows)` | Transposes rows (the inverse of `zip`), stopping at the narrowest row. |
