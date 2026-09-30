@@ -49,6 +49,12 @@ run concurrency.scm    "$here/concurrency.scm"
 run tcp-server.scm     "$here/tcp-server.scm"
 run http-server.scm    "$here/http-server.scm"
 run pipes.scm          "$here/pipes.scm"
+run sync.scm           "$here/sync.scm"
+run json.scm           "$here/json.scm"
+run regexp.scm         "$here/regexp.scm"
+run time.scm           "$here/time.scm"
+run fs.scm             "$here/fs.scm"
+run match.scm          "$here/match.scm"
 run libraries/main.scm "$here/libraries/main.scm"
 
 echo

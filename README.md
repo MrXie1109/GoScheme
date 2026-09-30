@@ -51,7 +51,7 @@ make build          # or: go build -o .build/goscheme ./cmd/goscheme
 make test           # Go unit tests + both Scheme test suites
 make dist           # cross-compile every supported platform into dist/
 
-./.build/goscheme -v   # GoScheme 2.0.0 (R7RS)
+./.build/goscheme -v   # GoScheme 2.0.1 (R7RS)
 ```
 
 The version comes from `cmd/goscheme/VERSION`, which is embedded in the binary,

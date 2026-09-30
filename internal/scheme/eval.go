@@ -4,6 +4,7 @@ package scheme
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -1496,13 +1497,13 @@ func evalIncludeCommon(m *Machine, form Value, env *Env, fold bool) {
 	m.EvalSeq(forms, env)
 }
 
+// dirOf is the directory a file lives in.  It goes through filepath because
+// the separators are the host's: a hand-rolled scan for '/' silently returned
+// "." on Windows, which made include and library loading look in the current
+// directory instead of next to the file, and only running the suite there
+// showed it.
 func dirOf(p string) string {
-	for i := len(p) - 1; i >= 0; i-- {
-		if p[i] == '/' {
-			return p[:i]
-		}
-	}
-	return "."
+	return filepath.Dir(p)
 }
 
 func evalAssert(m *Machine, form Value, env *Env) {

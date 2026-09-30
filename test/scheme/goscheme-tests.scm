@@ -338,7 +338,10 @@
 (test 'from-included-library included-lib-value)
 
 (test 'yes (cond-expand (r7rs 'yes) (else 'no)))
-(test 'yes (cond-expand ((and r7rs (not windows)) 'yes) (else 'no)))
+;; The interpreter is right on either platform; the expectation has to follow
+;; it, which is what running this suite on Windows showed.
+(test (if (memq 'windows (features)) 'no 'yes)
+      (cond-expand ((and r7rs (not windows)) 'yes) (else 'no)))
 (test 'yes (cond-expand ((library (scheme base)) 'yes) (else 'no)))
 (test 'no (cond-expand ((library (no such library)) 'yes) (else 'no)))
 (test 'yes (cond-expand ((or nonexistent-feature r7rs) 'yes) (else 'no)))

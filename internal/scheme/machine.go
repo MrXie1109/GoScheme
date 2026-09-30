@@ -5,7 +5,7 @@ package scheme
 import (
 	"fmt"
 	"os"
-	"strings"
+	"path/filepath"
 	"sync"
 )
 
@@ -636,11 +636,11 @@ func (m *Machine) PopLoadPath() {
 
 // resolvePath looks for name in the load path.
 func (m *Machine) resolvePath(name string) string {
-	if strings.HasPrefix(name, "/") || (len(name) > 1 && name[1] == ':') {
+	if filepath.IsAbs(name) || (len(name) > 1 && name[1] == ':') {
 		return name
 	}
 	for i := len(m.LoadPath) - 1; i >= 0; i-- {
-		p := m.LoadPath[i] + "/" + name
+		p := filepath.Join(m.LoadPath[i], name)
 		if fileExists(p) {
 			return p
 		}

@@ -43,6 +43,12 @@ $ GOSCHEME=./dist/goscheme-linux-amd64 ./examples/run-all.sh
 | `tcp-server.scm` | `(goscheme socket)` and `(goscheme sync)`: one thread accepts, one thread per connection echoes, and three clients talk to it at once. |
 | `http-server.scm` | `(goscheme http)`: routes, a JSON response, a header check, a 500 from a handler that raises, and the client half. |
 | `pipes.scm` | `(goscheme process)`: two children joined into a pipeline with `open-input-process` and `open-output-process`. |
+| `sync.scm` | `(goscheme sync)`: a counter under a lock, the same with an atomic, a wait group, and a one-time run. |
+| `json.scm` | `(goscheme json)`: parsing a document, reading hash tables and vectors out of it, writing it back, and the null and big-integer cases. |
+| `regexp.scm` | `(goscheme regexp)`: capture groups, positions, `$1` in a replacement, splitting, and a reused compiled pattern. |
+| `time.scm` | `(goscheme time)`: sleeping and measuring it, formatting, parsing, and the UTC parts of an instant. |
+| `fs.scm` | `(goscheme fs)`: building a temporary tree, globbing it, walking it, the path helpers, and removing it again. |
+| `match.scm` | `(goscheme match)`: a small arithmetic evaluator written as patterns, plus destructuring and guards. |
 | `embed/main.go` | A Go program using the interpreter as a library — `go run ./examples/embed`. |
 
 ## Libraries from files

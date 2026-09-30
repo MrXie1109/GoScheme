@@ -42,6 +42,12 @@ $ GOSCHEME=./dist/goscheme-linux-amd64 ./examples/run-all.sh
 | `tcp-server.scm` | `(goscheme socket)` 与 `(goscheme sync)`：一个线程 accept，每个连接一个线程回显，三个客户端同时访问。 |
 | `http-server.scm` | `(goscheme http)`：路由、JSON 响应、头部检查、handler 抛错变成 500，以及客户端那一半。 |
 | `pipes.scm` | `(goscheme process)`：用 `open-input-process` 与 `open-output-process` 把两个子进程接成管道。 |
+| `sync.scm` | `(goscheme sync)`：锁下的计数器、同样用 atomic 的版本、wait group，以及只执行一次的初始化。 |
+| `json.scm` | `(goscheme json)`：解析文档、从哈希表与向量里取值、写回，以及 null 与大整数的情况。 |
+| `regexp.scm` | `(goscheme regexp)`：捕获组、位置、替换里的 `$1`、分割，以及复用已编译的模式。 |
+| `time.scm` | `(goscheme time)`：睡眠与测量、格式化、解析，以及某个时刻的 UTC 分解。 |
+| `fs.scm` | `(goscheme fs)`：建一棵临时目录树、glob、遍历、路径辅助，然后清理干净。 |
+| `match.scm` | `(goscheme match)`：用模式写的小算术求值器，外加解构与 guard。 |
 | `embed/main.go` | 把解释器当库用的 Go 程序 —— `go run ./examples/embed`。 |
 
 ## 从文件加载库

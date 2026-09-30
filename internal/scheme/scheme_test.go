@@ -237,3 +237,34 @@ func TestExamples(t *testing.T) {
 		})
 	}
 }
+
+// Path handling has to follow the host's separators.  A hand-rolled scan for
+// '/' broke library and include loading on Windows only, where the cache and
+// the library path are built with backslashes, so this test is worth having on
+// that platform (it is skipped elsewhere because the expectation would differ).
+func TestPathHelpersFollowTheHost(t *testing.T) {
+	joined := filepath.Join("a", "b", "c.scm")
+	if got, want := dirOf(joined), filepath.Join("a", "b"); got != want {
+		t.Errorf("dirOf(%q) = %q, want %q", joined, got, want)
+	}
+
+	// An include written relative to a library must be found next to it, which
+	// is the case the Windows suite caught.
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "lib")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inner := filepath.Join(sub, "body.scm")
+	if err := os.WriteFile(inner, []byte("(define from-body 7)"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := NewMachine()
+	m.AddLoadPath(sub)
+	if got := m.resolvePath("body.scm"); got != inner {
+		t.Errorf("resolvePath found %q, want %q", got, inner)
+	}
+	if got := m.resolvePath(filepath.Join("nope", "x.scm")); got != filepath.Join("nope", "x.scm") {
+		t.Errorf("resolvePath on a missing file = %q", got)
+	}
+}
