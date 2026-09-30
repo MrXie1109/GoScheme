@@ -36,6 +36,7 @@ $ goscheme -e '(display (map (lambda (x) (* x x)) (list 1 2 3 4))) (newline)'
 - [Repository layout](#repository-layout)
 - [Language coverage](#language-coverage)
 - [Implementation notes](#implementation-notes)
+- [Performance](#performance)
 - [Testing](#testing)
 - [Cross-compilation](#cross-compilation)
 - [Requirements](#requirements)
@@ -51,7 +52,7 @@ make build          # or: go build -o .build/goscheme ./cmd/goscheme
 make test           # Go unit tests + both Scheme test suites
 make dist           # cross-compile every supported platform into dist/
 
-./.build/goscheme -v   # GoScheme 2.1.1 (R7RS)
+./.build/goscheme -v   # GoScheme 2.2.0 (R7RS)
 ```
 
 The version comes from `cmd/goscheme/VERSION`, which is embedded in the binary,
@@ -607,6 +608,33 @@ Beyond R7RS-small the interpreter also provides:
   would have to change upstream for it to become possible.
 * `(assert expr)`, `#!unspecified`, shebang lines (`#!/usr/bin/env goscheme`),
   and the alternative exponent markers `s f d l` accepted by the reader.
+
+## Performance
+
+It is a tree-walking interpreter over an explicit continuation stack, so it is
+not the fastest Scheme there is; the numbers below are what the design costs,
+and `go test ./internal/scheme -bench BenchmarkPrograms` reproduces them (they
+were measured on a 12th-generation i3).
+
+| Program | Time |
+|---|---|
+| `(fib 22)`, 28k calls | ~51 ms |
+| 500,000 turns of a tail loop | ~0.58 s |
+| 200,000 additions and comparisons | ~0.31 s |
+| building a 20,000 element list | ~34 ms |
+| 200,000 closure creations and calls | ~260 ms |
+
+Three things get the most out of the machine: an application no longer copies
+its operands into a slice (the frames walk the argument list and keep the values
+in a small array), small exact integers are cached and compared without going
+through `big.Rat`, and an environment frame holds its first four bindings in its
+own fields instead of allocating a map.  Together they are about twice the speed
+of 2.1.1.
+
+A frame takes its lock only while more than one interpreter thread is running,
+which is what makes the common single-threaded case free; `(go ...)` and the
+HTTP handler raise the count before they start, so shared environments are
+still locked exactly as before.
 
 ## Testing
 

@@ -32,6 +32,7 @@ $ goscheme -e '(display (map (lambda (x) (* x x)) (list 1 2 3 4))) (newline)'
 - [仓库结构](#仓库结构)
 - [语言覆盖](#语言覆盖)
 - [实现要点](#实现要点)
+- [性能](#性能)
 - [测试](#测试)
 - [交叉编译](#交叉编译)
 - [环境要求](#环境要求)
@@ -47,7 +48,7 @@ make build          # 或者：go build -o .build/goscheme ./cmd/goscheme
 make test           # Go 单元测试 + 两个 Scheme 测试套件
 make dist           # 交叉编译全部目标平台到 dist/
 
-./.build/goscheme -v   # GoScheme 2.1.1 (R7RS)
+./.build/goscheme -v   # GoScheme 2.2.0 (R7RS)
 ```
 
 版本号来自 `cmd/goscheme/VERSION`，并被内嵌进二进制，因此即使直接用 `go build`
@@ -542,6 +543,26 @@ $ goscheme -e '(let loop ((i 0)) (if (= i 2000000) i (loop (+ i 1))))'
   可能实现。
 * `(assert expr)`、`#!unspecified`、shebang 行
   （`#!/usr/bin/env goscheme`），以及读取器额外接受的指数标记 `s f d l`。
+
+## 性能
+
+它是树遍历解释器（显式续延栈），所以不是最快的 Scheme；下面是这个设计取舍的代价，
+可用 `go test ./internal/scheme -bench BenchmarkPrograms` 复现（本机为 12 代 i3）。
+
+| 程序 | 耗时 |
+|---|---|
+| `(fib 22)`，约 2.8 万次调用 | ~51 ms |
+| 尾循环 50 万次 | ~0.58 s |
+| 20 万次加法与比较 | ~0.31 s |
+| 构造 2 万元素列表 | ~34 ms |
+| 20 万次闭包创建与调用 | ~260 ms |
+
+让机器跑得快主要是三件事：一次调用不再把操作数复制成切片（帧改为沿参数表行走，
+已收集的值放在帧内的小数组里）；小整数做缓存，比较不再经过 `big.Rat`；环境帧的前
+四个绑定放在自己的字段里，不再为此分配 map。三者合起来约为 2.1.1 的两倍。
+
+帧只在**确实存在多个解释器线程**时才加锁，因此常见的单线程场景没有锁开销；
+`(go ...)` 与 HTTP handler 会在启动前把计数加上，共享环境照旧受锁保护。
 
 ## 测试
 

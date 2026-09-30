@@ -230,19 +230,40 @@ func evalQuasiquote(m *Machine, form Value, env *Env) {
 // ---------------------------------------------------------------------------
 
 func evalIf(m *Machine, form Value, env *Env) {
-	args := formArgs(form)
-	if len(args) < 2 || len(args) > 3 {
+	// if is the most frequently evaluated special form, so its three parts are
+	// taken straight out of the form: building an argument slice for it was
+	// one of the largest remaining allocations.
+	p, ok := form.(*Pair)
+	if !ok {
+		m.Raise(NewError("if: malformed", form))
+		return
+	}
+	test, ok := p.Cdr.(*Pair)
+	if !ok {
 		m.Raise(NewError("if: expected 2 or 3 subforms", form))
 		return
 	}
-	var alt Value = UnspecifiedValue
-	if len(args) == 3 {
-		alt = args[2]
+	conseq, ok := test.Cdr.(*Pair)
+	if !ok {
+		m.Raise(NewError("if: expected 2 or 3 subforms", form))
+		return
 	}
-	conseq := args[1]
-	m.EvalWith(args[0], env, func(m *Machine, v Value) {
+	alt := Value(UnspecifiedValue)
+	switch rest := conseq.Cdr.(type) {
+	case Empty:
+	case *Pair:
+		if _, extra := rest.Cdr.(Empty); !extra {
+			m.Raise(NewError("if: expected 2 or 3 subforms", form))
+			return
+		}
+		alt = rest.Car
+	default:
+		m.Raise(NewError("if: malformed", form))
+		return
+	}
+	m.EvalWith(test.Car, env, func(m *Machine, v Value) {
 		if IsTrue(v) {
-			m.Eval(conseq, env)
+			m.Eval(conseq.Car, env)
 		} else {
 			m.Eval(alt, env)
 		}
