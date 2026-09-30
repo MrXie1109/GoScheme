@@ -4,26 +4,57 @@ package scheme
 
 /*
 #cgo linux LDFLAGS: -ldl
-#include <dlfcn.h>
+#include <stdint.h>
 #include <stdlib.h>
 
+// Opening a library is the one part that is not the same everywhere: the POSIX
+// hosts have dlopen, and Windows has LoadLibrary.  Everything below is ordinary
+// C and shared.
+#ifdef _WIN32
+#include <windows.h>
+static void *gs_dlopen(const char *name) {
+	// No name means the running program's own symbols, which on Windows is the
+	// executable itself.
+	if (name == NULL || name[0] == '\0') {
+		return (void *)GetModuleHandleA(NULL);
+	}
+	return (void *)LoadLibraryA(name);
+}
+static void *gs_dlsym(void *handle, const char *name) {
+	return (void *)GetProcAddress((HMODULE)handle, name);
+}
+static const char *gs_dlerror(void) {
+	static char buf[512];
+	DWORD code = GetLastError();
+	if (code == 0) {
+		return NULL;
+	}
+	buf[0] = '\0';
+	FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+	               NULL, code, 0, buf, sizeof(buf) - 1, NULL);
+	return buf;
+}
+#else
+#include <dlfcn.h>
 static void *gs_dlopen(const char *name) {
 	return dlopen(name, RTLD_NOW | RTLD_GLOBAL);
 }
 static void *gs_dlsym(void *handle, const char *name) { return dlsym(handle, name); }
 static const char *gs_dlerror(void) { return dlerror(); }
+#endif
 
 // One helper per arity for the two calling conventions this FFI supports:
-// every argument integral (passed as long, which also covers pointers and
-// strings) or every argument a double.  Calling through a cast function
+// every argument integral (passed as int64_t, which also covers pointers and
+// strings) or every argument a double.  int64_t and not long, because long is
+// 32 bits on Windows.  Calling through a cast function
 // pointer is not strictly portable C, but it is exactly what dlopen-based
 // foreign function interfaces have always done on these ABIs.
-static long gs_call_0_l(void *f) { return ((long (*)(void))f)(); }
-static long gs_call_1_l(void *f, long a) { return ((long (*)(long))f)(a); }
-static long gs_call_2_l(void *f, long a, long b) { return ((long (*)(long, long))f)(a, b); }
-static long gs_call_3_l(void *f, long a, long b, long c) { return ((long (*)(long, long, long))f)(a, b, c); }
-static long gs_call_4_l(void *f, long a, long b, long c, long d) {
-	return ((long (*)(long, long, long, long))f)(a, b, c, d);
+static int64_t gs_call_0_l(void *f) { return ((int64_t (*)(void))f)(); }
+static int64_t gs_call_1_l(void *f, int64_t a) { return ((int64_t (*)(int64_t))f)(a); }
+static int64_t gs_call_2_l(void *f, int64_t a, int64_t b) { return ((int64_t (*)(int64_t, int64_t))f)(a, b); }
+static int64_t gs_call_3_l(void *f, int64_t a, int64_t b, int64_t c) { return ((int64_t (*)(int64_t, int64_t, int64_t))f)(a, b, c); }
+static int64_t gs_call_4_l(void *f, int64_t a, int64_t b, int64_t c, int64_t d) {
+	return ((int64_t (*)(int64_t, int64_t, int64_t, int64_t))f)(a, b, c, d);
 }
 
 static double gs_call_0_d(void *f) { return ((double (*)(void))f)(); }
@@ -35,34 +66,34 @@ static double gs_call_3_d(void *f, double a, double b, double c) {
 
 // The other two combinations: integral arguments with a double result (strtod)
 // and double arguments with an integral result (lround).
-static double gs_call_1_ld(void *f, long a) { return ((double (*)(long))f)(a); }
-static double gs_call_2_ld(void *f, long a, long b) { return ((double (*)(long, long))f)(a, b); }
-static double gs_call_3_ld(void *f, long a, long b, long c) {
-	return ((double (*)(long, long, long))f)(a, b, c);
+static double gs_call_1_ld(void *f, int64_t a) { return ((double (*)(int64_t))f)(a); }
+static double gs_call_2_ld(void *f, int64_t a, int64_t b) { return ((double (*)(int64_t, int64_t))f)(a, b); }
+static double gs_call_3_ld(void *f, int64_t a, int64_t b, int64_t c) {
+	return ((double (*)(int64_t, int64_t, int64_t))f)(a, b, c);
 }
-static double gs_call_4_ld(void *f, long a, long b, long c, long d) {
-	return ((double (*)(long, long, long, long))f)(a, b, c, d);
+static double gs_call_4_ld(void *f, int64_t a, int64_t b, int64_t c, int64_t d) {
+	return ((double (*)(int64_t, int64_t, int64_t, int64_t))f)(a, b, c, d);
 }
 // Pointer results come back as pointers, so that no uintptr has to be turned
 // back into an unsafe.Pointer.
 static void *gs_call_0_lp(void *f) { return ((void *(*)(void))f)(); }
-static void *gs_call_1_lp(void *f, long a) { return ((void *(*)(long))f)(a); }
-static void *gs_call_2_lp(void *f, long a, long b) { return ((void *(*)(long, long))f)(a, b); }
-static void *gs_call_3_lp(void *f, long a, long b, long c) {
-	return ((void *(*)(long, long, long))f)(a, b, c);
+static void *gs_call_1_lp(void *f, int64_t a) { return ((void *(*)(int64_t))f)(a); }
+static void *gs_call_2_lp(void *f, int64_t a, int64_t b) { return ((void *(*)(int64_t, int64_t))f)(a, b); }
+static void *gs_call_3_lp(void *f, int64_t a, int64_t b, int64_t c) {
+	return ((void *(*)(int64_t, int64_t, int64_t))f)(a, b, c);
 }
-static void *gs_call_4_lp(void *f, long a, long b, long c, long d) {
-	return ((void *(*)(long, long, long, long))f)(a, b, c, d);
+static void *gs_call_4_lp(void *f, int64_t a, int64_t b, int64_t c, int64_t d) {
+	return ((void *(*)(int64_t, int64_t, int64_t, int64_t))f)(a, b, c, d);
 }
 static void *gs_call_1_dp(void *f, double a) { return ((void *(*)(double))f)(a); }
 static void *gs_call_2_dp(void *f, double a, double b) {
 	return ((void *(*)(double, double))f)(a, b);
 }
 
-static long gs_call_1_dl(void *f, double a) { return ((long (*)(double))f)(a); }
-static long gs_call_2_dl(void *f, double a, double b) { return ((long (*)(double, double))f)(a, b); }
-static long gs_call_3_dl(void *f, double a, double b, double c) {
-	return ((long (*)(double, double, double))f)(a, b, c);
+static int64_t gs_call_1_dl(void *f, double a) { return ((int64_t (*)(double))f)(a); }
+static int64_t gs_call_2_dl(void *f, double a, double b) { return ((int64_t (*)(double, double))f)(a, b); }
+static int64_t gs_call_3_dl(void *f, double a, double b, double c) {
+	return ((int64_t (*)(double, double, double))f)(a, b, c);
 }
 */
 import "C"
@@ -242,7 +273,7 @@ func makeForeignFunction(name string, fn unsafe.Pointer, ret ffiKind, args []ffi
 		Fn: func(m *Machine, a []Value) {
 			// Convert the arguments, keeping any C strings alive until the
 			// call has returned.
-			var longs []C.long
+			var longs []C.int64_t
 			var doubles []C.double
 			var allocated []unsafe.Pointer
 			for i, kind := range args {
@@ -262,14 +293,14 @@ func makeForeignFunction(name string, fn unsafe.Pointer, ret ffiKind, args []ffi
 					}
 					cs := C.CString(s.Value())
 					allocated = append(allocated, unsafe.Pointer(cs))
-					longs = append(longs, C.long(uintptr(unsafe.Pointer(cs))))
+					longs = append(longs, C.int64_t(uintptr(unsafe.Pointer(cs))))
 				default:
 					v, err := ffiInteger(name, a[i])
 					if err != nil {
 						m.RaiseError(err)
 						return
 					}
-					longs = append(longs, C.long(v))
+					longs = append(longs, C.int64_t(v))
 				}
 			}
 			defer func() {
@@ -301,7 +332,7 @@ func makeForeignFunction(name string, fn unsafe.Pointer, ret ffiKind, args []ffi
 	}
 }
 
-func callLong(fn unsafe.Pointer, a []C.long) C.long {
+func callLong(fn unsafe.Pointer, a []C.int64_t) C.int64_t {
 	switch len(a) {
 	case 0:
 		return C.gs_call_0_l(fn)
@@ -331,7 +362,7 @@ func callDouble(fn unsafe.Pointer, a []C.double) C.double {
 
 // callLongToDouble calls a function that takes integral arguments and returns
 // a double, such as strtod.
-func callLongToDouble(fn unsafe.Pointer, a []C.long) C.double {
+func callLongToDouble(fn unsafe.Pointer, a []C.int64_t) C.double {
 	switch len(a) {
 	case 0:
 		return C.gs_call_0_d(fn)
@@ -348,7 +379,7 @@ func callLongToDouble(fn unsafe.Pointer, a []C.long) C.double {
 
 // callDoubleToLong calls a function that takes double arguments and returns an
 // integral result, such as lround.
-func callDoubleToLong(fn unsafe.Pointer, a []C.double) C.long {
+func callDoubleToLong(fn unsafe.Pointer, a []C.double) C.int64_t {
 	switch len(a) {
 	case 0:
 		return C.gs_call_0_l(fn)
@@ -363,7 +394,7 @@ func callDoubleToLong(fn unsafe.Pointer, a []C.double) C.long {
 
 // callLongToPointer calls a function that takes integral arguments and returns
 // a pointer, such as strchr or malloc.
-func callLongToPointer(fn unsafe.Pointer, a []C.long) unsafe.Pointer {
+func callLongToPointer(fn unsafe.Pointer, a []C.int64_t) unsafe.Pointer {
 	switch len(a) {
 	case 0:
 		return C.gs_call_0_lp(fn)

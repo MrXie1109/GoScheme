@@ -5,6 +5,7 @@ package scheme
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -206,6 +207,14 @@ func TestUncaughtError(t *testing.T) {
 	}
 }
 
+// posixOnlyExamples need a POSIX shell and its tools, so they are not run on
+// Windows.  The rest of the examples are portable and are expected to work
+// everywhere.
+var posixOnlyExamples = map[string]bool{
+	"processes.scm": true,
+	"pipes.scm":     true,
+}
+
 // The examples double as documentation, so they have to keep running.  A
 // failure here means examples/ has rotted, not that an assertion regressed.
 func TestExamples(t *testing.T) {
@@ -219,7 +228,14 @@ func TestExamples(t *testing.T) {
 	}
 	for _, file := range files {
 		file := file
-		name := filepath.Base(file) + "-" + filepath.Base(filepath.Dir(file))
+		base := filepath.Base(file)
+		if runtime.GOOS == "windows" && posixOnlyExamples[base] {
+			t.Run(base+"-examples", func(t *testing.T) {
+				t.Skip("needs a POSIX shell")
+			})
+			continue
+		}
+		name := base + "-" + filepath.Base(filepath.Dir(file))
 		t.Run(name, func(t *testing.T) {
 			out := NewOutputStringPort()
 			m := NewMachine()

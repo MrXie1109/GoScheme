@@ -527,40 +527,50 @@
 (if (memq 'ffi (features))
     (begin
       (import (goscheme ffi))
+
+      ;; Where the C library lives is the platform's business: libm on Linux,
+      ;; libSystem on macOS, and the Universal CRT on Windows, which is where
+      ;; the string and math functions live (the older msvcrt.dll does not have
+      ;; cbrt, and GetProcAddress on the executable itself finds no imports).
+      (define windows? (if (memq 'windows (features)) #t #f))
       (define math-lib-name
-        (if (memq 'darwin (features)) "libSystem.B.dylib" "libm.so.6"))
+        (cond (windows? "ucrtbase.dll")
+              ((memq 'darwin (features)) "libSystem.B.dylib")
+              (else "libm.so.6")))
       (define math-lib (load-shared-library math-lib-name))
+      (define c-lib (load-shared-library math-lib-name))
+      (define (c-name posix windows) (if windows? windows posix))
+
       (define cbrt (foreign-function math-lib 'cbrt 'double 'double))
       (define pow (foreign-function math-lib 'pow 'double 'double 'double))
       (define lround (foreign-function math-lib 'lround 'long 'double))
       (test 3 (lround (cbrt 27.0)))
       (test 1024.0 (pow 2.0 10.0))
 
-      ;; the running program's own symbols, where libc lives
-      (define self (load-shared-library #f))
-      (define strlen (foreign-function self 'strlen 'long 'string))
-      (define strtod (foreign-function self 'strtod 'double 'string 'pointer))
-      (define getpid (foreign-function self 'getpid 'long))
+      (define strlen (foreign-function c-lib 'strlen 'long 'string))
+      (define strtod (foreign-function c-lib 'strtod 'double 'string 'pointer))
+      (define getpid (foreign-function c-lib (c-name 'getpid '_getpid) 'long))
       (test 5 (strlen "hello"))
       (test 3.5 (strtod "3.5" 0))
       (test #t (exact? (getpid)))
 
       ;; string results are copied out of C, and a null pointer is #f
-      (define getenv (foreign-function self 'getenv 'string 'string))
-      (test #t (string? (getenv "PATH")))
+      (define getenv (foreign-function c-lib 'getenv 'string 'string))
+      (define path-name (c-name "PATH" "PATH"))
+      (test #t (string? (getenv path-name)))
       (test #f (getenv "GOSCHEME_NO_SUCH_VARIABLE_XYZ"))
 
       ;; pointer results stay addresses: usable as arguments, and #f when null
-      (define strchr (foreign-function self 'strchr 'pointer 'string 'long))
+      (define strchr (foreign-function c-lib 'strchr 'pointer 'string 'long))
       (test #t (exact? (strchr "hello" 108)))  ; the 'l'
       (test #f (strchr "hello" 122))           ; no 'z'
       ;; A pointer into memory C itself owns survives the call that produced it,
       ;; so it can be handed to another function.  (Pointers into a string
       ;; argument do not: those buffers are freed on return.)
-      (define strlen-pointer (foreign-function self 'strlen 'long 'pointer))
-      (define getenv-address (foreign-function self 'getenv 'pointer 'string))
-      (define path (getenv "PATH"))
-      (test (string-length path) (strlen-pointer (getenv-address "PATH")))
+      (define strlen-pointer (foreign-function c-lib 'strlen 'long 'pointer))
+      (define getenv-address (foreign-function c-lib 'getenv 'pointer 'string))
+      (define path (getenv path-name))
+      (test (string-length path) (strlen-pointer (getenv-address path-name)))
 
       (test #t (foreign-library? math-lib))
       (test #f (foreign-library? 5))

@@ -1,0 +1,109 @@
+# SPDX-License-Identifier: MIT
+#
+# The point of this workflow is the platforms that cannot be run while building
+# GoScheme on Linux: macOS in particular, where there is no way to execute a
+# Mach-O binary, and Windows and Linux arm64, which used to be compile-only.
+# Everything here runs the suites natively, and the macOS jobs also build the
+# cgo flavour, which is the one with (goscheme ffi).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: test ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-amd64, os: ubuntu-latest }
+          - { name: linux-arm64, os: ubuntu-24.04-arm }
+          - { name: darwin-amd64, os: macos-13 }
+          - { name: darwin-arm64, os: macos-14 }
+          - { name: windows-amd64, os: windows-latest }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      # The unit tests, which include running every extension suite and every
+      # example.
+      - name: go test
+        run: go test ./...
+
+      # And again through the command line interpreter, so that the driver part
+      # is exercised too.
+      - name: build
+        run: go build -trimpath -ldflags "-s -w" -o goscheme ./cmd/goscheme
+
+      - name: suites
+        shell: bash
+        run: |
+          set -e
+          for s in r7rs goscheme concurrency network process data match; do
+            printf '%-12s ' "$s"
+            ./goscheme "test/scheme/run-$s.scm" | tail -1
+          done
+
+      - name: examples
+        shell: bash
+        run: |
+          set -e
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            # The process and pipe examples need a POSIX shell; the runner
+            # script does too, so the portable examples are run one by one.
+            for f in numbers recursion hash-tables concurrency script-args json regexp time fs match tcp-server http-server; do
+              printf '%-16s ' "$f"
+              ./goscheme "examples/$f.scm" > /dev/null && echo ok
+            done
+            ./goscheme examples/libraries/main.scm > /dev/null && echo "libraries        ok"
+          else
+            GOSCHEME=./goscheme ./examples/run-all.sh
+          fi
+
+  # The dynamic flavour is built where a C compiler for the platform exists:
+  # the macOS runners have one, and so does the Windows runner.
+  dynamic:
+    name: dynamic ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: darwin-amd64, os: macos-13, out: goscheme-darwin-amd64-dynamic }
+          - { name: darwin-arm64, os: macos-14, out: goscheme-darwin-arm64-dynamic }
+          - { name: windows-amd64, os: windows-latest, out: goscheme-windows-amd64-dynamic.exe }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: build with cgo
+        shell: bash
+        run: CGO_ENABLED=1 go build -trimpath -ldflags "-s -w" -o "${{ matrix.out }}" ./cmd/goscheme
+
+      # The dynamic build is the one with the FFI, so the suite that covers it
+      # has to pass here, on the platform it is being shipped for.
+      - name: FFI suite
+        shell: bash
+        run: ./"${{ matrix.out }}" test/scheme/run-goscheme.scm | tail -1
+
+      - name: features
+        shell: bash
+        run: ./"${{ matrix.out }}" -e "(display (features))" && echo
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.out }}
+          path: ${{ matrix.out }}
+          if-no-files-found: error
