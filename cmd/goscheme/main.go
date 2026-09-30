@@ -123,7 +123,18 @@ func run() int {
 		}
 	}
 	if interactive || (len(files) == 0 && len(exprs) == 0) {
-		repl(m, quiet)
+		// A pipe or a file session that saw an error exits non-zero, the way
+		// running a script does: otherwise `cat x.scm | goscheme` always looks
+		// like a success to whatever called it.
+		return repl(m, quiet)
+	}
+	return 0
+}
+
+// exitCodeFor turns the session's failures into an exit status.
+func exitCodeFor(failed bool) int {
+	if failed {
+		return 1
 	}
 	return 0
 }
@@ -223,11 +234,10 @@ const (
 	continuationPrompt = "... "
 )
 
-func repl(m *scheme.Machine, quiet bool) {
+func repl(m *scheme.Machine, quiet bool) int {
 	if !isTerminal(os.Stdin) {
 		// Not talking to a user: no banner, no prompts.
-		replOn(m, os.Stdin, os.Stdout, os.Stderr, false, nil)
-		return
+		return replOn(m, os.Stdin, os.Stdout, os.Stderr, false, nil)
 	}
 	// Everything written to the terminal goes through out, so the REPL knows
 	// where the cursor is even when Scheme code used (display ...).
@@ -241,10 +251,9 @@ func repl(m *scheme.Machine, quiet bool) {
 	if err != nil {
 		// No raw mode available: fall back to the canonical reader, which
 		// still avoids prompting while input is already queued.
-		replOn(m, os.Stdin, os.Stdout, os.Stderr, false, func() bool {
+		return replOn(m, os.Stdin, os.Stdout, os.Stderr, false, func() bool {
 			return inputPending(os.Stdin)
 		})
-		return
 	}
 	fmt.Fprint(os.Stdout, bracketedPasteOn)
 	defer func() {
@@ -286,7 +295,10 @@ func repl(m *scheme.Machine, quiet bool) {
 	signal.Notify(sigint, os.Interrupt)
 	defer signal.Stop(sigint)
 
+	// An interactive session reports its errors on the terminal, and there is
+	// usually a human deciding what to do about them, so its status is 0.
 	replEdited(m, newLineEditor(os.Stdin, out), out, os.Stderr, sigint)
+	return 0
 }
 
 // replEdited is the line editing read-eval-print loop.  A bracketed paste is
@@ -363,7 +375,8 @@ func replEdited(m *scheme.Machine, ed *lineEditor, stdout, stderr io.Writer, sig
 // pasted multi-line form therefore shows the primary prompt once and the
 // continuation prompt only when a human is really still typing, instead of a
 // run of prompts wedged between the pasted lines.
-func replOn(m *scheme.Machine, stdin io.Reader, stdout, stderr io.Writer, banner bool, pending func() bool) {
+func replOn(m *scheme.Machine, stdin io.Reader, stdout, stderr io.Writer, banner bool, pending func() bool) int {
+	failed := false
 	if banner {
 		fmt.Fprintln(stdout, versionString())
 		fmt.Fprintln(stdout, "Type (exit) or press Ctrl-D to leave.")
@@ -392,8 +405,12 @@ func replOn(m *scheme.Machine, stdin io.Reader, stdout, stderr io.Writer, banner
 			buf.Reset()
 			incomplete = false
 			for _, f := range forms {
-				if !evalForm(m, f, stdout, stderr) {
-					return
+				keepGoing, bad := evalForm(m, f, stdout, stderr)
+				if bad {
+					failed = true
+				}
+				if !keepGoing {
+					return exitCodeFor(failed)
 				}
 			}
 		case scheme.IsIncomplete(perr):
@@ -403,17 +420,19 @@ func replOn(m *scheme.Machine, stdin io.Reader, stdout, stderr io.Writer, banner
 			fmt.Fprintf(stderr, "Error: %v\n", perr)
 			buf.Reset()
 			incomplete = false
+			failed = true
 		}
 
 		if rerr != nil {
 			// End of input.
 			if incomplete {
 				fmt.Fprintln(stderr, "Error: unexpected end of input")
+				failed = true
 			}
 			if pending != nil {
 				fmt.Fprintln(stdout)
 			}
-			return
+			return exitCodeFor(failed)
 		}
 	}
 }
@@ -483,19 +502,19 @@ func readForms(src string) ([]scheme.Value, error) {
 
 // evalForm evaluates one datum, reporting its value.  It returns false when
 // the session should end.
-func evalForm(m *scheme.Machine, f scheme.Value, stdout, stderr io.Writer) bool {
+func evalForm(m *scheme.Machine, f scheme.Value, stdout, stderr io.Writer) (keepGoing, failed bool) {
 	v, err := m.Run(f, m.Global)
 	if err != nil {
 		if _, ok := err.(*scheme.ExitError); ok {
-			return false
+			return false, false
 		}
 		fmt.Fprintf(stderr, "Error: %v\n", err)
-		return true
+		return true, true
 	}
 	if _, un := v.(scheme.Unspecified); !un {
 		fmt.Fprintln(stdout, scheme.WriteToString(v))
 	}
-	return true
+	return true, false
 }
 
 // isTerminal reports whether f is a character device, i.e. whether the

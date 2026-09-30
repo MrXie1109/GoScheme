@@ -125,6 +125,9 @@ var specialLower = map[rune]string{
 }
 
 var specialFold = map[rune]string{
+	// Final sigma folds to sigma (Unicode full case folding), which is what
+	// makes (string-foldcase "ς") "σ" and (char-ci=? #\ς #\σ) true.
+	0x03C2: "\u03C3",
 	0x00DF: "ss", 0x0130: "i\u0307", 0x0149: "\u02BCn", 0x017F: "s",
 	0x01F0: "j\u030C", 0x0390: "\u03B9\u0308\u0301",
 	0x03B0: "\u03C5\u0308\u0301", 0x0587: "\u0565\u0582",
@@ -185,18 +188,21 @@ func charCase(r rune, kind caseKind) Char {
 	switch kind {
 	case caseUpper:
 		if repl, ok := specialUpper[r]; ok {
-			rs := []rune(repl)
-			if len(rs) > 0 {
+			if rs := []rune(repl); len(rs) == 1 {
 				return Char(rs[0])
 			}
+			// A multi-character mapping has no character result, so R7RS 6.6
+			// says the character is returned unchanged: (char-upcase #\ß) is
+			// #\ß, not the #\S that truncating would give.
+			return Char(r)
 		}
 		return Char(unicode.ToUpper(r))
 	case caseLower:
 		if repl, ok := specialLower[r]; ok {
-			rs := []rune(repl)
-			if len(rs) > 0 {
+			if rs := []rune(repl); len(rs) == 1 {
 				return Char(rs[0])
 			}
+			return Char(r)
 		}
 		return Char(unicode.ToLower(r))
 	default:

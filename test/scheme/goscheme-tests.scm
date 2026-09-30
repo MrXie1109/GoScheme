@@ -390,6 +390,96 @@
 
 (test-end)
 
+;;; ------------------------------------------- defects found by an outside review
+;;; Every one of these was a real bug, with the shape it was reported in.
+(test-begin "Reviewed defects")
+
+;; A1: an argument error raised by a primitive written with def must be
+;; catchable, like one raised by a primitive written with defSimple.
+(test 'caught (guard (e (#t 'caught)) (apply 5 '())))
+(test 'caught (guard (e (#t 'caught)) (map 5 '(1))))
+(test 'caught (guard (e (#t 'caught)) (vector-map 5 (vector 1))))
+(test 'caught (guard (e (#t 'caught)) (for-each 5 '(1 2))))
+(test 'caught (guard (e (#t 'caught)) (string-map 5 "ab")))
+(test 'caught (guard (e (#t 'caught)) (dynamic-wind 5 (lambda () 1) (lambda () 2))))
+
+;; A2/A3: a decimal literal with #e is exact, and a malformed number is not a
+;; number at all.
+(test 1/10 #e0.1)
+(test #t (= #e0.1 1/10))
+(test (expt 10 23) #e1e23)
+(test 3/2 #e1.5)
+(test #f (string->number "1e"))
+(test #f (string->number "1.5s"))
+(test #f (string->number "--1"))
+(test #f (string->number "#x--ff"))
+(test #t (symbol? (string->symbol "1e")))
+
+;; A5: parameterize applies the converter to the value it installs, not to the
+;; value it puts back.
+(define review-parameter (make-parameter 10 (lambda (x) (* x 2))))
+(test '(20 6 20)
+      (list (review-parameter)
+            (parameterize ((review-parameter 3)) (review-parameter))
+            (review-parameter)))
+
+;; A6: internal definitions follow letrec*, so a name defined later in the body
+;; is not an outer binding of the same name.
+(define review-outer 'outer)
+(test 'uninitialised
+      (guard (e (#t 'uninitialised))
+        ((lambda () (define a review-outer) (define review-outer 2) a))))
+(test 'uninitialised
+      (guard (e (#t 'uninitialised))
+        (let () (define a review-outer) (define review-outer 2) a)))
+(test 1 ((lambda () (define a 1) (define b a) b)))
+
+;; A9/A10: exact and inexact numbers compare exactly, and a NaN is not zero.
+(test #t (> 9007199254740993 9007199254740992.0))
+(test #f (<= 9007199254740993 9007199254740992.0))
+(test #t (> 1/3 0.3333333333333333))
+(test #f (zero? +nan.0))
+(test #f (positive? +nan.0))
+(test #f (negative? +nan.0))
+
+;; B1: a datum label on a vector makes it circular.
+(test #t (let ((v (read (open-input-string "#1=#(1 #1#)"))))
+           (eq? v (vector-ref v 1))))
+(test #t (let ((v (read (open-input-string "#1=(1 . #1#)"))))
+           (eq? v (cdr v))))
+
+;; B3: a closed port is an error to read from, an output port has no character
+;; to be ready, and the byte procedures want a binary port.
+(test 'closed (guard (e (#t 'closed))
+               (let ((p (open-input-string "a"))) (close-port p) (read-line p))))
+(test 'closed (guard (e (#t 'closed)) (char-ready? (open-output-string))))
+(test 'binary (guard (e (#t 'binary)) (read-u8 (open-input-string "abc"))))
+
+;; B4: invalid UTF-8 is reported, not replaced with U+FFFD.
+(test 'bad (guard (e (#t 'bad)) (utf8->string #u8(255 254))))
+(test "hi" (utf8->string #u8(104 105)))
+
+;; B5: a key that is not equivalent is not found, whatever its hash.
+(test 'missing
+      (let ((h (make-eqv-hashtable)))
+        (hash-table-set! h +nan.0 'nan)
+        (hash-table-ref/default h +nan.0 'missing)))
+(test 'found (let ((h (make-equal-hashtable)))
+               (hash-table-set! h '(1 2) 'found)
+               (hash-table-ref/default h (list 1 2) 'missing)))
+
+;; B6: the curried define means what it says.
+(test '(1 2) (let () (define ((f a) b) (list a b)) ((f 1) 2)))
+
+;; C: a value count that does not match, or a variable named twice, is an error
+;; rather than a silent adjustment.
+(test 'few (guard (e (#t 'few)) (let-values (((a b) (values 1))) a)))
+(test 'many (guard (e (#t 'many)) (let-values (((a) (values 1 2))) a)))
+(test 'duplicate (guard (e (#t 'duplicate)) (let ((x 1) (x 2)) x)))
+(test 'duplicate (guard (e (#t 'duplicate)) (letrec ((x 1) (x 2)) x)))
+
+(test-end)
+
 ;;; -------------------------------------------------------------- reader odds
 (test-begin "Reader")
 

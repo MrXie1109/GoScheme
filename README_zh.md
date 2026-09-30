@@ -47,7 +47,7 @@ make build          # 或者：go build -o .build/goscheme ./cmd/goscheme
 make test           # Go 单元测试 + 两个 Scheme 测试套件
 make dist           # 交叉编译全部目标平台到 dist/
 
-./.build/goscheme -v   # GoScheme 2.1.0 (R7RS)
+./.build/goscheme -v   # GoScheme 2.1.1 (R7RS)
 ```
 
 版本号来自 `cmd/goscheme/VERSION`，并被内嵌进二进制，因此即使直接用 `go build`
@@ -332,7 +332,8 @@ Makefile                 构建、测试与打包目标
 ### 过程
 
 标准环境中安装了 323 个绑定（其中约 250 个是 R7RS-small 标准过程），
-内建库共导出 572 个名字。覆盖范围包括数值塔（`exact-integer-sqrt`、
+标准环境里有 469 个绑定，28 个内建库共导出 676 条名字（去重后 469 条，因为
+`(scheme …)` 各库会重复导出同一批）。覆盖范围包括数值塔（`exact-integer-sqrt`、
 `rationalize`、`floor/`、`truncate/`、`make-polar`、任意进制的
 `number->string` …）、列表与向量操作、Unicode 感知的字符串与字符操作、
 文本与二进制 I/O、文件与进程上下文过程、`eval` / `load` / `environment`、
@@ -554,9 +555,15 @@ go test -short ./...                          # 跳过参考套件
 
 ```
 == 1227 passed, 0 failed     参考 R7RS 套件（test/scheme/r7rs-tests.scm）
-==  135 passed, 0 failed     GoScheme 回归套件（test/scheme/goscheme-tests.scm）
-==   39 passed, 0 failed     并发套件（test/scheme/goscheme-concurrency-tests.scm）
+==  228 passed, 0 failed     GoScheme 回归套件（test/scheme/goscheme-tests.scm）
+==   70 passed, 0 failed     并发套件（test/scheme/goscheme-concurrency-tests.scm）
+==   38 passed, 0 failed     网络套件（test/scheme/goscheme-network-tests.scm）
+==   35 passed, 0 failed     进程与文件系统套件（test/scheme/goscheme-process-tests.scm）
+==   86 passed, 0 failed     数据套件（test/scheme/goscheme-data-tests.scm）
+==   43 passed, 0 failed     模式匹配套件（test/scheme/goscheme-match-tests.scm）
 ```
+合计 1727 条断言；goscheme 套件在 cgo 构建下是 228 条而不是 213 条，因为 FFI
+那一段只在有 FFI 的构建里运行。
 
 并发套件同样通过 Go 竞态检测器（`go test -race ./...`）。
 
@@ -632,9 +639,15 @@ CC_windows_amd64=x86_64-w64-mingw32-gcc make dist
   堆上的续延帧。
 * 非精确数值采用 Go 的最短往返表示输出；形似数值的符号（例如 `+NaN.0abc`）
   会被 `write` 加 `|…|` 引用。
-* 按报告允许的行为，`write-simple` 作用于环状数据时可能不会终止。
-* 并发扩展遵循 Go 而不是 R7RS/R6RS 的线程提案：没有互斥量、条件变量，也没有
-  线程局部的动态状态，`(go-wait)` 是“等待全部”的粗粒度操作。
+* 按报告允许的行为，`write-simple` 作用于环状数据时可能不会终止；`display` 也不带
+  已访问集合，所以在 `write` 能活下来的循环结构上它可能挂死。
+* 并发扩展遵循 Go 而不是 R7RS/R6RS 的线程提案：没有线程局部的动态状态，也没有条件
+  变量，`(go-wait)` 是“等待全部”的粗粒度操作。不过 `(goscheme sync)` 提供了 Go
+  程序员习惯的互斥量、等待组、一次性执行与原子量。
+* 导入的绑定是**副本**：库里用 `set!` 改自己的变量、导入方读到的可能分叉；对导入
+  名字 `set!` 也只改导入方那一份。chibi-scheme 行为相同，R7RS 原文在这一点上有歧义，
+  但在依赖它之前值得知道。
+* 单值上下文里的多值会被静默截断为第一个（零个值则变成未指定值），而不是报错。
 
 ## 许可证
 

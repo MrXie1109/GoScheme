@@ -341,6 +341,30 @@ func scanBodyNames(body []Value) []*Symbol {
 	return out
 }
 
+// checkDuplicateVars reports a variable that one binding form names twice,
+// which R7RS makes an error rather than a silent last-one-wins.
+func checkDuplicateVars(syms []*Symbol) error {
+	seen := map[*Symbol]bool{}
+	for _, s := range syms {
+		if seen[s] {
+			return NewError("duplicate variable in the same binding form", s)
+		}
+		seen[s] = true
+	}
+	return nil
+}
+
+// symsOf picks the symbols out of a list of binding names.
+func symsOf(vars []Value) []*Symbol {
+	out := make([]*Symbol, 0, len(vars))
+	for _, v := range vars {
+		if s, ok := v.(*Symbol); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // prepBody pre-binds the names introduced by internal definitions, which is
 // what gives a body letrec* semantics: a definition may refer to a later one,
 // and referring to it before it is initialised is an error rather than a
@@ -526,6 +550,10 @@ func evalBindings(m *Machine, bindings Value, env *Env, fn func(m *Machine, syms
 		syms = append(syms, s)
 		inits = append(inits, init)
 	}
+	if err := checkDuplicateVars(syms); err != nil {
+		m.RaiseError(err)
+		return
+	}
 	m.EvalList(inits, env, func(m *Machine, vals []Value) {
 		fn(m, syms, vals)
 	})
@@ -664,6 +692,10 @@ func evalLetrecCommon(m *Machine, form Value, env *Env, sequential bool) {
 		} else {
 			inits = append(inits, cadr(p))
 		}
+	}
+	if err := checkDuplicateVars(syms); err != nil {
+		m.RaiseError(err)
+		return
 	}
 	newEnv := NewEnv(env)
 	for _, s := range syms {
@@ -805,22 +837,21 @@ func bindFormals(env *Env, formals Value, vals []Value) error {
 			if !ok {
 				return NewError("binding name is not an identifier", p.Car)
 			}
-			if i < len(vals) {
-				env.Define(s, vals[i])
-			} else {
-				env.Define(s, UnspecifiedValue)
+			if i >= len(vals) {
+				return NewError("too few values for the formals", formals)
 			}
+			env.Define(s, vals[i])
 			i++
 			cur = p.Cdr
 		}
 		if s, ok := cur.(*Symbol); ok {
-			if i <= len(vals) {
-				env.Define(s, List(vals[i:]...))
-			} else {
-				env.Define(s, Nil)
-			}
+			env.Define(s, List(vals[i:]...))
+			return nil
 		} else if _, isNil := cur.(Empty); !isNil {
 			return NewError("malformed formals", formals)
+		}
+		if i != len(vals) {
+			return NewError("too many values for the formals", formals)
 		}
 		return nil
 	}

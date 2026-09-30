@@ -51,7 +51,7 @@ make build          # or: go build -o .build/goscheme ./cmd/goscheme
 make test           # Go unit tests + both Scheme test suites
 make dist           # cross-compile every supported platform into dist/
 
-./.build/goscheme -v   # GoScheme 2.1.0 (R7RS)
+./.build/goscheme -v   # GoScheme 2.1.1 (R7RS)
 ```
 
 The version comes from `cmd/goscheme/VERSION`, which is embedded in the binary,
@@ -365,8 +365,9 @@ unspecified value; hash tables (extension).
 
 ### Procedures
 
-323 bindings are installed in the standard environment (about 250 of them are
-the R7RS-small procedures), and the builtin libraries export 572 names in
+469 bindings are installed in the standard environment, and the 28 builtin
+libraries export 676 names — 469 distinct, since the `(scheme …)` libraries
+re-export the same ones.  The coverage includes
 total. Coverage includes the numeric tower (`exact-integer-sqrt`,
 `rationalize`, `floor/`, `truncate/`, `make-polar`, `number->string` with any
 radix, …), list and vector operations, Unicode-aware string and character
@@ -619,9 +620,16 @@ go test -short ./...                          # skip the reference suite
 
 ```
 == 1227 passed, 0 failed     reference R7RS suite (test/scheme/r7rs-tests.scm)
-==  135 passed, 0 failed     GoScheme regression suite (test/scheme/goscheme-tests.scm)
-==   39 passed, 0 failed     concurrency suite (test/scheme/goscheme-concurrency-tests.scm)
+==  228 passed, 0 failed     GoScheme regression suite (test/scheme/goscheme-tests.scm)
+==   70 passed, 0 failed     concurrency suite (test/scheme/goscheme-concurrency-tests.scm)
+==   38 passed, 0 failed     network suite (test/scheme/goscheme-network-tests.scm)
+==   35 passed, 0 failed     process and fs suite (test/scheme/goscheme-process-tests.scm)
+==   86 passed, 0 failed     data suite (test/scheme/goscheme-data-tests.scm)
+==   43 passed, 0 failed     match suite (test/scheme/goscheme-match-tests.scm)
 ```
+That is 1727 assertions in total, and the count for the goscheme suite is 228
+with cgo rather than 213 without it, because the FFI section only runs when the
+build has it.
 
 The concurrency suite also passes under the Go race detector
 (`go test -race ./...`).
@@ -710,10 +718,21 @@ Build flags: `GOOS=<os> GOARCH=<arch> CGO_ENABLED=<0|1> go build -trimpath
 * Inexact numbers are printed with Go's shortest round-trip representation, and
   symbols that merely look like numbers (for example `+NaN.0abc`) are quoted
   with `|…|` by `write`.
-* `write-simple` on cyclic data may not terminate, which the report permits.
+* `write-simple` on cyclic data may not terminate, which the report permits;
+  `display` does not keep a visited set either, so it can hang on cyclic data
+  where `write` survives it.
 * The concurrency extension follows Go rather than the R7RS/R6RS thread
-  proposals: there are no mutexes, condition variables or thread-local dynamic
-  state, and `(go-wait)` is a blunt "wait for everything".
+  proposals: there is no thread-local dynamic state and there are no condition
+  variables, and `(go-wait)` is a blunt "wait for everything".  `(goscheme
+  sync)` does provide the mutexes, wait groups, one-time runs and atomics a Go
+  programmer expects.
+* An imported binding is a copy. A library that mutates its own variable with
+  `set!` and an importer that reads it can therefore diverge, and `set!` on an
+  imported name changes only the importer's copy.  chibi-scheme behaves the
+  same way and [the R7RS text is ambiguous on the point](http://scheme-reports.org/mail/scheme-reports/msg03546.html),
+  but it is worth knowing before relying on it.
+* Multiple values in a single-value context are truncated to the first rather
+  than reported, and a zero-value result becomes the unspecified value.
 
 ## License
 

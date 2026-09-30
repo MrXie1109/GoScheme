@@ -284,3 +284,41 @@ func TestPathHelpersFollowTheHost(t *testing.T) {
 		t.Errorf("resolvePath on a missing file = %q", got)
 	}
 }
+
+// exit has to run the outstanding dynamic-wind after thunks on the way out;
+// leaving through a panic used to skip them, while an error that unwound ran
+// them.
+func TestExitRunsWindThunks(t *testing.T) {
+	out := NewOutputStringPort()
+	m := NewMachine()
+	m.CurOut = out
+	m.OutParam.values[0] = out
+
+	_, err := m.EvalString(`
+		(dynamic-wind
+		  (lambda () (display "before "))
+		  (lambda () (exit 0))
+		  (lambda () (display "after")))`)
+	if _, ok := err.(*ExitError); !ok {
+		t.Fatalf("expected an ExitError, got %v", err)
+	}
+	if got := out.OutputString(); got != "before after" {
+		t.Errorf("the after thunk did not run: %q", got)
+	}
+
+	// emergency-exit is the one that skips them, by definition.
+	out = NewOutputStringPort()
+	m = NewMachine()
+	m.CurOut = out
+	m.OutParam.values[0] = out
+	if _, err := m.EvalString(`
+		(dynamic-wind
+		  (lambda () (display "before "))
+		  (lambda () (emergency-exit 0))
+		  (lambda () (display "after")))`); err == nil {
+		t.Fatal("expected an ExitError")
+	}
+	if got := out.OutputString(); got != "before " {
+		t.Errorf("emergency-exit ran the after thunk: %q", got)
+	}
+}
