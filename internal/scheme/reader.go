@@ -1009,18 +1009,22 @@ func parseReal(s string, radix int, exact byte) (Value, bool) {
 	}
 	// Decimal?
 	if radix == 10 && strings.ContainsAny(body, ".eEsSfFdDlL") {
+		if exact == 'e' {
+			r, ok := exactFromDecimal(body)
+			if !ok {
+				return nil, false
+			}
+			if sign < 0 {
+				r = new(big.Rat).Neg(r)
+			}
+			return normRat(r), true
+		}
 		f, err := parseDecimal(body)
 		if err != nil {
 			return nil, false
 		}
 		if sign < 0 {
 			f = -f
-		}
-		if exact == 'e' {
-			if math.IsInf(f, 0) || math.IsNaN(f) {
-				return nil, false
-			}
-			return Exact(Float(f)), true
 		}
 		return Float(f), true
 	}
@@ -1050,6 +1054,14 @@ func parseUInteger(s string, radix int) (*big.Int, bool) {
 	if s == "" {
 		return nil, false
 	}
+	// big.Int.SetString accepts a leading sign, which is not part of an
+	// unsigned integer: without this check "--1" and "#x--ff" were read as
+	// numbers instead of being symbols.
+	for _, c := range s {
+		if digitValueOf(c, radix) < 0 {
+			return nil, false
+		}
+	}
 	n := new(big.Int)
 	if _, ok := n.SetString(s, radix); !ok {
 		return nil, false
@@ -1057,26 +1069,48 @@ func parseUInteger(s string, radix int) (*big.Int, bool) {
 	return n, true
 }
 
-// parseDecimal parses a decimal literal without sign: digits with optional
-// '.', '.', and an exponent marker.
-func parseDecimal(s string) (float64, error) {
-	// Validate the shape ourselves so that things like "1.2.3" or "1e" are
-	// rejected rather than silently accepted by strconv.
-	mant := s
-	exp := ""
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case 'e', 'E', 's', 'S', 'f', 'F', 'd', 'D', 'l', 'L':
-			if i > 0 {
-				mant, exp = s[:i], s[i+1:]
-			}
+// digitValueOf is the value of a digit in the given radix, or -1.
+func digitValueOf(c rune, radix int) int {
+	switch {
+	case c >= '0' && c <= '9':
+		if int(c-'0') < radix {
+			return int(c - '0')
 		}
-		if exp != "" {
-			break
+	case c >= 'a' && c <= 'z':
+		if int(c-'a')+10 < radix {
+			return int(c-'a') + 10
+		}
+	case c >= 'A' && c <= 'Z':
+		if int(c-'A')+10 < radix {
+			return int(c-'A') + 10
 		}
 	}
-	digits := 0
-	dots := 0
+	return -1
+}
+
+// splitDecimal splits a decimal literal into its mantissa and exponent and
+// checks the shape: digits with at most one '.', and an exponent marker that is
+// actually followed by an exponent.  "1e" is not a number — the marker with
+// nothing after it used to slip through, so "1e" and "1.5s" were read as 1.0
+// and 1.5.
+func splitDecimal(s string) (mant, exp string, hasExp, ok bool) {
+	for i := 0; i < len(s); i++ {
+		if !isExponentMarker(s[i]) {
+			continue
+		}
+		if i == 0 {
+			return "", "", false, false
+		}
+		mant, exp, hasExp = s[:i], s[i+1:], true
+		if exp == "" {
+			return "", "", false, false
+		}
+		break
+	}
+	if !hasExp {
+		mant = s
+	}
+	digits, dots := 0, 0
 	for _, c := range mant {
 		switch {
 		case c >= '0' && c <= '9':
@@ -1084,32 +1118,83 @@ func parseDecimal(s string) (float64, error) {
 		case c == '.':
 			dots++
 			if dots > 1 {
-				return 0, fmt.Errorf("bad decimal")
+				return "", "", false, false
 			}
 		default:
-			return 0, fmt.Errorf("bad decimal")
+			return "", "", false, false
 		}
 	}
 	if digits == 0 || mant == "." {
-		return 0, fmt.Errorf("bad decimal")
+		return "", "", false, false
 	}
-	if exp != "" {
+	if hasExp {
 		i := 0
 		if exp[0] == '+' || exp[0] == '-' {
 			i++
 		}
 		if i >= len(exp) {
-			return 0, fmt.Errorf("bad exponent")
+			return "", "", false, false
 		}
 		for ; i < len(exp); i++ {
 			if exp[i] < '0' || exp[i] > '9' {
-				return 0, fmt.Errorf("bad exponent")
+				return "", "", false, false
 			}
 		}
 	}
+	return mant, exp, hasExp, true
+}
+
+// exactFromDecimal builds the exact value of a decimal literal from its
+// digits.  Going through float64 lost the value: #e0.1 became
+// 3602879701896397/36028797018963968 instead of 1/10, and #e1e23 was off by
+// more than a million.
+func exactFromDecimal(s string) (*big.Rat, bool) {
+	mant, exp, hasExp, ok := splitDecimal(s)
+	if !ok {
+		return nil, false
+	}
+	intPart, fracPart := mant, ""
+	if i := strings.IndexByte(mant, '.'); i >= 0 {
+		intPart, fracPart = mant[:i], mant[i+1:]
+	}
+	digits := intPart + fracPart
+	if digits == "" {
+		return nil, false
+	}
+	n, ok := new(big.Int).SetString(digits, 10)
+	if !ok {
+		return nil, false
+	}
+	scale := len(fracPart)
+	if hasExp {
+		e, err := strconv.Atoi(exp)
+		if err != nil {
+			return nil, false
+		}
+		scale -= e
+	}
+	ten := big.NewInt(10)
+	switch {
+	case scale > 0:
+		den := new(big.Int).Exp(ten, big.NewInt(int64(scale)), nil)
+		return new(big.Rat).SetFrac(n, den), true
+	case scale < 0:
+		mul := new(big.Int).Exp(ten, big.NewInt(int64(-scale)), nil)
+		return new(big.Rat).SetInt(n.Mul(n, mul)), true
+	}
+	return new(big.Rat).SetInt(n), true
+}
+
+// parseDecimal parses a decimal literal without sign: digits with optional
+// '.', '.', and an exponent marker.
+func parseDecimal(s string) (float64, error) {
+	mant, exp, hasExp, ok := splitDecimal(s)
+	if !ok {
+		return 0, fmt.Errorf("bad decimal")
+	}
 	// Go only understands `e` as the exponent marker; normalise the others.
 	norm := mant
-	if exp != "" {
+	if hasExp {
 		norm = mant + "e" + exp
 	}
 	f, err := strconv.ParseFloat(norm, 64)

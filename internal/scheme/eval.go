@@ -304,17 +304,19 @@ func scanBodyNames(body []Value) []*Symbol {
 				if sym, ok := t.(*Symbol); ok {
 					out = append(out, sym)
 				}
-				return
+				// Keep scanning: every internal definition is pre-bound, and
+				// stopping at the first one meant a later name resolved to an
+				// outer binding of the same name instead of being unassigned.
 			case "define-values":
 				if len(args) == 0 {
 					return
 				}
-				names := args[0]
-				for {
+			collectValues:
+				for names := args[0]; ; {
 					switch n := names.(type) {
 					case *Symbol:
 						out = append(out, n)
-						return
+						break collectValues
 					case *Pair:
 						if sym, ok := n.Car.(*Symbol); ok {
 							out = append(out, sym)
@@ -322,7 +324,7 @@ func scanBodyNames(body []Value) []*Symbol {
 						names = n.Cdr
 						continue
 					}
-					return
+					break collectValues
 				}
 			case "define-syntax", "define-record-type":
 				if len(args) > 0 {
@@ -330,7 +332,6 @@ func scanBodyNames(body []Value) []*Symbol {
 						out = append(out, sym)
 					}
 				}
-				return
 			default:
 				return
 			}
@@ -338,6 +339,18 @@ func scanBodyNames(body []Value) []*Symbol {
 	}
 	scan(body)
 	return out
+}
+
+// prepBody pre-binds the names introduced by internal definitions, which is
+// what gives a body letrec* semantics: a definition may refer to a later one,
+// and referring to it before it is initialised is an error rather than a
+// silent fallback to an outer binding of the same name.
+func prepBody(env *Env, body []Value) {
+	for _, s := range scanBodyNames(body) {
+		if !env.Has(s) {
+			env.Define(s, Unassigned)
+		}
+	}
 }
 
 func makeClosure(formals Value, body []Value, env *Env) (*Closure, error) {
@@ -575,6 +588,7 @@ func evalLet(m *Machine, form Value, env *Env) {
 	body := args[1:]
 	if _, isNil := bindings.(Empty); isNil {
 		newEnv := NewEnv(env)
+		prepBody(newEnv, body)
 		m.EvalSeq(body, newEnv)
 		return
 	}
@@ -583,6 +597,7 @@ func evalLet(m *Machine, form Value, env *Env) {
 		for i, s := range syms {
 			newEnv.Define(s, vals[i])
 		}
+		prepBody(newEnv, body)
 		m.EvalSeq(body, newEnv)
 	})
 }
@@ -600,7 +615,9 @@ func evalLetStar(m *Machine, form Value, env *Env) {
 	}
 	body := args[1:]
 	if len(bindings) == 0 {
-		m.EvalSeq(body, NewEnv(env))
+		newEnv := NewEnv(env)
+		prepBody(newEnv, body)
+		m.EvalSeq(body, newEnv)
 		return
 	}
 	rest := appendToTail(listFromSlice(bindings[1:]), Nil)
@@ -660,6 +677,7 @@ func evalLetrecCommon(m *Machine, form Value, env *Env, sequential bool) {
 					newEnv.Define(s, vals[j])
 				}
 			}
+			prepBody(newEnv, body)
 			m.EvalSeq(body, newEnv)
 			return
 		}
@@ -1149,7 +1167,10 @@ func evalParameterize(m *Machine, form Value, env *Env) {
 	var setNew, setOld []Value
 	for i := range pSyms {
 		setNew = append(setNew, List(pSyms[i], vSyms[i]))
-		setOld = append(setOld, List(pSyms[i], oldSyms[i]))
+		// Restoring puts the old value back as it was; running it through the
+		// converter again would compound a non-idempotent one and corrupt the
+		// outer binding.
+		setOld = append(setOld, List(Intern("%parameter-set-raw!"), pSyms[i], oldSyms[i]))
 	}
 	beforeLam := Cons(Intern("lambda"), Cons(Nil, listFromSlice(setNew)))
 	thunkLam := Cons(Intern("lambda"), Cons(Nil, listFromSlice(body)))

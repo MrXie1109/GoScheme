@@ -110,6 +110,18 @@ func installControl(m *Machine) {
 		m.Return(p)
 	}, libBase)
 
+	// The raw setter that parameterize uses to put an old value back: the
+	// converter applies to the initial value and to the value being installed,
+	// but not to the value being restored.
+	m.defSimple("%parameter-set-raw!", 2, 2, func(a []Value) (Value, error) {
+		p, ok := a[0].(*Parameter)
+		if !ok {
+			panic(errf("%parameter-set-raw!", "expected a parameter but got %s", WriteToString(a[0])))
+		}
+		p.set(a[1])
+		return UnspecifiedValue, nil
+	}, libBase)
+
 	// ------------------------------------------------------- promises
 	m.def("force", 1, 1, func(m *Machine, a []Value) {
 		p, ok := a[0].(*Promise)

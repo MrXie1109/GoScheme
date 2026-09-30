@@ -95,10 +95,10 @@ func installNumbers(m *Machine) {
 		return BooleanOf(NumSign(a[0]) == 0), nil
 	}, libBase, libR5RS)
 	m.defSimple("positive?", 1, 1, func(a []Value) (Value, error) {
-		return BooleanOf(NumSign(wantReal("positive?", a[0])) > 0), nil
+		return BooleanOf(NumSign(wantReal("positive?", a[0])) == 1), nil
 	}, libBase, libR5RS)
 	m.defSimple("negative?", 1, 1, func(a []Value) (Value, error) {
-		return BooleanOf(NumSign(wantReal("negative?", a[0])) < 0), nil
+		return BooleanOf(NumSign(wantReal("negative?", a[0])) == -1), nil
 	}, libBase, libR5RS)
 	m.defSimple("odd?", 1, 1, func(a []Value) (Value, error) {
 		i := wantInteger("odd?", a[0])

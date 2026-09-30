@@ -17,6 +17,22 @@ type ExitError struct {
 
 func (e *ExitError) Error() string { return "exit" }
 
+// runWinds runs the outstanding dynamic-wind after thunks, innermost first.
+func runWinds(m *Machine) {
+	for i := len(m.winds) - 1; i >= 0; i-- {
+		after := m.winds[i].after
+		if after == nil {
+			continue
+		}
+		child := m.Child()
+		if _, err := child.RunApply(after, nil, child.Global); err != nil {
+			// Nowhere to report it: the program is leaving.
+			continue
+		}
+	}
+	m.winds = m.winds[:0]
+}
+
 func installSystem(m *Machine) {
 	// ------------------------------------------------------------- files
 	m.def("call-with-input-file", 2, 2, func(m *Machine, a []Value) {
@@ -143,8 +159,8 @@ func installSystem(m *Machine) {
 		}
 		return List(items...), nil
 	}, libBase, libProcessContext)
-	exitFn := func(emergency bool) func([]Value) (Value, error) {
-		return func(a []Value) (Value, error) {
+	exitFn := func(emergency bool) func(*Machine, []Value) {
+		return func(m *Machine, a []Value) {
 			code := 0
 			if len(a) > 0 {
 				switch v := a[0].(type) {
@@ -157,11 +173,17 @@ func installSystem(m *Machine) {
 					code = int(c)
 				}
 			}
+			// R7RS: exit runs the outstanding dynamic-wind after thunks on the
+			// way out.  Unwinding by an error did run them; leaving by exit
+			// silently skipped them.  emergency-exit does not, by definition.
+			if !emergency {
+				runWinds(m)
+			}
 			panic(&ExitError{Code: code, Emergency: emergency})
 		}
 	}
-	m.defSimple("exit", 0, 1, exitFn(false), libBase, libProcessContext)
-	m.defSimple("emergency-exit", 0, 1, exitFn(true), libBase, libProcessContext)
+	m.def("exit", 0, 1, exitFn(false), libBase, libProcessContext)
+	m.def("emergency-exit", 0, 1, exitFn(true), libBase, libProcessContext)
 
 	// ------------------------------------------------------------- time
 	m.defSimple("current-second", 0, 0, func(a []Value) (Value, error) {

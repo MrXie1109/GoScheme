@@ -492,14 +492,17 @@ func NumEq(a, b Value) bool {
 // return 2 (unordered).
 func NumCmp(a, b Value) int {
 	a, b = RealPart(a), RealPart(b)
-	if IsExact(a) && IsExact(b) {
-		ar, _ := ToBigRat(a)
-		br, _ := ToBigRat(b)
-		return ar.Cmp(br)
-	}
 	fa, fb := asFloat(a), asFloat(b)
 	if math.IsNaN(fa) || math.IsNaN(fb) {
 		return 2
+	}
+	// Compare exactly whenever both sides are finite, including a mixed pair:
+	// turning the exact side into a float loses precision above 2^53, which
+	// made (< a b) and (= a b) disagree.
+	if ar, ok := exactRat(a); ok {
+		if br, ok := exactRat(b); ok {
+			return ar.Cmp(br)
+		}
 	}
 	switch {
 	case fa < fb:
@@ -508,6 +511,24 @@ func NumCmp(a, b Value) int {
 		return 1
 	}
 	return 0
+}
+
+// exactRat is the exact value of a real number, including that of a finite
+// float.  It reports false for an infinity or a NaN, which have no exact value.
+func exactRat(v Value) (*big.Rat, bool) {
+	if r, ok := ToBigRat(v); ok {
+		return r, true
+	}
+	if f, ok := v.(Float); ok {
+		ff := float64(f)
+		if math.IsInf(ff, 0) || math.IsNaN(ff) {
+			return nil, false
+		}
+		if r := new(big.Rat).SetFloat64(ff); r != nil {
+			return r, true
+		}
+	}
+	return nil, false
 }
 
 // NumSign returns -1, 0 or 1 for a real number.
@@ -523,6 +544,10 @@ func NumSign(v Value) int {
 	}
 	f := asFloat(v)
 	switch {
+	case math.IsNaN(f):
+		// Not a number is neither zero nor positive nor negative, so it gets a
+		// value of its own: reporting 0 made (zero? +nan.0) true.
+		return signNaN
 	case f < 0:
 		return -1
 	case f > 0:
@@ -530,6 +555,9 @@ func NumSign(v Value) int {
 	}
 	return 0
 }
+
+// signNaN is what NumSign reports for a NaN.
+const signNaN = 2
 
 // ------------------------------------------------------------------ conversion
 

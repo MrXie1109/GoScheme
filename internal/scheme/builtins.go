@@ -26,7 +26,29 @@ const (
 
 // def registers a machine-aware procedure.
 func (m *Machine) def(name string, min, max int, fn func(*Machine, []Value), libs ...string) *Primitive {
-	p := &Primitive{Name: name, MinArgs: min, MaxArgs: max, Fn: fn}
+	// Argument checks panic with *ErrorObject.  Every primitive is wrapped so
+	// that a panic becomes a raised condition: without this, the 300-odd
+	// primitives registered through def let the panic fly past the Scheme
+	// handlers and terminate the program, while the ones registered through
+	// defSimple were catchable — the same mistake behaving two ways.
+	wrapped := func(m *Machine, args []Value) {
+		defer func() {
+			if r := recover(); r != nil {
+				switch e := r.(type) {
+				case *ErrorObject:
+					m.RaiseError(e)
+				case *SchemeError:
+					m.RaiseError(e)
+				case *PortError:
+					m.RaiseError(NewFileError(e.Msg))
+				default:
+					panic(r)
+				}
+			}
+		}()
+		fn(m, args)
+	}
+	p := &Primitive{Name: name, MinArgs: min, MaxArgs: max, Fn: wrapped}
 	m.Builtin.DefineName(name, p)
 	for _, l := range libs {
 		m.addExport(l, name)

@@ -416,11 +416,7 @@ func (m *Machine) applyClosure(c *Closure, args []Value) {
 			env.Define(s, args[i])
 		}
 	}
-	for _, s := range clause.BodyNames {
-		if !env.Has(s) {
-			env.Define(s, Unassigned)
-		}
-	}
+	prepBody(env, clause.Body)
 	m.EvalSeq(clause.Body, env)
 }
 
