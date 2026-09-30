@@ -35,7 +35,7 @@ $ goscheme -e '(display (map (lambda (x) (* x x)) (list 1 2 3 4))) (newline)'
 - [Standalone executables](#standalone-executables)
 - [Repository layout](#repository-layout)
 - [Language coverage](#language-coverage)
-- [Extension library reference](docs/extensions/README.md)
+- [Extension and SRFI reference](docs/extensions/README.md)
 - [Implementation notes](#implementation-notes)
 - [Performance](#performance)
 - [Testing](#testing)
@@ -297,6 +297,7 @@ dist/                     `make dist` output: the release binaries, which are
                           attached to GitHub Releases and not tracked by git
 scripts/build-dist.sh     cross-compilation script used by `make dist`
 docs/extensions/          one reference page per (goscheme ...) library
+docs/srfi/                one reference page per (srfi N) library
 docs/ffi-design.md        the design notes behind (goscheme ffi)
 Makefile                  build, test and dist targets
 ```
@@ -511,8 +512,9 @@ communicating.
 ### Extensions
 
 Every library below has a lookup reference under
-[`docs/extensions/`](docs/extensions/README.md), with every exported
-procedure, its arguments and what it does.  Here is the summary.
+[`docs/extensions/`](docs/extensions/README.md) — and the SRFI libraries under
+[`docs/srfi/`](docs/srfi/README.md) — with every exported procedure, its
+arguments and what it does.  Here is the summary.
 
 * `(goscheme fast)` — 158 procedures for the jobs Scheme does slowly, done in
   Go.  Each one keeps its loop, its indexing, its copying and its sorting
@@ -647,6 +649,31 @@ Beyond R7RS-small the interpreter also provides:
   `equal?` — `alist->hash-table` fills the table you hand it rather than always
   building a new one, and the optional fourth argument of `hash-table-update!`
   is the value to use when the key is missing, not a thunk.
+* `(srfi 1)` — the list library: `fold`, `unfold`, `reduce`, `take-while`,
+  `span`, `delete-duplicates`, the `lset-` set operations and the rest of the
+  SRFI-1 API.  The sixteen names it shares with `(goscheme fast)` — `filter`,
+  `take`, `drop`, `iota`, `zip`, `any`, `every` and friends — are the *same
+  binding* exported from both libraries, so importing both cannot make them
+  disagree.
+* `(srfi 2)`, `(srfi 8)`, `(srfi 26)` and `(srfi 111)` — `and-let*`,
+  `receive`, `cut`/`cute` and boxes (`box`, `unbox`, `set-box!`, `box?`).  The
+  three macros are written in Scheme and embedded in the binary, so they
+  survive `goscheme build`.
+* `(srfi 128)` — comparators: `make-comparator`, the `=?`, `<?`, `>?`, `<=?`
+  and `>=?` chains, `comparator-if<=>`, the ready-made `eq?`/`eqv?`/`equal?`
+  comparators, `make-default-comparator`, and the hash functions including the
+  case-insensitive ones, with `hash-bound` and `hash-salt` as parameters.
+* `(srfi 133)` — the vector library: `vector-unfold`, `vector-fold`,
+  `vector-map!`, `vector-count`, `vector-index`, `vector-skip`,
+  `vector-any`/`vector-every`, `vector-partition`, `subvector`,
+  `vector-concatenate`, `vector-append-subvectors` and the rest.  The names
+  R7RS and `(goscheme fast)` already define (`vector-copy`, `vector-map`,
+  `vector-swap!`, `vector-binary-search`, ...) are the *same bindings*, so
+  importing all three cannot make them disagree.
+* Each has a reference page under [`docs/srfi/`](docs/srfi/README.md), and
+  [`docs/manual/`](docs/manual/README.md) is the tutorial that puts them
+  together.
+
 * `(goscheme channel)` — `make-channel`, `chan-send!`, `chan-recv!`,
   `chan-close!`, `channel?`, `channel-open?`, `go`, `select` and `go-wait`
   (see [Concurrency](#concurrency-go-flavour) above).
@@ -783,8 +810,12 @@ go test -short ./...                          # skip the reference suite
 ==   86 passed, 0 failed     data suite (test/scheme/goscheme-data-tests.scm)
 ==   43 passed, 0 failed     match suite (test/scheme/goscheme-match-tests.scm)
 ==  462 passed, 0 failed     fast suite (test/scheme/goscheme-fast-tests.scm)
+==  175 passed, 0 failed     SRFI-1 suite (test/scheme/srfi-1-tests.scm)
+==   47 passed, 0 failed     small SRFI suite (test/scheme/srfi-small-tests.scm)
+==   73 passed, 0 failed     SRFI-133 suite (test/scheme/srfi-133-tests.scm)
+==   94 passed, 0 failed     SRFI-128 suite (test/scheme/srfi-128-tests.scm)
 ```
-That is 2200 assertions in total, and the count for the goscheme suite is 235
+That is 2589 assertions in total, and the count for the goscheme suite is 235
 with cgo rather than 220 without it, because the FFI section only runs when the
 build has it.
 
@@ -868,8 +899,10 @@ Build flags: `GOOS=<os> GOARCH=<arch> CGO_ENABLED=<0|1> go build -trimpath
 
 * `define-syntax` supports `syntax-rules` transformers only, which is the full
   extent of the R7RS-small macro system.
-* The target language is R7RS-small; R7RS-large and the SRFI libraries are not
-  provided, apart from the bundled hash-table extension.
+* The target language is R7RS-small.  R7RS-large as a whole is not provided;
+  what is provided beyond R7RS-small is the hash-table extension and the SRFIs
+  listed under [Extensions](#extensions) (SRFI-1, 2, 8, 26, 111, 128 and 133 so
+  far).
 * It is a tree-walking interpreter — there is no compiler or JIT. Tail calls
   are proper, but deep non-tail recursion allocates heap frames.
 * Inexact numbers are printed with Go's shortest round-trip representation, and

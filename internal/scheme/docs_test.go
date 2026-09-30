@@ -30,8 +30,29 @@ var docPages = map[string]string{
 	"(goscheme time)":       "time.md",
 }
 
+// srfiPages is the same mapping for the SRFI libraries, whose pages live in
+// docs/srfi.
+var srfiPages = map[string]string{
+	"(srfi 1)":   "1.md",
+	"(srfi 2)":   "2.md",
+	"(srfi 8)":   "8.md",
+	"(srfi 26)":  "26.md",
+	"(srfi 111)": "111.md",
+}
+
+// docPage is where a builtin library's reference page lives.
+func docPage(lib string) (string, bool) {
+	if page, ok := docPages[lib]; ok {
+		return filepath.Join("..", "..", "docs", "extensions", page), true
+	}
+	if page, ok := srfiPages[lib]; ok {
+		return filepath.Join("..", "..", "docs", "srfi", page), true
+	}
+	return "", false
+}
+
 // TestExtensionDocsCoverEveryExport is the guard against documentation drift:
-// every name an extension library exports has to appear in its page as a
+// every name a builtin library exports has to appear in its page as a
 // backticked identifier.
 func TestExtensionDocsCoverEveryExport(t *testing.T) {
 	m := NewMachine()
@@ -41,16 +62,17 @@ func TestExtensionDocsCoverEveryExport(t *testing.T) {
 	for _, lib := range m.LibraryNames() {
 		registered[lib] = true
 	}
-	for lib, page := range docPages {
+	for _, lib := range append(keysOf(docPages), keysOf(srfiPages)...) {
 		if !registered[lib] {
 			continue
 		}
+		page, _ := docPage(lib)
 		exports := m.libExports[lib]
 		if len(exports) == 0 {
 			t.Errorf("%s: the library exports nothing, so the mapping is stale", lib)
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join("..", "..", "docs", "extensions", page))
+		data, err := os.ReadFile(page)
 		if err != nil {
 			t.Errorf("%s: %v", lib, err)
 			continue
@@ -58,7 +80,7 @@ func TestExtensionDocsCoverEveryExport(t *testing.T) {
 		text := string(data)
 		for _, name := range exports {
 			if !strings.Contains(text, "`"+name+"`") {
-				t.Errorf("%s: %s is exported but missing from docs/extensions/%s", lib, name, page)
+				t.Errorf("%s: %s is exported but missing from %s", lib, name, page)
 			}
 		}
 	}
@@ -72,10 +94,20 @@ func TestEveryExtensionLibraryHasADocPage(t *testing.T) {
 		if !strings.HasPrefix(lib, "(goscheme") {
 			continue
 		}
-		if _, ok := docPages[lib]; !ok {
-			t.Errorf("%s has no page in docs/extensions", lib)
+		if _, ok := docPage(lib); !ok {
+			t.Errorf("%s has no reference page", lib)
 		}
 	}
+}
+
+// keysOf is the library names of a page mapping, for a deterministic order.
+func keysOf(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // TestDumpLibraryExports is a maintenance helper rather than a test: it prints
@@ -88,7 +120,9 @@ func TestDumpLibraryExports(t *testing.T) {
 	names := m.LibraryNames()
 	sort.Strings(names)
 	for _, lib := range names {
-		if !strings.HasPrefix(lib, "(goscheme") {
+		// The R7RS libraries are the report's, not ours; everything else is a
+		// page in docs/.
+		if strings.HasPrefix(lib, "(scheme") {
 			continue
 		}
 		sorted := append([]string(nil), m.libExports[lib]...)

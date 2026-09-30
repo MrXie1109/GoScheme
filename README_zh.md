@@ -31,7 +31,7 @@ $ goscheme -e '(display (map (lambda (x) (* x x)) (list 1 2 3 4))) (newline)'
 - [独立可执行文件](#独立可执行文件)
 - [仓库结构](#仓库结构)
 - [语言覆盖](#语言覆盖)
-- [扩展库接口参考](docs/extensions/README.md)
+- [扩展库与 SRFI 接口参考](docs/extensions/README.md)
 - [实现要点](#实现要点)
 - [性能](#性能)
 - [测试](#测试)
@@ -273,6 +273,7 @@ dist/                     `make dist` 的产物：发布用二进制，只挂在
                           Release 上，不纳入 git 跟踪
 scripts/build-dist.sh     `make dist` 使用的交叉编译脚本
 docs/extensions/         每个 (goscheme ...) 库一页接口参考
+docs/srfi/               每个 (srfi N) 库一页接口参考
 docs/ffi-design.md       (goscheme ffi) 的设计说明
 Makefile                 构建、测试与打包目标
 ```
@@ -459,7 +460,8 @@ $ goscheme -e '(let loop ((i 0)) (if (= i 2000000) i (loop (+ i 1))))'
 ### 扩展
 
 下面每个库都在 [`docs/extensions/`](docs/extensions/README.md) 有一页速查参考，
-列出全部导出过程、参数与语义；这里只给概览。
+SRFI 库则在 [`docs/srfi/`](docs/srfi/README.md)，都列出全部导出过程、参数与语义；
+这里只给概览。
 
 * `(goscheme fast)` —— 158 个过程，专治 Scheme 干得慢的活，全部用 Go 实现。
   每一个都把循环、索引、复制与排序留在 Go 里，而不是每个元素走一步解释器：
@@ -578,6 +580,26 @@ $ goscheme -e '(let loop ((i 0)) (if (= i 2000000) i (loop (+ i 1))))'
   `make-hash-table` 还可以给一个大小提示与等价性（写出 `eq?`、`eqv?`、`equal?`
   的符号或过程）；`alist->hash-table` 会填充你传入的那张表，而不是总新建一张；
   `hash-table-update!` 可选的第四个参数是“键不存在时使用的值”，不是 thunk。
+* `(srfi 1)` —— 列表库：`fold`、`unfold`、`reduce`、`take-while`、`span`、
+  `delete-duplicates`、`lset-` 系列集合运算以及 SRFI-1 的其余 API。它与
+  `(goscheme fast)` 重叠的十六个名字——`filter`、`take`、`drop`、`iota`、`zip`、
+  `any`、`every` 等——在两个库里是**同一个绑定**，所以同时导入也不会互相矛盾。
+* `(srfi 2)`、`(srfi 8)`、`(srfi 26)` 与 `(srfi 111)` —— `and-let*`、
+  `receive`、`cut`/`cute` 以及 box（`box`、`unbox`、`set-box!`、`box?`）。
+  三个宏用 Scheme 写成并内嵌进二进制，因此 `goscheme build` 出的可执行文件里也能用。
+* `(srfi 128)` —— 比较器：`make-comparator`、`=?`/`<?`/`>?`/`<=?`/`>=?` 链、
+  `comparator-if<=>`、现成的 `eq?`/`eqv?`/`equal?` 比较器、
+  `make-default-comparator`，以及包括大小写不敏感版本在内的哈希函数；
+  `hash-bound` 与 `hash-salt` 是参数。
+* `(srfi 133)` —— 向量库：`vector-unfold`、`vector-fold`、`vector-map!`、
+  `vector-count`、`vector-index`、`vector-skip`、`vector-any`/`vector-every`、
+  `vector-partition`、`subvector`、`vector-concatenate`、
+  `vector-append-subvectors` 等。R7RS 与 `(goscheme fast)` 已经定义的名字
+  （`vector-copy`、`vector-map`、`vector-swap!`、`vector-binary-search` …）
+  是**同一个绑定**，所以三者同时导入也不会互相矛盾。
+* 每个库在 [`docs/srfi/`](docs/srfi/README.md) 有一页参考，
+  [`docs/manual/`](docs/manual/README.md) 是把它们串起来的教程。
+
 * `(goscheme channel)` —— `make-channel`、`chan-send!`、`chan-recv!`、
   `chan-close!`、`channel?`、`channel-open?`、`go`、`select`、`go-wait`
   （见上文[并发](#并发go-风味)）。
@@ -693,8 +715,12 @@ go test -short ./...                          # 跳过参考套件
 ==   86 passed, 0 failed     数据套件（test/scheme/goscheme-data-tests.scm）
 ==   43 passed, 0 failed     模式匹配套件（test/scheme/goscheme-match-tests.scm）
 ==  462 passed, 0 failed     性能库套件（test/scheme/goscheme-fast-tests.scm）
+==  175 passed, 0 failed     SRFI-1 套件（test/scheme/srfi-1-tests.scm）
+==   47 passed, 0 failed     小型 SRFI 套件（test/scheme/srfi-small-tests.scm）
+==   73 passed, 0 failed     SRFI-133 套件（test/scheme/srfi-133-tests.scm）
+==   94 passed, 0 failed     SRFI-128 套件（test/scheme/srfi-128-tests.scm）
 ```
-合计 2200 条断言；goscheme 套件在 cgo 构建下是 235 条而不是 220 条，因为 FFI
+合计 2589 条断言；goscheme 套件在 cgo 构建下是 235 条而不是 220 条，因为 FFI
 那一段只在有 FFI 的构建里运行。
 
 并发套件同样通过 Go 竞态检测器（`go test -race ./...`）。
@@ -763,7 +789,8 @@ CC_windows_amd64=x86_64-w64-mingw32-gcc make dist
 
 * `define-syntax` 仅支持 `syntax-rules` 变换器，而这已经是 R7RS-small 宏系统
   的全部内容。
-* 目标语言为 R7RS-small；除内置的哈希表扩展外，不提供 R7RS-large 与 SRFI 库。
+* 目标语言为 R7RS-small。R7RS-large 整体不提供；R7RS-small 之外提供的是内置
+  哈希表扩展与[扩展](#扩展)小节列出的 SRFI（目前是 SRFI-1、2、8、26、111、128、133）。
 * 这是树遍历解释器，没有编译器或 JIT。尾调用是真的，但深层非尾递归会分配
   堆上的续延帧。
 * 非精确数值采用 Go 的最短往返表示输出；形似数值的符号（例如 `+NaN.0abc`）
