@@ -47,7 +47,7 @@ make build          # 或者：go build -o .build/goscheme ./cmd/goscheme
 make test           # Go 单元测试 + 两个 Scheme 测试套件
 make dist           # 交叉编译全部目标平台到 dist/
 
-./.build/goscheme -v   # GoScheme 2.0.1 (R7RS)
+./.build/goscheme -v   # GoScheme 2.1.0 (R7RS)
 ```
 
 版本号来自 `cmd/goscheme/VERSION`，并被内嵌进二进制，因此即使直接用 `go build`
