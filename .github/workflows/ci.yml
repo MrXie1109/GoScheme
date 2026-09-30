@@ -11,6 +11,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -125,4 +126,64 @@ jobs:
         with:
           name: goscheme-darwin-amd64-dynamic
           path: goscheme-darwin-amd64-dynamic
+          if-no-files-found: error
+
+  # Tagging is the whole release process.  The six static binaries are built
+  # here on one Linux runner — the static flavour is CGO_ENABLED=0, so no cross
+  # toolchain is involved — and the platforms themselves are exercised by the
+  # test matrix above, on their own runners rather than under an emulator.
+  release:
+    name: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: build the six static binaries
+        run: make dist DYNAMIC_PLATFORMS=
+
+      # Run the artifact that actually ships, rather than trusting the
+      # cross-build: the version must be the tag and the suites must pass
+      # through the binary, not through `go test`.
+      - name: smoke-test the shipped binary
+        run: |
+          set -e
+          ./dist/goscheme-linux-amd64 --version
+          ./dist/goscheme-linux-amd64 --version | grep -F "${GITHUB_REF_NAME#v}"
+          ./dist/goscheme-linux-amd64 test/scheme/run-srfi-1.scm | tail -1
+          ./dist/goscheme-linux-amd64 test/scheme/run-fast.scm | tail -1
+
+      - name: attach them to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          assets="dist/goscheme-linux-amd64 dist/goscheme-linux-arm64"
+          assets="$assets dist/goscheme-darwin-amd64 dist/goscheme-darwin-arm64"
+          assets="$assets dist/goscheme-windows-amd64.exe dist/goscheme-windows-arm64.exe"
+          assets="$assets dist/SHA256SUMS"
+          notes=".github/release-notes/${GITHUB_REF_NAME}.md"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" $assets --clobber
+          elif [ -f "$notes" ]; then
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" \
+              --notes-file "$notes" $assets
+          else
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" \
+              --generate-notes $assets
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-binaries
+          path: |
+            dist/goscheme-*
+            dist/SHA256SUMS
           if-no-files-found: error

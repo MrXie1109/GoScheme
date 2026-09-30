@@ -21,7 +21,17 @@ what you need.
 The reference suite needs the chibi-scheme test shim, which is in the
 repository (`test/scheme/chibi/test.scm`), so no network is required.
 
-## Cross-compiling a release
+## Releasing
+
+**CI does it.**  Pushing a `v*` tag runs the test matrix on five native runners
+and then the `release` job, which builds the six static binaries, runs one of
+them (version and two suites) and attaches them to the GitHub release — see
+`.github/release-notes/README.md`.  There is nothing to do locally, and no
+cross toolchain anywhere: the platforms are exercised on their own runners
+rather than under an emulator.
+
+`make dist` is still the same build, for looking at the artifacts or for a
+release that has to be made by hand:
 
 ```sh
 make dist                                  # six static binaries into dist/
@@ -37,11 +47,11 @@ only flavour with FFI; the darwin ones are built on a real Mac by
 The binaries are shipped as they are built — no packer — which keeps `make dist`
 down to a couple of seconds with a warm cache.
 
-## Local cross toolchains, without root
+## Local cross toolchains (optional)
 
-Verifying the non-native binaries locally needs three things, all of which can
-be unpacked into the checkout instead of installed.  None of them is needed to
-build or release; they are how a Windows or arm64 binary gets *run* here.
+CI covers every platform, so this is only for debugging a foreign binary in a
+local checkout.  All three can be unpacked instead of installed, and all three
+are regenerable, so delete them whenever the checkout gets fat.
 
 ```sh
 # arm64 Linux, under emulation
