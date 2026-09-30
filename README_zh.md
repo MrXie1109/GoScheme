@@ -585,8 +585,10 @@ go test -short ./...                          # 跳过参考套件
 
 ## 交叉编译
 
-`make dist`（或 `scripts/build-dist.sh`）会为每个目标平台产出**两种风味**的产物，
-输出到 `dist/`。
+`make dist`（或 `scripts/build-dist.sh`）产出六个**静态**产物到 `dist/`，发布里带的
+就是这些。**动态**风味（`CGO_ENABLED=1`、链接平台 C 库、唯一带 `(goscheme ffi)` 的
+那种）由同一个脚本在"目标平台有 C 编译器"时构建（`DYNAMIC_PLATFORMS`，用
+`CC_<os>_<arch>` 指定编译器），CI 会为 macOS 与 Windows 构建它；这些**不随发布附带**。
 
 | 产物 | 平台 | 风味 |
 |---|---|---|
@@ -596,11 +598,6 @@ go test -short ./...                          # 跳过参考套件
 | `goscheme-darwin-arm64` | macOS Apple Silicon | 静态 |
 | `goscheme-windows-amd64.exe` | Windows x86-64 | 静态 |
 | `goscheme-windows-arm64.exe` | Windows on ARM | 静态 |
-| `goscheme-linux-amd64-dynamic` | Linux x86-64 | 动态，带 FFI |
-| `goscheme-linux-arm64-dynamic` | Linux AArch64 | 动态，带 FFI |
-| `goscheme-windows-amd64-dynamic.exe` | Windows x86-64 | 动态，带 FFI |
-| `goscheme-darwin-amd64-dynamic` | macOS Intel | 动态，带 FFI |
-| `goscheme-darwin-arm64-dynamic` | macOS Apple Silicon | 动态，带 FFI |
 
 **静态**产物是 `CGO_ENABLED=0`：运行时无依赖、也没有 FFI，`(features)` 不含
 `ffi`。**动态**产物是 `CGO_ENABLED=1`，链接平台自身的 C 库，是唯一能加载共享库的

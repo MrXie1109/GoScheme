@@ -657,8 +657,13 @@ The concurrency suite also passes under the Go race detector
 
 ## Cross-compilation
 
-`make dist` (or `scripts/build-dist.sh`) produces two flavours of binary for
-every supported target into `dist/`.
+`make dist` (or `scripts/build-dist.sh`) produces the six static binaries into
+`dist/`, which is what the releases carry.  A *dynamic* flavour — `CGO_ENABLED=1`,
+linked against the platform's C library, and the only one with `(goscheme ffi)` —
+is built by the same script wherever a C compiler for the target exists
+(`DYNAMIC_PLATFORMS`, with `CC_<os>_<arch>` to name the compiler), and the CI
+workflow builds it for macOS and Windows; those are not attached to the
+releases.
 
 | Artifact | Platform | Flavour |
 |---|---|---|
@@ -668,11 +673,6 @@ every supported target into `dist/`.
 | `goscheme-darwin-arm64` | macOS Apple Silicon | static |
 | `goscheme-windows-amd64.exe` | Windows x86-64 | static |
 | `goscheme-windows-arm64.exe` | Windows on ARM | static |
-| `goscheme-linux-amd64-dynamic` | Linux x86-64 | dynamic, with FFI |
-| `goscheme-linux-arm64-dynamic` | Linux AArch64 | dynamic, with FFI |
-| `goscheme-windows-amd64-dynamic.exe` | Windows x86-64 | dynamic, with FFI |
-| `goscheme-darwin-amd64-dynamic` | macOS Intel | dynamic, with FFI |
-| `goscheme-darwin-arm64-dynamic` | macOS Apple Silicon | dynamic, with FFI |
 
 The **static** binaries are `CGO_ENABLED=0`: no dependencies at run time and no
 FFI, so `(features)` does not report `ffi`.  The **dynamic** ones are
