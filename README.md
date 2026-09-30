@@ -35,6 +35,7 @@ $ goscheme -e '(display (map (lambda (x) (* x x)) (list 1 2 3 4))) (newline)'
 - [Standalone executables](#standalone-executables)
 - [Repository layout](#repository-layout)
 - [Language coverage](#language-coverage)
+- [Extension library reference](docs/extensions/README.md)
 - [Implementation notes](#implementation-notes)
 - [Performance](#performance)
 - [Testing](#testing)
@@ -269,8 +270,19 @@ internal/scheme/          the interpreter
   b_system.go             files, process context, time, eval and load
   b_hashtable.go          hash tables (extension)
   b_concurrent.go         channels, (go ...), (select ...) (extension)
-  b_process.go            system and system* (extension)
+  b_sync.go               mutexes, wait groups, once, atomics (extension)
+  b_socket.go             TCP listeners and connections (extension)
+  b_http.go               HTTP client and server (extension)
+  b_json.go               JSON (extension)
+  b_regexp.go             regular expressions (extension)
+  b_time.go               sleeping, clocks, time formatting (extension)
+  b_fs.go                 globbing, directory walking, paths (extension)
+  b_process.go            system, system* and process pipes (extension)
+  b_match.go              the match special form (extension)
+  b_fast*.go              the (goscheme fast) library (extension)
+  ffi_cgo.go              load-shared-library and foreign-function (extension)
   scheme_test.go          Go unit tests and suite drivers
+  docs_test.go            checks that docs/extensions covers every export
 test/scheme/              Scheme level tests
   r7rs-tests.scm          the reference R7RS test suite
   goscheme-tests.scm      regression tests specific to this implementation
@@ -284,6 +296,8 @@ examples/                 runnable examples and their runner (see examples/READM
 dist/                     `make dist` output: the release binaries, which are
                           attached to GitHub Releases and not tracked by git
 scripts/build-dist.sh     cross-compilation script used by `make dist`
+docs/extensions/          one reference page per (goscheme ...) library
+docs/ffi-design.md        the design notes behind (goscheme ffi)
 Makefile                  build, test and dist targets
 ```
 
@@ -465,9 +479,10 @@ The interpreter exposes Go's concurrency model to Scheme, in
 `select` clauses are a flat sequence of `operation => handler` triples; the
 handler of a receive clause is called with the received value, the others with
 no arguments.  The channel expressions, send values and handlers are all
-evaluated before the race begins, and the clauses are checked in the order
-written for a ready operation, with `(else)` chosen only when nothing else is
-ready — exactly Go's semantics.
+evaluated before the race begins.  When several clauses are ready at once the
+winner is chosen **at random**, exactly as Go's `select` does, so the order the
+clauses are written in decides the order of evaluation and not which ready
+clause wins.  `(else)` is chosen only when nothing else is ready.
 
 Because these are Go's primitives rather than an emulation, Go's rules apply:
 
@@ -495,30 +510,77 @@ communicating.
 
 ### Extensions
 
-* `(goscheme fast)` — the jobs Scheme is slow at, done in Go.  Ordering
-  (`sort`, `vector-sort`, `sort!`, `vector-binary-search`), sequences (`iota`,
-  `vector-reverse`, `vector-reverse!`, `vector-swap!`), selection (`filter`,
-  `vector-filter!`, `count`, `any`, `every`), aggregates (`sum`, `product`,
-  `min-of`, `max-of`, `vector-dot`), strings (`string-split`, `string-join`,
-  `string-contains`, `string-index`, `string-prefix?`, `string-suffix?`,
-  `string-trim`, `string-trim-left`, `string-trim-right`, `string-replace`,
-  `string-pad-left`, `string-pad-right`) and bytes (`sha256`, `random-bytes`,
-  `hex-encode`, `hex-decode`, `base64-encode`, `base64-decode`).  They are
-  R7RS-shaped — `sort` takes an optional `less?`, `string-split` an optional
-  separator — but the loop, the indexing and the copying happen in Go, and a
-  `less?` or predicate that is a builtin (`<`, `string<?`, `even?`, `string?`,
-  ...) is applied without a call back into Scheme.  A predicate you write
-  yourself still pays one call per element, so there the library is convenience
-  rather than speed.  Measured numbers are in
-  [Performance](#performance); `examples/fast.scm` times itself and then shows
-  the rest of the library.
+Every library below has a lookup reference under
+[`docs/extensions/`](docs/extensions/README.md), with every exported
+procedure, its arguments and what it does.  Here is the summary.
+
+* `(goscheme fast)` — 158 procedures for the jobs Scheme does slowly, done in
+  Go.  Each one keeps its loop, its indexing, its copying and its sorting
+  native instead of taking an interpreted step per element:
+
+  * ordering — `sort`, `sort!`, `sort-by`, `vector-sort`, `vector-sort-by`,
+    `vector-binary-search`, `vector-binary-search-insert`
+  * sequences — `iota`, `vector-iota`, `range`, `take`, `drop`, `take-right`,
+    `drop-right`, `split-at`, `last`, `chunk`, `vector-take`, `vector-drop`,
+    `vector-chunk`, `vector-concat`, `vector-reverse`, `vector-reverse!`,
+    `vector-swap!`
+  * selection — `filter`, `filter-not`, `vector-filter!`, `count`, `any`,
+    `every`, `find`, `list-index`, `delete`, `delete-duplicates`, `partition`,
+    `vector-partition`, `vector-index-of`, `zip`, `unzip`, `flatten`
+  * folding — `fold-left`, `fold-right`, `assoc-set`
+  * aggregates — `sum`, `product`, `min-of`, `max-of`, `vector-dot`,
+    `vector-norm`, `vector-argmin`, `vector-argmax`, `mean`, `median`,
+    `percentile`, `variance`, `stddev`, `mode`
+  * batch arithmetic — `vector-add`, `vector-sub`, `vector-mul`, `vector-div`,
+    `vector-scale`, `vector-negate`, `vector-abs`, `vector-clamp`,
+    `vector-prefix-sum` — the first eight with an in-place `!` variant that
+    writes into the caller's vector — plus `vector-equal?` and
+    `vector-compare`
+  * number theory — `bit-and`, `bit-or`, `bit-xor`, `bit-not`, `bit-shift`,
+    `bit-count`, `integer-length`, `expt-mod`, `isqrt`, `prime?`, `primes`,
+    `factor`, `clamp`, `sign`
+  * strings — `string-split` (with an optional limit), `string-join`,
+    `string-contains`, `string-index`, `string-index-from`,
+    `string-last-index`, `string-find-all`, `string-count`, `string-prefix?`,
+    `string-suffix?`, `string-prefix-ci?`, `string-suffix-ci?`, `string-trim`,
+    `string-trim-left`, `string-trim-right`, `string-replace`,
+    `string-replace-first`, `string-pad-left`, `string-pad-right`,
+    `string-pad-center`, `string-reverse`, `string-repeat`, `string-chunk`,
+    `string-sort`, `string-take`, `string-drop`, `string-fields`,
+    `string-lines`, `string-titlecase`, `string-upper`, `string-lower`,
+    `string-blank?`, `string-empty?`, `string-chomp`, `string-integer?`,
+    `string-byte-length`
+  * bytes and hashing — `sha256`, `sha1`, `sha512`, `md5`, `hmac-sha256`,
+    `crc32`, `random-bytes`, `hex-encode`, `hex-decode`, `base64-encode`,
+    `base64-decode`, `base64url-encode`, `base64url-decode`, `base32-encode`,
+    `base32-decode`, `bytes-xor`, `bytes-and`, `bytes-or`, `bytes-not`,
+    `bytes-reverse`, `bytes-index`, `bytevector-fill!`, `vector->bytevector`,
+    `bytevector->vector`
+  * randomness — `random-int`, `random-float`, `random-string`,
+    `random-choice`, `shuffle`, `vector-shuffle!`, `vector-sample`, `uuid`
+
+  The names are R7RS-shaped where an R7RS name exists — `sort` takes an
+  optional `less?`, `string-split` an optional separator — and distinct where
+  one does not, so importing `(goscheme fast)` next to `(scheme base)` or
+  `(scheme char)` never clashes.  A `less?` or predicate that is a builtin
+  (`<`, `string<?`, `even?`, `string?`) is applied without a call back into
+  Scheme; a predicate you write yourself still pays one call per element, so
+  there the library is convenience rather than speed.  `delete-duplicates` and
+  `assoc-set` take an optional comparison the same way, and the `!` procedures
+  return the vector they wrote into.  Measured numbers are in
+  [Performance](#performance); `examples/fast.scm` times itself and then tours
+  the library.
 
 * `(goscheme sync)` — the other half of the concurrency story: `make-mutex`,
   `mutex-lock!`, `mutex-unlock!`, `with-mutex` (which releases the lock however
   the body leaves), `make-waitgroup` with `waitgroup-add!`/`-done!`/`-wait`,
-  `make-once` with `once-run!`, and lock-free `make-atomic` counters.
+  `make-once` with `once-run!`, lock-free `make-atomic` counters, and the
+  matching `mutex?`, `waitgroup?`, `once?` and `atomic?` predicates.  Beware
+  that unlocking a mutex the thread does not hold is a Go runtime fatal error
+  rather than a condition (see [Known limitations](#known-limitations)).
 * `(goscheme socket)` — `(tcp-listen port [host])`, `(tcp-accept listener
   [mode])`, `(tcp-connect host port [mode])`, `tcp-listener-port`,
+  `tcp-listener-address`, `tcp-listener?`, `tcp-address`,
   `tcp-close-listener`.  A connection is an ordinary port in both directions, so
   `read-line` and `write-string` are the whole protocol vocabulary, and `(go
   ...)` turns a listener into a server.  The host defaults to the loopback
@@ -529,16 +591,28 @@ communicating.
   port handler [host])` starts a server whose handler is an ordinary procedure
   taking a request (`http-request-method`, `-path`, `-query`, `-header`,
   `-body`); net/http runs one interpreter thread per request, and a handler that
-  raises becomes a 500 rather than a dead process.
+  raises becomes a 500 rather than a dead process.  The methods that can carry
+  a body take `(url [body [headers]])`, where a string in the second position is
+  the body and an alist is the headers; a request body handed to a handler is
+  read up to 8 MiB and no further.
 * `(goscheme json)` — `json-parse` and `json-write`.  Objects are `equal?` hash
   tables with string keys, arrays are vectors, and JSON `null` is the symbol
-  `null`; integral literals stay exact however many digits they have.
+  `null`; integral literals stay exact however many digits they have.  On the
+  way out `json-write` takes those same hash tables as objects — an alist is not
+  accepted — and emits the keys in sorted order, so a round trip does not
+  preserve insertion order.
 * `(goscheme regexp)` — `regexp`, `regexp-match` (with capture groups),
   `regexp-match?`, `regexp-match-positions`, `regexp-replace` (with `$1`),
-  `regexp-replace-all`, `regexp-split`, using Go's RE2 engine.
+  `regexp-replace-all`, `regexp-split`, using Go's RE2 engine.  Every one of
+  them also accepts a bare pattern string, which it compiles for that call, and
+  the positions `regexp-match-positions` returns are byte offsets rather than
+  character indices.
 * `(goscheme time)` — `sleep`, `current-millisecond`, `monotonic-millisecond`,
   `time-format`, `time-parse`, `time-utc-parts`.  Durations are milliseconds,
-  the same unit `(after ms)` takes.
+  the same unit `(after ms)` takes, and the layout `time-format` and
+  `time-parse` expect is Go's reference layout (`2006-01-02 15:04:05`), not
+  `strftime`.  `time-utc-parts` is a seven-pair association list of
+  `(year month day hour minute second weekday)`.
 * `(goscheme fs)` — `glob`, `directory-walk`, `directory-list`,
   `create-directory`, `create-directory-tree`, `delete-directory`,
   `delete-directory-tree`, `path-join`, `path-directory`, `path-base`,
@@ -547,22 +621,32 @@ communicating.
   datum)`, literals, `()`, `(p ... . rest)`, `#(p ...)`, and `(and ...)`,
   `(or ...)`, `(not ...)`.  A clause is `(pattern body ...)` or `(pattern
   (guard test) body ...)` — the guard follows the pattern, it is not inside it:
-  `((n (guard #t)) body)` is a pattern matching a two-element list.
-* `(goscheme process)` — the `popen` pair on top of `system`/`system*`:
-  `(open-input-process program arg ...)` is a port on the child's output,
-  `(open-output-process program arg ...)` a port on its input, and
-  `(process-status port)` its exit status once the port is closed.  Two of them
-  joined by a loop are a pipeline.
+  `((n (guard #t)) body)` is a pattern matching a two-element list.  `else`
+  works as a second spelling of `_`, and a name repeated inside one pattern
+  silently keeps the last binding instead of requiring the two to be equal.
+* `(goscheme process)` — the `popen` pair, built directly on `os/exec` rather
+  than on `system`: `(open-input-process program arg ...)` is a port on the
+  child's output, `(open-output-process program arg ...)` a port on its input,
+  and `(process-status port)` its exit status once the port is closed (before
+  that, `#f`).  Two of them joined by a loop are a pipeline.  A program that
+  cannot be started raises a file error from `system*` and the `open-*-process`
+  forms, while `system` goes through the shell and so reports a missing command
+  as the shell's own exit status 127.
 
 Beyond R7RS-small the interpreter also provides:
 
 * `(goscheme hash-table)` — `make-eq-hashtable`, `make-eqv-hashtable`,
-  `make-equal-hashtable`, `hash-table-ref`, `hash-table-ref/default`,
-  `hash-table-set!`, `hash-table-update!`, `hash-table-delete!`,
-  `hash-table-exists?`, `hash-table-keys`, `hash-table-values`,
-  `hash-table-walk`, `hash-table->alist`, `alist->hash-table`,
-  `hash-table-copy`, `hash-table-clear!`, `hash-table-size`, `hash-table-count`
-  and `hash`.
+  `make-equal-hashtable`, `make-hash-table`, `hash-table-ref`,
+  `hash-table-ref/default`, `hash-table-set!`, `hash-table-update!`,
+  `hash-table-delete!`, `hash-table-exists?`, `hash-table-contains?`,
+  `hash-table-keys`, `hash-table-values`, `hash-table-walk`,
+  `hash-table->alist`, `alist->hash-table`, `hash-table-copy`,
+  `hash-table-clear!`, `hash-table-size`, `hash-table-count`, `hash`, and the
+  `hash-table?` / `hashtable?` predicates.  `make-hash-table` also takes a size
+  hint and an equivalence — a symbol or procedure naming `eq?`, `eqv?` or
+  `equal?` — `alist->hash-table` fills the table you hand it rather than always
+  building a new one, and the optional fourth argument of `hash-table-update!`
+  is the value to use when the key is missing, not a thunk.
 * `(goscheme channel)` — `make-channel`, `chan-send!`, `chan-recv!`,
   `chan-close!`, `channel?`, `channel-open?`, `go`, `select` and `go-wait`
   (see [Concurrency](#concurrency-go-flavour) above).
@@ -597,8 +681,10 @@ Beyond R7RS-small the interpreter also provides:
   return-type arg-type ...)` returns a procedure that calls the symbol.  The
   types are `void`, `int`/`long`, `double`, `string` (a C `char *`) and
   `pointer`; arguments must be either all integral or all double, with up to
-  four integral or three double arguments (every return type works with
-  either).  A missing library or symbol, or a mistaken argument type, is an
+  four integral or three double arguments; the declared return type has to
+  match what the C function actually returns, because a mismatch reinterprets
+  the returned register rather than converting it, and a `void` result is an
+  unspecified value.  A missing library or symbol, or a mistaken argument type, is an
   ordinary condition.
 
   Opening a library is the one part that differs by platform: the POSIX hosts use
@@ -659,6 +745,15 @@ same way so that only the operation under test differs:
 | filter 20,000 numbers with `even?` | ~40 ms | ~2.3 ms |
 | build a 20,000 element list | ~32 ms | ~1.7 ms |
 | find `"xxxy"` in 20,000 characters | ~56 ms | ~1.4 ms |
+| add two 20,000 element vectors | ~61 ms | ~3.3 ms |
+| deduplicate 4,000 elements | ~62 ms | ~4.7 ms |
+| sieve the primes below 30,000 | ~1.26 s | ~0.9 ms |
+
+The vector procedures are the batch lane: one Go pass over the whole vector,
+with an in-place variant that allocates nothing, instead of one interpreted
+step per element.  There is no SIMD behind them; what disappears is the
+per-element type check, the boxing of intermediate results and the interpreted
+step itself.
 
 A predicate written in Scheme is the exception: `filter` has to call it once
 per element, which costs about what the Scheme loop cost, so the library's
@@ -681,15 +776,16 @@ go test -short ./...                          # skip the reference suite
 
 ```
 == 1227 passed, 0 failed     reference R7RS suite (test/scheme/r7rs-tests.scm)
-==  228 passed, 0 failed     GoScheme regression suite (test/scheme/goscheme-tests.scm)
+==  235 passed, 0 failed     GoScheme regression suite (test/scheme/goscheme-tests.scm)
 ==   70 passed, 0 failed     concurrency suite (test/scheme/goscheme-concurrency-tests.scm)
-==   38 passed, 0 failed     network suite (test/scheme/goscheme-network-tests.scm)
+==   42 passed, 0 failed     network suite (test/scheme/goscheme-network-tests.scm)
 ==   35 passed, 0 failed     process and fs suite (test/scheme/goscheme-process-tests.scm)
 ==   86 passed, 0 failed     data suite (test/scheme/goscheme-data-tests.scm)
 ==   43 passed, 0 failed     match suite (test/scheme/goscheme-match-tests.scm)
+==  462 passed, 0 failed     fast suite (test/scheme/goscheme-fast-tests.scm)
 ```
-That is 1727 assertions in total, and the count for the goscheme suite is 228
-with cgo rather than 213 without it, because the FFI section only runs when the
+That is 2200 assertions in total, and the count for the goscheme suite is 235
+with cgo rather than 220 without it, because the FFI section only runs when the
 build has it.
 
 The concurrency suite also passes under the Go race detector
@@ -794,6 +890,10 @@ Build flags: `GOOS=<os> GOARCH=<arch> CGO_ENABLED=<0|1> go build -trimpath
   but it is worth knowing before relying on it.
 * Multiple values in a single-value context are truncated to the first rather
   than reported, and a zero-value result becomes the unspecified value.
+* Two misuses abort rather than raise, so `guard` cannot help: `mutex-unlock!`
+  on a mutex the calling thread does not hold is a Go runtime fatal error, and
+  an `(after ms)` select clause whose `ms` is negative or not an exact integer
+  panics while the clause is being evaluated.
 
 ## License
 

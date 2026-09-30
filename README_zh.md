@@ -31,6 +31,7 @@ $ goscheme -e '(display (map (lambda (x) (* x x)) (list 1 2 3 4))) (newline)'
 - [独立可执行文件](#独立可执行文件)
 - [仓库结构](#仓库结构)
 - [语言覆盖](#语言覆盖)
+- [扩展库接口参考](docs/extensions/README.md)
 - [实现要点](#实现要点)
 - [性能](#性能)
 - [测试](#测试)
@@ -245,8 +246,19 @@ internal/scheme/          解释器实现
   b_system.go             文件、进程上下文、时间、eval 与 load
   b_hashtable.go          哈希表（扩展）
   b_concurrent.go         通道、(go ...)、(select ...)（扩展）
-  b_process.go            system 与 system*（扩展）
+  b_sync.go               互斥锁、等待组、once、原子计数器（扩展）
+  b_socket.go             TCP 监听器与连接（扩展）
+  b_http.go               HTTP 客户端与服务器（扩展）
+  b_json.go               JSON（扩展）
+  b_regexp.go             正则表达式（扩展）
+  b_time.go               睡眠、时钟、时间格式化（扩展）
+  b_fs.go                 glob、目录遍历、路径（扩展）
+  b_process.go            system、system* 与进程管道（扩展）
+  b_match.go              match 特殊形式（扩展）
+  b_fast*.go              (goscheme fast) 库（扩展）
+  ffi_cgo.go              load-shared-library 与 foreign-function（扩展）
   scheme_test.go          Go 单元测试与测试套件驱动
+  docs_test.go            检查 docs/extensions 覆盖每个导出名
 test/scheme/              Scheme 层测试
   r7rs-tests.scm          参考 R7RS 测试套件
   goscheme-tests.scm      本实现的回归测试
@@ -260,6 +272,8 @@ examples/                 可直接运行的示例与运行脚本（见 examples
 dist/                     `make dist` 的产物：发布用二进制，只挂在 GitHub
                           Release 上，不纳入 git 跟踪
 scripts/build-dist.sh     `make dist` 使用的交叉编译脚本
+docs/extensions/         每个 (goscheme ...) 库一页接口参考
+docs/ffi-design.md       (goscheme ffi) 的设计说明
 Makefile                 构建、测试与打包目标
 ```
 
@@ -419,8 +433,9 @@ $ goscheme -e '(let loop ((i 0)) (if (= i 2000000) i (loop (+ i 1))))'
 
 `select` 的子句是扁平的 `操作 => 处理函数` 三元组序列：接收子句的处理函数会收到
 接收到的值，其余子句不带参数。所有通道表达式、发送值与处理函数都会在竞速开始前
-求值；若有操作就绪则按书写顺序选择，`(else)` 只在没有任何操作就绪时被选中——
-与 Go 的语义一致。
+求值。当多个子句同时就绪时，胜出者是**随机**选出的，与 Go 的 `select` 完全一致；
+书写顺序决定的是求值顺序，而不是哪个就绪子句获胜。`(else)` 只在没有任何操作就绪时
+被选中。
 
 因为用的是 Go 原语而不是模拟，所以 Go 的规则同样适用：
 
@@ -443,27 +458,71 @@ $ goscheme -e '(let loop ((i 0)) (if (= i 2000000) i (loop (+ i 1))))'
 
 ### 扩展
 
-* `(goscheme fast)` —— 把 Scheme 干得慢的活交给 Go。排序（`sort`、
-  `vector-sort`、`sort!`、`vector-binary-search`）、序列（`iota`、
-  `vector-reverse`、`vector-reverse!`、`vector-swap!`）、筛选（`filter`、
-  `vector-filter!`、`count`、`any`、`every`）、聚合（`sum`、`product`、
-  `min-of`、`max-of`、`vector-dot`）、字符串（`string-split`、`string-join`、
-  `string-contains`、`string-index`、`string-prefix?`、`string-suffix?`、
-  `string-trim`、`string-trim-left`、`string-trim-right`、`string-replace`、
-  `string-pad-left`、`string-pad-right`）与字节（`sha256`、`random-bytes`、
-  `hex-encode`、`hex-decode`、`base64-encode`、`base64-decode`）。它们都是
-  R7RS 风格的——`sort` 可选 `less?`，`string-split` 可选分隔符——但循环、索引
-  与复制都在 Go 里发生，而且当 `less?` 或谓词本身是内建过程（`<`、`string<?`、
-  `even?`、`string?` 等）时，**不会**回调进 Scheme。你自己写的谓词仍要为每个元素
-  付一次调用，那种情况下这个库提供的是方便而不是速度。实测数字见
-  [性能](#性能)；`examples/fast.scm` 会自己计时，然后展示库的其余部分。
+下面每个库都在 [`docs/extensions/`](docs/extensions/README.md) 有一页速查参考，
+列出全部导出过程、参数与语义；这里只给概览。
+
+* `(goscheme fast)` —— 158 个过程，专治 Scheme 干得慢的活，全部用 Go 实现。
+  每一个都把循环、索引、复制与排序留在 Go 里，而不是每个元素走一步解释器：
+
+  * 排序 —— `sort`、`sort!`、`sort-by`、`vector-sort`、`vector-sort-by`、
+    `vector-binary-search`、`vector-binary-search-insert`
+  * 序列 —— `iota`、`vector-iota`、`range`、`take`、`drop`、`take-right`、
+    `drop-right`、`split-at`、`last`、`chunk`、`vector-take`、`vector-drop`、
+    `vector-chunk`、`vector-concat`、`vector-reverse`、`vector-reverse!`、
+    `vector-swap!`
+  * 选择 —— `filter`、`filter-not`、`vector-filter!`、`count`、`any`、
+    `every`、`find`、`list-index`、`delete`、`delete-duplicates`、
+    `partition`、`vector-partition`、`vector-index-of`、`zip`、`unzip`、
+    `flatten`
+  * 折叠 —— `fold-left`、`fold-right`、`assoc-set`
+  * 聚合 —— `sum`、`product`、`min-of`、`max-of`、`vector-dot`、
+    `vector-norm`、`vector-argmin`、`vector-argmax`、`mean`、`median`、
+    `percentile`、`variance`、`stddev`、`mode`
+  * 批量算术 —— `vector-add`、`vector-sub`、`vector-mul`、`vector-div`、
+    `vector-scale`、`vector-negate`、`vector-abs`、`vector-clamp`、
+    `vector-prefix-sum`——前八个都有原地版本（名字带 `!`，写回调用者的向量）
+    ——外加 `vector-equal?` 与 `vector-compare`
+  * 数论 —— `bit-and`、`bit-or`、`bit-xor`、`bit-not`、`bit-shift`、
+    `bit-count`、`integer-length`、`expt-mod`、`isqrt`、`prime?`、`primes`、
+    `factor`、`clamp`、`sign`
+  * 字符串 —— `string-split`（可给上限）、`string-join`、`string-contains`、
+    `string-index`、`string-index-from`、`string-last-index`、
+    `string-find-all`、`string-count`、`string-prefix?`、`string-suffix?`、
+    `string-prefix-ci?`、`string-suffix-ci?`、`string-trim`、
+    `string-trim-left`、`string-trim-right`、`string-replace`、
+    `string-replace-first`、`string-pad-left`、`string-pad-right`、
+    `string-pad-center`、`string-reverse`、`string-repeat`、`string-chunk`、
+    `string-sort`、`string-take`、`string-drop`、`string-fields`、
+    `string-lines`、`string-titlecase`、`string-upper`、`string-lower`、
+    `string-blank?`、`string-empty?`、`string-chomp`、`string-integer?`、
+    `string-byte-length`
+  * 字节与哈希 —— `sha256`、`sha1`、`sha512`、`md5`、`hmac-sha256`、
+    `crc32`、`random-bytes`、`hex-encode`、`hex-decode`、`base64-encode`、
+    `base64-decode`、`base64url-encode`、`base64url-decode`、
+    `base32-encode`、`base32-decode`、`bytes-xor`、`bytes-and`、
+    `bytes-or`、`bytes-not`、`bytes-reverse`、`bytes-index`、
+    `bytevector-fill!`、`vector->bytevector`、`bytevector->vector`
+  * 随机 —— `random-int`、`random-float`、`random-string`、`random-choice`、
+    `shuffle`、`vector-shuffle!`、`vector-sample`、`uuid`
+
+  名字在 R7RS 有对应时保持 R7RS 风格（`sort` 可选 `less?`、`string-split`
+  可选分隔符），没有对应时另起不冲突的名字，所以 `(goscheme fast)` 与
+  `(scheme base)`、`(scheme char)` 一起导入永远不会撞名。当 `less?` 或谓词是
+  内建过程（`<`、`string<?`、`even?`、`string?`）时**不会**回调进 Scheme；
+  自己写的谓词仍要为每个元素付一次调用，那种情况下这个库提供的是方便而不是
+  速度。`delete-duplicates` 与 `assoc-set` 同样可传比较器，带 `!` 的过程返回
+  它写入的那个向量。实测数字见[性能](#性能)；`examples/fast.scm`
+  会自己计时，然后展示整个库。
 
 * `(goscheme sync)` —— 并发故事的另一半：`make-mutex`、`mutex-lock!`、
   `mutex-unlock!`、`with-mutex`（无论 body 怎样离开都会释放锁）、
   `make-waitgroup` 与 `waitgroup-add!`/`-done!`/`-wait`、`make-once` 与
-  `once-run!`，以及无锁的 `make-atomic` 计数器。
+  `once-run!`，无锁的 `make-atomic` 计数器，以及配套的 `mutex?`、
+  `waitgroup?`、`once?`、`atomic?` 谓词。注意：解锁一个本线程并未持有的互斥量是
+  Go 运行时的致命错误，而不是一个可捕获的条件（见[已知限制](#已知限制)）。
 * `(goscheme socket)` —— `(tcp-listen port [host])`、`(tcp-accept listener
   [mode])`、`(tcp-connect host port [mode])`、`tcp-listener-port`、
+  `tcp-listener-address`、`tcp-listener?`、`tcp-address`、
   `tcp-close-listener`。连接就是双向的普通端口，所以 `read-line` 与
   `write-string` 就是全部协议词汇，而 `(go ...)` 让监听器变成服务器。host 默认
   是回环地址；mode 是 `'textual` 或 `'binary`。
@@ -472,15 +531,23 @@ $ goscheme -e '(let loop ((i 0)) (if (= i 2000000) i (loop (+ i 1))))'
   `-body`、`-header`、`-content-type`）。`(http-serve port handler [host])`
   启动服务器，handler 就是接收请求的普通过程（`http-request-method`、`-path`、
   `-query`、`-header`、`-body`）；net/http 为每个请求开一个解释器线程，handler
-  抛错会变成 500 而不是整个进程崩掉。
+  抛错会变成 500 而不是整个进程崩掉。能带正文的方法签名是
+  `(url [body [headers]])`：第二个位置是字符串就是正文，是 alist 就是请求头；
+  交给 handler 的请求正文最多读取 8 MiB。
 * `(goscheme json)` —— `json-parse` 与 `json-write`。对象是字符串键的 `equal?`
   哈希表，数组是向量，JSON 的 `null` 是符号 `null`；整数字面量无论多少位都保持精确。
+  写出方向 `json-write` 同样只把字符串键的哈希表当作对象（不接受 alist），并且
+  键按排序输出，因此往返一次不会保留插入顺序。
 * `(goscheme regexp)` —— `regexp`、`regexp-match`（含捕获组）、`regexp-match?`、
   `regexp-match-positions`、`regexp-replace`（可用 `$1`）、`regexp-replace-all`、
-  `regexp-split`，底层是 Go 的 RE2 引擎。
+  `regexp-split`，底层是 Go 的 RE2 引擎。这些过程也都接受裸的模式字符串（在当次
+  调用中现场编译）；另外 `regexp-match-positions` 返回的下标是**字节**偏移而不是
+  字符下标。
 * `(goscheme time)` —— `sleep`、`current-millisecond`、`monotonic-millisecond`、
   `time-format`、`time-parse`、`time-utc-parts`。时长以毫秒为单位，与
-  `(after ms)` 一致。
+  `(after ms)` 一致；`time-format`/`time-parse` 的布局串是 Go 的参考布局
+  （`2006-01-02 15:04:05`）而不是 `strftime`；`time-utc-parts` 是七对
+  `(year month day hour minute second weekday)` 的关联表。
 * `(goscheme fs)` —— `glob`、`directory-walk`、`directory-list`、
   `create-directory`、`create-directory-tree`、`delete-directory`、
   `delete-directory-tree`、`path-join`、`path-directory`、`path-base`、
@@ -489,21 +556,28 @@ $ goscheme -e '(let loop ((i 0)) (if (= i 2000000) i (loop (+ i 1))))'
   `()`、`(p ... . rest)`、`#(p ...)`，以及 `(and ...)`、`(or ...)`、`(not ...)`。
   一个 clause 写作 `(pattern body ...)` 或 `(pattern (guard test) body ...)`——
   guard 跟在 pattern 后面，不在它里面：`((n (guard #t)) body)` 是在匹配一个二元
-  列表。
-* `(goscheme process)` —— 在 `system`/`system*` 之上补上 `popen` 那一对：
-  `(open-input-process program arg ...)` 是子进程输出的端口，
+  列表。`else` 是 `_` 的另一种写法；同一个模式里重复出现的名字会静默地以最后一次
+  绑定为准，而不要求两者相等。
+* `(goscheme process)` —— `popen` 那一对，直接建立在 `os/exec` 上（不是
+  `system`）：`(open-input-process program arg ...)` 是子进程输出的端口，
   `(open-output-process program arg ...)` 是其输入的端口，
-  `(process-status port)` 在端口关闭后给出退出状态。两个用循环接起来就是管道。
+  `(process-status port)` 在端口关闭后给出退出状态（关闭前是 `#f`）。两个用循环
+  接起来就是管道。无法启动的程序会让 `system*` 与 `open-*-process` 抛出文件错误，
+  而 `system` 经过 shell，因此找不到命令时得到的是 shell 自己的退出状态 127。
 
 除 R7RS-small 之外，解释器还提供：
 
 * `(goscheme hash-table)` —— `make-eq-hashtable`、`make-eqv-hashtable`、
-  `make-equal-hashtable`、`hash-table-ref`、`hash-table-ref/default`、
-  `hash-table-set!`、`hash-table-update!`、`hash-table-delete!`、
-  `hash-table-exists?`、`hash-table-keys`、`hash-table-values`、
+  `make-equal-hashtable`、`make-hash-table`、`hash-table-ref`、
+  `hash-table-ref/default`、`hash-table-set!`、`hash-table-update!`、
+  `hash-table-delete!`、`hash-table-exists?`、`hash-table-contains?`、
+  `hash-table-keys`、`hash-table-values`、
   `hash-table-walk`、`hash-table->alist`、`alist->hash-table`、
   `hash-table-copy`、`hash-table-clear!`、`hash-table-size`、
-  `hash-table-count` 与 `hash`。
+  `hash-table-count`、`hash`，以及 `hash-table?` / `hashtable?` 谓词。
+  `make-hash-table` 还可以给一个大小提示与等价性（写出 `eq?`、`eqv?`、`equal?`
+  的符号或过程）；`alist->hash-table` 会填充你传入的那张表，而不是总新建一张；
+  `hash-table-update!` 可选的第四个参数是“键不存在时使用的值”，不是 thunk。
 * `(goscheme channel)` —— `make-channel`、`chan-send!`、`chan-recv!`、
   `chan-close!`、`channel?`、`channel-open?`、`go`、`select`、`go-wait`
   （见上文[并发](#并发go-风味)）。
@@ -535,8 +609,9 @@ $ goscheme -e '(let loop ((i 0)) (if (= i 2000000) i (loop (+ i 1))))'
   那里）。`(foreign-function lib name 返回类型 参数类型 ...)` 返回一个调用该符号的
   过程。类型有 `void`、`int`/`long`、`double`、`string`（C 的 `char *`）与
   `pointer`；参数必须**要么全为整数类、要么全为 double**，最多 4 个整数类参数或
-  3 个 double 参数（返回类型与两种都可以组合）。库或符号找不到、参数类型写错，
-  都是普通条件。
+  3 个 double 参数。返回类型必须与 C 函数真正返回的类型一致：写错并不会做转换，
+  而是按该类型重新解释返回寄存器，`void` 返回值则是未指定值。库或符号找不到、
+  参数类型写错，都是普通条件。
 
   加载库是唯一随平台不同的部分：POSIX 用 `dlopen`，Windows 用
   `LoadLibrary`/`GetProcAddress`，其中 `#f` 表示当前可执行文件本身。Windows 上 C 库
@@ -585,6 +660,13 @@ BenchmarkFast` 测得，每一对的输入用同样方式构造，因此差异�
 | 用 `even?` 筛选 2 万个数 | ~40 ms | ~2.3 ms |
 | 构造 2 万元素列表 | ~32 ms | ~1.7 ms |
 | 在 2 万字符里找 `"xxxy"` | ~56 ms | ~1.4 ms |
+| 两个 2 万元素向量相加 | ~61 ms | ~3.3 ms |
+| 4000 个元素去重 | ~62 ms | ~4.7 ms |
+| 筛出 3 万以内的素数 | ~1.26 s | ~0.9 ms |
+
+向量过程就是批量车道：整段向量一次 Go 遍历，还有不分配任何内存的原地版本，
+而不是每个元素走一步解释器。这背后没有 SIMD，省掉的是逐元素的类型检查、
+中间结果的装箱，以及那一步解释本身。
 
 例外是用 Scheme 写的谓词：`filter` 必须逐元素调用它，开销与手写循环相当，所以只有
 内建谓词能胜任时这套接口才划算。
@@ -604,14 +686,15 @@ go test -short ./...                          # 跳过参考套件
 
 ```
 == 1227 passed, 0 failed     参考 R7RS 套件（test/scheme/r7rs-tests.scm）
-==  228 passed, 0 failed     GoScheme 回归套件（test/scheme/goscheme-tests.scm）
+==  235 passed, 0 failed     GoScheme 回归套件（test/scheme/goscheme-tests.scm）
 ==   70 passed, 0 failed     并发套件（test/scheme/goscheme-concurrency-tests.scm）
-==   38 passed, 0 failed     网络套件（test/scheme/goscheme-network-tests.scm）
+==   42 passed, 0 failed     网络套件（test/scheme/goscheme-network-tests.scm）
 ==   35 passed, 0 failed     进程与文件系统套件（test/scheme/goscheme-process-tests.scm）
 ==   86 passed, 0 failed     数据套件（test/scheme/goscheme-data-tests.scm）
 ==   43 passed, 0 failed     模式匹配套件（test/scheme/goscheme-match-tests.scm）
+==  462 passed, 0 failed     性能库套件（test/scheme/goscheme-fast-tests.scm）
 ```
-合计 1727 条断言；goscheme 套件在 cgo 构建下是 228 条而不是 213 条，因为 FFI
+合计 2200 条断言；goscheme 套件在 cgo 构建下是 235 条而不是 220 条，因为 FFI
 那一段只在有 FFI 的构建里运行。
 
 并发套件同样通过 Go 竞态检测器（`go test -race ./...`）。
@@ -694,6 +777,9 @@ CC_windows_amd64=x86_64-w64-mingw32-gcc make dist
   名字 `set!` 也只改导入方那一份。chibi-scheme 行为相同，R7RS 原文在这一点上有歧义，
   但在依赖它之前值得知道。
 * 单值上下文里的多值会被静默截断为第一个（零个值则变成未指定值），而不是报错。
+* 有两种误用会**中止进程**而不是抛出条件，`guard` 拦不住：对并非本线程持有的互斥量
+  调用 `mutex-unlock!` 会触发 Go 运行时的致命错误；`select` 里 `(after ms)` 的
+  `ms` 为负数或不是精确整数时，会在求值该子句时 panic。
 
 ## 许可证
 
