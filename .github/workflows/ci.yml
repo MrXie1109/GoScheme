@@ -107,3 +107,22 @@ jobs:
           name: ${{ matrix.out }}
           path: ${{ matrix.out }}
           if-no-files-found: error
+
+      # The Intel macOS runner is capacity constrained, so the same job also
+      # cross-builds the Intel binary from the Apple Silicon one: the source is
+      # identical and the SDK carries both slices.  The dedicated Intel job
+      # still runs the suites natively when a runner is available.
+      - name: cross-build the Intel binary
+        if: matrix.name == 'darwin-arm64'
+        shell: bash
+        run: |
+          CGO_ENABLED=1 GOARCH=amd64 go build -trimpath -ldflags "-s -w" \
+            -o goscheme-darwin-amd64-dynamic ./cmd/goscheme
+          file goscheme-darwin-amd64-dynamic
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.name == 'darwin-arm64'
+        with:
+          name: goscheme-darwin-amd64-dynamic
+          path: goscheme-darwin-amd64-dynamic
+          if-no-files-found: error

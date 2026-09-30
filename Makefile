@@ -15,7 +15,7 @@ PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 win
 # (goscheme ffi).  Each one needs a C compiler for the target; the compilers and
 # the CC_<os>_<arch> overrides are in scripts/build-dist.sh.  Platforms without
 # one are skipped with a message, so this list may name more than you can build.
-DYNAMIC_PLATFORMS ?= linux/amd64 linux/arm64
+DYNAMIC_PLATFORMS ?= linux/amd64 linux/arm64 windows/amd64
 
 LDFLAGS := -s -w -X main.version=$(VERSION)
 GOFLAGS := -trimpath

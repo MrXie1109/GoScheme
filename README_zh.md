@@ -521,6 +521,11 @@ $ goscheme -e '(let loop ((i 0)) (if (= i 2000000) i (loop (+ i 1))))'
   3 个 double 参数（返回类型与两种都可以组合）。库或符号找不到、参数类型写错，
   都是普通条件。
 
+  加载库是唯一随平台不同的部分：POSIX 用 `dlopen`，Windows 用
+  `LoadLibrary`/`GetProcAddress`，其中 `#f` 表示当前可执行文件本身。Windows 上 C 库
+  并不在程序自身的导出表里，所以要显式给出库名——`ucrtbase.dll`（`strlen`、`cbrt`
+  等）或 `kernel32.dll`（Windows API）。
+
   `string` 返回值会被复制成 Scheme 字符串；`pointer` 返回值就是地址本身（精确
   整数），空指针是 `#f`。字符串参数只在这次调用期间有效，所以函数返回的指针如果
   *指向自己的某个参数*（`strchr` 就是这样），拿到手时已经悬空 —— 只有当这块内存
@@ -586,13 +591,21 @@ go test -short ./...                          # 跳过参考套件
 | `goscheme-windows-arm64.exe` | Windows on ARM | 静态 |
 | `goscheme-linux-amd64-dynamic` | Linux x86-64 | 动态，带 FFI |
 | `goscheme-linux-arm64-dynamic` | Linux AArch64 | 动态，带 FFI |
+| `goscheme-windows-amd64-dynamic.exe` | Windows x86-64 | 动态，带 FFI |
+| `goscheme-darwin-amd64-dynamic` | macOS Intel | 动态，带 FFI |
+| `goscheme-darwin-arm64-dynamic` | macOS Apple Silicon | 动态，带 FFI |
 
 **静态**产物是 `CGO_ENABLED=0`：运行时无依赖、也没有 FFI，`(features)` 不含
 `ffi`。**动态**产物是 `CGO_ENABLED=1`，链接平台自身的 C 库，是唯一能加载共享库的
 风味，也就是带 `(goscheme ffi)` 的那一个；它运行时需要该 C 库，而这里的 Linux 产物
 是针对 glibc 2.34 构建的，所以需要不低于该版本的 glibc。
 
-动态构建需要**目标平台的** C 编译器，所以默认只有两个 Linux 目标有；如果你有对应的
+darwin 的动态产物与 Windows 那个由 `.github/workflows/ci.yml` 在**各自平台上**构建，
+这也是 macOS 唯一的验证方式：Mach-O 二进制无法在开发这台机器上执行，所以 CI 在
+macOS、Linux 与 Windows 上原生跑测试。
+
+动态构建需要**目标平台的** C 编译器，所以默认列表只列本机能构建的目标：两个 Linux
+目标，以及可配 mingw 的 windows/amd64；如果你有对应的
 交叉编译器，把其它目标写进 `DYNAMIC_PLATFORMS` 即可，每个目标的编译器可用
 `CC_<os>_<arch>` 覆盖，找不到编译器时会给出提示并跳过该目标，而不是让整轮构建失败：
 

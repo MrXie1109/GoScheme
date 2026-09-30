@@ -23,7 +23,7 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 DIST="$ROOT/dist"
 
 platforms="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64"
-DYNAMIC_PLATFORMS=${DYNAMIC_PLATFORMS:-linux/amd64 linux/arm64}
+DYNAMIC_PLATFORMS=${DYNAMIC_PLATFORMS:-linux/amd64 linux/arm64 windows/amd64}
 VERSION=$(cat "$ROOT/cmd/goscheme/VERSION")
 LDFLAGS="-s -w -X main.version=$VERSION"
 GOFLAGS=${GOFLAGS:--trimpath}
@@ -54,6 +54,9 @@ pack() {
 
 # The C compiler for a dynamic build of each platform.  The defaults are the
 # names the usual cross toolchains install as; override with CC_<os>_<arch>.
+# The darwin targets need an osxcross SDK, which is why they are not in the
+# default list: the macOS builds in .github/workflows/ci.yml produce them on a
+# real Mac and they are attached to the release from there.
 cc_for() {
     case $1 in
     linux/amd64) echo "${CC_linux_amd64:-cc}" ;;

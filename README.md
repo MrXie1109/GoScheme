@@ -581,6 +581,12 @@ Beyond R7RS-small the interpreter also provides:
   either).  A missing library or symbol, or a mistaken argument type, is an
   ordinary condition.
 
+  Opening a library is the one part that differs by platform: the POSIX hosts use
+  `dlopen`, and Windows uses `LoadLibrary`/`GetProcAddress`, where `#f` means the
+  running executable.  On Windows the C library is not part of the program's own
+  exports, so name one explicitly — `ucrtbase.dll` for `strlen`, `cbrt` and the
+  rest, or `kernel32.dll` for the Windows API.
+
   A `string` result is copied into a Scheme string; a `pointer` result is the
   address as an exact integer, and a null pointer is `#f`.  String arguments
   are copied for the duration of the call only, so a pointer that a function
@@ -656,6 +662,9 @@ every supported target into `dist/`.
 | `goscheme-windows-arm64.exe` | Windows on ARM | static |
 | `goscheme-linux-amd64-dynamic` | Linux x86-64 | dynamic, with FFI |
 | `goscheme-linux-arm64-dynamic` | Linux AArch64 | dynamic, with FFI |
+| `goscheme-windows-amd64-dynamic.exe` | Windows x86-64 | dynamic, with FFI |
+| `goscheme-darwin-amd64-dynamic` | macOS Intel | dynamic, with FFI |
+| `goscheme-darwin-arm64-dynamic` | macOS Apple Silicon | dynamic, with FFI |
 
 The **static** binaries are `CGO_ENABLED=0`: no dependencies at run time and no
 FFI, so `(features)` does not report `ffi`.  The **dynamic** ones are
@@ -664,8 +673,14 @@ flavour that can load shared libraries, so they are the ones with
 `(goscheme ffi)`; they need that C library at run time, and the Linux binaries
 here were built against glibc 2.34, so they need a glibc at least that new.
 
-A dynamic build needs a C compiler *for the target*, which is why only the two
-Linux targets get one by default.  Name the others in `DYNAMIC_PLATFORMS` if you
+The darwin dynamic builds and the Windows one are produced by
+`.github/workflows/ci.yml` on the platforms themselves, which is also how
+macOS is tested at all: a Mach-O binary cannot be executed on the machine this
+was developed on, so CI runs the suites natively on macOS, Linux and Windows.
+
+A dynamic build needs a C compiler *for the target*, which is why the default
+list names the targets this machine can build: the two Linux ones, and
+windows/amd64 with a mingw toolchain.  Name the others in `DYNAMIC_PLATFORMS` if you
 have the cross compilers — `CC_<os>_<arch>` overrides the compiler for each
 target, and a target whose compiler is missing is skipped with a message rather
 than failing the run:
