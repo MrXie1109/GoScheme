@@ -40,8 +40,31 @@ type Complex struct {
 	Im Value
 }
 
+// Small exact integers are cached, because arithmetic in a loop produces them
+// constantly and each one used to be an allocation.  Integer values are never
+// mutated in place — every operation builds a new one — so sharing them is
+// safe.  The range covers the counters, lengths and indices that dominate real
+// programs.
+const (
+	smallIntMin = -256
+	smallIntMax = 1024
+)
+
+var smallInts [smallIntMax - smallIntMin + 1]Integer
+
+func init() {
+	for i := range smallInts {
+		smallInts[i] = Integer{small: true, i: int64(i + smallIntMin)}
+	}
+}
+
 // Int builds an exact integer from an int64.
-func Int(i int64) *Integer { return &Integer{small: true, i: i} }
+func Int(i int64) *Integer {
+	if i >= smallIntMin && i <= smallIntMax {
+		return &smallInts[i-smallIntMin]
+	}
+	return &Integer{small: true, i: i}
+}
 
 // BigInt builds an exact integer from a big.Int, normalising to a small
 // integer when the value fits.
@@ -448,7 +471,24 @@ func NormalizeComplex(re, im Value) Value {
 // NumEq reports numeric equality.  When one operand is exact and the other
 // inexact the inexact operand is converted to exact, as R7RS 6.2.6
 // recommends, so that = remains transitive.
+// sameSmallInt reports whether both values are small exact integers, which is
+// the common case in a loop and cheap to compare directly.
+func sameSmallInt(a, b Value) (int64, int64, bool) {
+	ai, aok := a.(*Integer)
+	if !aok || !ai.small {
+		return 0, 0, false
+	}
+	bi, bok := b.(*Integer)
+	if !bok || !bi.small {
+		return 0, 0, false
+	}
+	return ai.i, bi.i, true
+}
+
 func NumEq(a, b Value) bool {
+	if x, y, ok := sameSmallInt(a, b); ok {
+		return x == y
+	}
 	if _, ok := a.(*Complex); ok {
 		ar, ai := ComplexParts(a)
 		br, bi := ComplexParts(b)
@@ -492,6 +532,15 @@ func NumEq(a, b Value) bool {
 // return 2 (unordered).
 func NumCmp(a, b Value) int {
 	a, b = RealPart(a), RealPart(b)
+	if x, y, ok := sameSmallInt(a, b); ok {
+		switch {
+		case x < y:
+			return -1
+		case x > y:
+			return 1
+		}
+		return 0
+	}
 	fa, fb := asFloat(a), asFloat(b)
 	if math.IsNaN(fa) || math.IsNaN(fb) {
 		return 2

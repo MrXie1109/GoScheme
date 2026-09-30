@@ -103,8 +103,7 @@ func (m *Machine) evalStep() {
 				return
 			}
 		}
-		args, _ := ListToSlice(x.Cdr)
-		m.stack = append(m.stack, &fAppOp{args: args, env: env})
+		m.stack = append(m.stack, &fAppOp{args: x.Cdr, env: env})
 		m.Eval(x.Car, env)
 	default:
 		m.Return(expr)

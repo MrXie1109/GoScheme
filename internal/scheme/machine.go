@@ -177,37 +177,78 @@ type fSeq struct {
 
 func (f *fSeq) resume(m *Machine, v Value) { m.EvalSeq(f.exprs, f.env) }
 
-// fAppOp is waiting for the operator of a combination.
+// fAppOp is waiting for the operator of a combination.  The operands are walked
+// as a list: copying them into a slice for every call was one of the largest
+// sources of allocation in the interpreter.
 type fAppOp struct {
-	args []Value
+	args Value
 	env  *Env
 }
 
 func (f *fAppOp) resume(m *Machine, v Value) {
-	if len(f.args) == 0 {
-		m.apply(v, nil)
+	p, ok := f.args.(*Pair)
+	if !ok {
+		if _, isNil := f.args.(Empty); isNil {
+			m.apply(v, nil)
+			return
+		}
+		m.raiseErrorf("improper argument list")
 		return
 	}
-	m.stack = append(m.stack, &fAppArgs{op: v, rest: f.args[1:], env: f.env})
-	m.Eval(f.args[0], f.env)
+	m.stack = append(m.stack, &fAppArgs{op: v, rest: p.Cdr, env: f.env})
+	m.Eval(p.Car, f.env)
 }
+
+// inlineArgs is how many operands a combination may have before their values
+// have to move to the heap.  Keeping them inside the frame removes a slice
+// allocation per operand.
+const inlineArgs = 4
 
 // fAppArgs is waiting for one operand of a combination.
 type fAppArgs struct {
 	op   Value
-	rest []Value
-	done []Value
+	rest Value
 	env  *Env
+	n    int
+	done [inlineArgs]Value
+	more []Value
+}
+
+// collect adds a value to this frame's operands.
+func (f *fAppArgs) collect(v Value) []Value {
+	if f.more != nil {
+		return append(f.more, v)
+	}
+	if f.n < inlineArgs {
+		f.done[f.n] = v
+		return f.done[:f.n+1]
+	}
+	f.more = make([]Value, inlineArgs, inlineArgs*2)
+	copy(f.more, f.done[:])
+	return append(f.more, v)
 }
 
 func (f *fAppArgs) resume(m *Machine, v Value) {
-	done := append(f.done, v)
-	if len(f.rest) == 0 {
-		m.apply(f.op, done)
+	done := f.collect(v)
+	p, ok := f.rest.(*Pair)
+	if !ok {
+		if _, isNil := f.rest.(Empty); isNil {
+			m.apply(f.op, done)
+			return
+		}
+		m.raiseErrorf("improper argument list")
 		return
 	}
-	m.stack = append(m.stack, &fAppArgs{op: f.op, rest: f.rest[1:], done: done, env: f.env})
-	m.Eval(f.rest[0], f.env)
+	next := &fAppArgs{op: f.op, rest: p.Cdr, env: f.env, n: len(done)}
+	if f.more != nil {
+		next.more = done
+	} else {
+		// The next frame gets its own copy of what has been collected, so this
+		// one is left exactly as it was for a captured continuation.
+		copy(next.done[:], done)
+	}
+	m.stack = append(m.stack, next)
+	m.Eval(p.Car, f.env)
 }
 
 // ---------------------------------------------------------------------------
@@ -421,7 +462,14 @@ func (m *Machine) applyClosure(c *Closure, args []Value) {
 			env.Define(s, args[i])
 		}
 	}
-	prepBody(env, clause.Body)
+	// The names introduced by internal definitions were worked out when the
+	// closure was built; binding them here is what gives the body letrec*
+	// semantics, and rescanning the body on every call would be wasteful.
+	for _, s := range clause.BodyNames {
+		if !env.Has(s) {
+			env.Define(s, Unassigned)
+		}
+	}
 	m.EvalSeq(clause.Body, env)
 }
 

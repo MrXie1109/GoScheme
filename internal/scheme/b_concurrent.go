@@ -89,7 +89,11 @@ func (m *Machine) RunApply(proc Value, args []Value, env *Env) (Value, error) {
 func (m *Machine) Spawn(thunk Value) {
 	child := m.Child()
 	m.wg.Add(1)
+	// Count the thread before it starts, so that environments begin taking
+	// their locks before it can touch one.
+	enterConcurrency()
 	go func() {
+		defer exitConcurrency()
 		defer m.wg.Done()
 		defer func() {
 			if r := recover(); r != nil {

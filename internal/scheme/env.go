@@ -2,7 +2,10 @@
 
 package scheme
 
-import "sync"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 // Env is a lexical environment: a frame of variable bindings with a pointer
 // to the enclosing environment.
@@ -12,11 +15,30 @@ import "sync"
 // syntactic keyword.  A separate interface for the latter was considered, but
 // sharing one table keeps lookup and define-syntax simple and lets a lexical
 // variable shadow a macro and vice versa.
+// envInline is how many bindings a frame holds in its own fields before it
+// falls back to a map.  Most frames — a lambda's parameters, a let's bindings —
+// hold a handful, and allocating a map for each of them was a large part of the
+// interpreter's allocation.
+const envInline = 4
+
+// concurrentThreads counts interpreter threads running right now.  A frame only
+// needs its lock when more than one thread can touch it, which in a
+// single-threaded program is never, so the count lets every lookup and
+// definition skip the lock; a program that uses (go ...) keeps it.
+var concurrentThreads atomic.Int32
+
+// enterConcurrency and exitConcurrency bracket a thread that will touch
+// environments, so that frames start taking their locks before it runs.
+func enterConcurrency() { concurrentThreads.Add(1) }
+func exitConcurrency()  { concurrentThreads.Add(-1) }
+
 type Env struct {
-	// mu guards vars.  Environments can be shared between the goroutines
-	// created by (go ...), and Go maps may not be read and written
-	// concurrently.
+	// mu guards this frame.  It is only taken when more than one interpreter
+	// thread is running; see concurrentThreads.
 	mu     sync.RWMutex
+	names  [envInline]*Symbol
+	vals   [envInline]Value
+	n      int
 	vars   map[*Symbol]Value
 	parent *Env
 	Name   string
@@ -33,12 +55,12 @@ var Unassigned = unassigned{}
 
 // NewEnv creates a fresh environment with the given parent.
 func NewEnv(parent *Env) *Env {
-	return &Env{vars: make(map[*Symbol]Value, 8), parent: parent}
+	return &Env{parent: parent}
 }
 
 // NewEnvNamed creates a named environment (used for libraries and the REPL).
 func NewEnvNamed(parent *Env, name string) *Env {
-	return &Env{vars: make(map[*Symbol]Value, 8), parent: parent, Name: name}
+	return &Env{parent: parent, Name: name}
 }
 
 // Global returns the outermost environment of the chain.
@@ -49,11 +71,45 @@ func (e *Env) Global() *Env {
 	return e
 }
 
-// Define binds sym in this frame.
+// Define binds sym in this frame, replacing any binding it already had.
 func (e *Env) Define(sym *Symbol, v Value) {
-	e.mu.Lock()
+	locked := concurrentThreads.Load() != 0
+	if locked {
+		e.mu.Lock()
+	}
+	for i := 0; i < e.n; i++ {
+		if e.names[i] == sym {
+			e.vals[i] = v
+			if locked {
+				e.mu.Unlock()
+			}
+			return
+		}
+	}
+	if e.vars != nil {
+		if _, exists := e.vars[sym]; exists {
+			e.vars[sym] = v
+			if locked {
+				e.mu.Unlock()
+			}
+			return
+		}
+	}
+	if e.n < envInline {
+		e.names[e.n], e.vals[e.n] = sym, v
+		e.n++
+		if locked {
+			e.mu.Unlock()
+		}
+		return
+	}
+	if e.vars == nil {
+		e.vars = make(map[*Symbol]Value, 8)
+	}
 	e.vars[sym] = v
-	e.mu.Unlock()
+	if locked {
+		e.mu.Unlock()
+	}
 }
 
 // DefineName binds a symbol by name.
@@ -63,30 +119,58 @@ func (e *Env) DefineName(name string, v Value) {
 
 // Has reports whether sym is bound in this frame only.
 func (e *Env) Has(sym *Symbol) bool {
-	e.mu.RLock()
-	_, ok := e.vars[sym]
-	e.mu.RUnlock()
+	_, ok := e.get(sym)
 	return ok
 }
 
 // get returns the binding of sym in this frame only.
 func (e *Env) get(sym *Symbol) (Value, bool) {
-	e.mu.RLock()
+	locked := concurrentThreads.Load() != 0
+	if locked {
+		e.mu.RLock()
+	}
+	for i := 0; i < e.n; i++ {
+		if e.names[i] == sym {
+			v := e.vals[i]
+			if locked {
+				e.mu.RUnlock()
+			}
+			return v, true
+		}
+	}
 	v, ok := e.vars[sym]
-	e.mu.RUnlock()
+	if locked {
+		e.mu.RUnlock()
+	}
 	return v, ok
 }
 
 // Set updates an existing binding, returning false when unbound.
 func (e *Env) Set(sym *Symbol, v Value) bool {
+	locked := concurrentThreads.Load() != 0
 	for env := e; env != nil; env = env.parent {
-		env.mu.Lock()
+		if locked {
+			env.mu.Lock()
+		}
+		for i := 0; i < env.n; i++ {
+			if env.names[i] == sym {
+				env.vals[i] = v
+				if locked {
+					env.mu.Unlock()
+				}
+				return true
+			}
+		}
 		if _, ok := env.vars[sym]; ok {
 			env.vars[sym] = v
-			env.mu.Unlock()
+			if locked {
+				env.mu.Unlock()
+			}
 			return true
 		}
-		env.mu.Unlock()
+		if locked {
+			env.mu.Unlock()
+		}
 	}
 	if sym.Mark != 0 {
 		if def := markEnvOf(sym.Mark); def != nil {
@@ -165,13 +249,23 @@ func (e *Env) Snapshot() map[*Symbol]Value {
 			return
 		}
 		seen[env] = true
-		env.mu.RLock()
+		locked := concurrentThreads.Load() != 0
+		if locked {
+			env.mu.RLock()
+		}
+		for i := 0; i < env.n; i++ {
+			if _, dup := out[env.names[i]]; !dup {
+				out[env.names[i]] = env.vals[i]
+			}
+		}
 		for k, v := range env.vars {
 			if _, dup := out[k]; !dup {
 				out[k] = v
 			}
 		}
-		env.mu.RUnlock()
+		if locked {
+			env.mu.RUnlock()
+		}
 		walk(env.parent)
 	}
 	walk(e)

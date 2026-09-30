@@ -23,7 +23,9 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 DIST="$ROOT/dist"
 
 platforms="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64"
-DYNAMIC_PLATFORMS=${DYNAMIC_PLATFORMS:-linux/amd64 linux/arm64 windows/amd64}
+# Note the "-" rather than ":-": an explicitly empty list means "static only",
+# which is what a release wants, while an unset one takes the default.
+DYNAMIC_PLATFORMS=${DYNAMIC_PLATFORMS-linux/amd64 linux/arm64 windows/amd64}
 VERSION=$(cat "$ROOT/cmd/goscheme/VERSION")
 LDFLAGS="-s -w -X main.version=$VERSION"
 GOFLAGS=${GOFLAGS:--trimpath}

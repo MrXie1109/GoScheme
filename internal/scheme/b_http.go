@@ -293,6 +293,10 @@ func installHTTP(m *Machine) {
 
 // serveRequest runs one request on its own interpreter thread.
 func serveRequest(m *Machine, handler Value, w http.ResponseWriter, r *http.Request, server *HTTPServer) {
+	// net/http runs this on its own goroutine, so it counts as an interpreter
+	// thread for as long as it can touch environments.
+	enterConcurrency()
+	defer exitConcurrency()
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 8<<20))
 	r.Body.Close()
 
