@@ -142,24 +142,6 @@ func installFastLists(m *Machine, lib string) {
 		return valuesOf(listOf(items[:n]), listOf(items[n:])), nil
 	}, lib)
 
-	// (list-index pred list) is the index of the first element the predicate
-	// accepts, or #f.  A builtin predicate is applied without a Scheme call.
-	m.defSimple("list-index", 2, 2, func(a []Value) (Value, error) {
-		pred := wantProcedure("list-index", a[0])
-		name := builtinName(pred)
-		caller := newFastCaller(m, pred)
-		items, ok := ListToSlice(a[1])
-		if !ok {
-			panic(errf("list-index", "expected a proper list but got %s", WriteToString(a[1])))
-		}
-		for i, v := range items {
-			if caller.pred(name, v) {
-				return Int(int64(i)), nil
-			}
-		}
-		return False, nil
-	}, lib)
-
 	// (find pred list) is the first element the predicate accepts, or #f.
 	m.defSimple("find", 2, 2, func(a []Value) (Value, error) {
 		pred := wantProcedure("find", a[0])
@@ -433,23 +415,6 @@ func installFastLists(m *Machine, lib string) {
 		return acc, nil
 	}, lib)
 
-	m.defSimple("fold-right", 3, 3, func(a []Value) (Value, error) {
-		proc := wantProcedure("fold-right", a[0])
-		name := builtinName(proc)
-		caller := newFastCaller(m, proc)
-		acc := a[1]
-		items := seqSlice("fold-right", a[2])
-		for i := len(items) - 1; i >= 0; i-- {
-			v := items[i]
-			if res, ok := foldOp(name, v, acc); ok {
-				acc = res
-			} else {
-				acc = caller.apply(v, acc)
-			}
-		}
-		return acc, nil
-	}, lib)
-
 	// (sort-by key list [less?]) sorts by a key computed once per element,
 	// rather than by calling the comparison on every pair.
 	m.defSimple("sort-by", 2, 3, func(a []Value) (Value, error) {
@@ -705,24 +670,8 @@ func installFastVectors(m *Machine, lib string) {
 		return listOf(out), nil
 	}, lib)
 
-	// (vector-partition pred v) returns the accepted elements and the rest, as
-	// two new vectors.
-	m.defSimple("vector-partition", 2, 2, func(a []Value) (Value, error) {
-		pred := wantProcedure("vector-partition", a[0])
-		vec := wantVector("vector-partition", a[1])
-		name := builtinName(pred)
-		caller := newFastCaller(m, pred)
-		yes := make([]Value, 0, len(vec.Items))
-		no := make([]Value, 0, len(vec.Items))
-		for _, v := range vec.Items {
-			if caller.pred(name, v) {
-				yes = append(yes, v)
-			} else {
-				no = append(no, v)
-			}
-		}
-		return valuesOf(&Vector{Items: yes}, &Vector{Items: no}), nil
-	}, lib)
+	// vector-partition is SRFI-133's, defined there and exported from this
+	// library too; it returns a new vector and the count of accepted elements.
 
 	// (vector-binary-search-insert v key [less?]) is the index where key would
 	// be inserted to keep the vector sorted: the lower bound.

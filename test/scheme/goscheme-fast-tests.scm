@@ -301,7 +301,7 @@
 (test '(#(1 2) #(3 4) #(5)) (vector-chunk #(1 2 3 4 5) 2))
 (test '() (vector-chunk #() 3))
 (call-with-values (lambda () (vector-partition even? #(1 2 3 4)))
-  (lambda (a b) (test #(2 4) a) (test #(1 3) b)))
+  (lambda (vec kept) (test #(2 4 1 3) vec) (test 2 kept)))
 
 (test 2 (vector-binary-search-insert #(1 3 5) 4))
 (test 1 (vector-binary-search-insert #(1 3 5) 3))
@@ -617,13 +617,15 @@
 (test #f (equal? (uuid) (uuid)))
 
 (test 5 (length (shuffle '(1 2 3 4 5))))
-(test #t (every (lambda (v) (memv v (shuffle '(1 2 3 4 5)))) '(1 2 3 4 5)))
+;; every follows SRFI-1 and returns the predicate's own value, which is a
+;; sublist here, so ask for a boolean.
+(test #t (if (every (lambda (v) (memv v (shuffle '(1 2 3 4 5)))) '(1 2 3 4 5)) #t #f))
 (test '() (shuffle '()))
 (test 'bad-shuffle (guard (e (#t 'bad-shuffle)) (shuffle 5)))
 (define shuffled (vector 1 2 3 4 5))
 (test #t (eq? shuffled (vector-shuffle! shuffled)))
 (test 5 (vector-length shuffled))
-(test #t (every (lambda (v) (memv v (vector->list shuffled))) '(1 2 3 4 5)))
+(test #t (if (every (lambda (v) (memv v (vector->list shuffled))) '(1 2 3 4 5)) #t #f))
 (test 2 (vector-length (vector-sample #(1 2 3 4) 2)))
 (test 0 (vector-length (vector-sample #(1 2) 0)))
 (test 'too-many (guard (e (#t 'too-many)) (vector-sample #(1 2) 3)))

@@ -249,32 +249,64 @@ func installFastOrdering(m *Machine, lib string) {
 		return vec, nil
 	}, lib)
 
-	// (vector-binary-search vector key [less?]) reports the index of key, or #f.
-	// It uses the same comparison as sort, so a sorted vector is searchable.
+	// (vector-binary-search vector key [comparison]) reports the index of the
+	// first element equal to key, or #f.  The comparison may be a predicate in
+	// the style of <, which is what (goscheme fast) has always taken, or
+	// SRFI-133's three-valued function returning -1, 0 or 1; the first call
+	// decides which, so both libraries can share this binding.
 	m.defSimple("vector-binary-search", 2, 3, func(a []Value) (Value, error) {
 		vec := wantVector("vector-binary-search", a[0])
 		key := a[1]
-		less := defaultLess(m)
+		cmp := defaultLess(m)
 		if len(a) == 3 {
-			less = wantProcedure("vector-binary-search", a[2])
+			cmp = wantProcedure("vector-binary-search", a[2])
 		}
-		name := builtinName(less)
-		caller := newFastCaller(m, less)
+		name := builtinName(cmp)
+		caller := newFastCaller(m, cmp)
+		threeWay, decided := false, false
+		compare := func(x Value) int {
+			if name != "" {
+				if res, ok := fastLess(name, x, key); ok {
+					if res {
+						return -1
+					}
+					if back, ok := fastLess(name, key, x); ok && back {
+						return 1
+					}
+					return 0
+				}
+			}
+			res := caller.apply(x, key)
+			if !decided {
+				decided = true
+				switch res.(type) {
+				case *Integer, *Rational, Float:
+					threeWay = true
+				}
+			}
+			if threeWay {
+				return NumSign(res)
+			}
+			if IsTrue(res) {
+				return -1
+			}
+			if IsTrue(caller.apply(key, x)) {
+				return 1
+			}
+			return 0
+		}
+		// The lower bound keeps the first of several equal elements.
 		lo, hi := 0, len(vec.Items)
 		for lo < hi {
 			mid := int(uint(lo+hi) >> 1)
-			if caller.less(name, vec.Items[mid], key) {
+			if compare(vec.Items[mid]) < 0 {
 				lo = mid + 1
 			} else {
 				hi = mid
 			}
 		}
-		if lo < len(vec.Items) {
-			// The first element not less than key is the key itself when the
-			// comparison says so in the other direction too.
-			if !caller.less(name, key, vec.Items[lo]) {
-				return Int(int64(lo)), nil
-			}
+		if lo < len(vec.Items) && compare(vec.Items[lo]) == 0 {
+			return Int(int64(lo)), nil
 		}
 		return False, nil
 	}, lib)
@@ -329,9 +361,13 @@ func installFastSequences(m *Machine, lib string) {
 		return &Vector{Items: out}, nil
 	}, lib)
 
-	m.defSimple("vector-reverse!", 1, 1, func(a []Value) (Value, error) {
+	// (vector-reverse! vector [start [end]]) reverses in place and returns the
+	// vector; (srfi 133) exports the same binding, which is why the range is
+	// there.
+	m.defSimple("vector-reverse!", 1, 3, func(a []Value) (Value, error) {
 		vec := wantVector("vector-reverse!", a[0])
-		for i, j := 0, len(vec.Items)-1; i < j; i, j = i+1, j-1 {
+		start, end := optionalSliceRange("vector-reverse!", a, len(vec.Items))
+		for i, j := start, end-1; i < j; i, j = i+1, j-1 {
 			vec.Items[i], vec.Items[j] = vec.Items[j], vec.Items[i]
 		}
 		return vec, nil
@@ -440,49 +476,12 @@ func installFastSelection(m *Machine, lib string) {
 		return Int(int64(n)), nil
 	}, lib)
 
-	m.defSimple("count", 2, 2, func(a []Value) (Value, error) {
-		pred := wantProcedure("count", a[0])
-		name := builtinName(pred)
-		caller := newFastCaller(m, pred)
-		n := int64(0)
-		forEachIn("count", a[1], func(v Value) bool {
-			if caller.pred(name, v) {
-				n++
-			}
-			return true
-		})
-		return Int(n), nil
-	}, lib)
+	// count, list-index and fold-right are SRFI-1's, and are defined there and
+	// exported from this library as well, so that the two cannot disagree.
 
-	m.defSimple("any", 2, 2, func(a []Value) (Value, error) {
-		pred := wantProcedure("any", a[0])
-		name := builtinName(pred)
-		caller := newFastCaller(m, pred)
-		found := false
-		forEachIn("any", a[1], func(v Value) bool {
-			if caller.pred(name, v) {
-				found = true
-				return false
-			}
-			return true
-		})
-		return BooleanOf(found), nil
-	}, lib)
-
-	m.defSimple("every", 2, 2, func(a []Value) (Value, error) {
-		pred := wantProcedure("every", a[0])
-		name := builtinName(pred)
-		caller := newFastCaller(m, pred)
-		all := true
-		forEachIn("every", a[1], func(v Value) bool {
-			if !caller.pred(name, v) {
-				all = false
-				return false
-			}
-			return true
-		})
-		return BooleanOf(all), nil
-	}, lib)
+	// any and every live in (srfi 1), which is where their SRFI-1 semantics —
+	// the predicate's own value, one or more lists — come from; they are
+	// exported from this library too, so they are not defined twice.
 }
 
 // ---------------------------------------------------------------------------

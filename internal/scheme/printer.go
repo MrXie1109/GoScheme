@@ -296,6 +296,10 @@ func (p *printer) printRaw(sb *strings.Builder, v Value) {
 		}
 	case *Regexp:
 		fmt.Fprintf(sb, "#<regexp %s>", x.re.String())
+	case *Box:
+		sb.WriteString("#<box ")
+		p.print(sb, x.Value)
+		sb.WriteString(">")
 	default:
 		fmt.Fprintf(sb, "#<unknown %T>", v)
 	}

@@ -72,14 +72,14 @@ section of the README, and `examples/fast.scm` times itself.
 | `filter-not` | `(filter-not pred sequence)` | A list of the elements `pred` rejects. |
 | `vector-filter!` | `(vector-filter! pred vector)` | Compacts the accepted elements to the front of the vector, in place, and returns how many were kept.  The elements after that count keep their old values. |
 | `count` | `(count pred sequence)` | How many elements satisfy `pred`. |
-| `any` | `(any pred sequence)` | `#t` as soon as one element satisfies `pred`, else `#f`.  Note that it returns a boolean, not the value the predicate returned. |
-| `every` | `(every pred sequence)` | `#t` when all elements satisfy `pred`, else `#f`. |
+| `any` | `(any pred sequence-or-list ...)` | The first value the predicate returns that counts as true, or `#f`.  With more than one list it is SRFI-1's `any`, applying the predicate to one element of each; a builtin predicate is applied in Go.  This is the same binding `(srfi 1)` exports. |
+| `every` | `(every pred sequence-or-list ...)` | The last value the predicate returned when every element satisfies it, or `#f`; `#t` for an empty sequence.  Also SRFI-1's, and shared with `(srfi 1)`. |
 | `find` | `(find pred list)` | The first element accepted, or `#f`. |
 | `list-index` | `(list-index pred list)` | The index of the first element accepted, or `#f`. |
 | `delete` | `(delete x sequence [equal?])` | A list without the elements equal to `x`. |
 | `delete-duplicates` | `(delete-duplicates list [equal?])` | Keeps the first of each group of equal elements, in order.  Atoms go through a map keyed by printed form — a shortcut that is only sound for `equal?`, `eqv?` and `eq?`, the comparisons under which two atoms with different printed forms are never equal; any other comparison falls back to the linear scan that defines the procedure. |
 | `partition` | `(partition pred list)` | Returns two values: the matching elements and the rest, each in order. |
-| `vector-partition` | `(vector-partition pred vector)` | Returns two values: two new vectors, the accepted and the rejected elements. |
+| `vector-partition` | `(vector-partition pred vector)` | Returns two values: a new vector holding the accepted elements followed by the rejected ones, and how many were accepted.  This is SRFI-133's shape (`(srfi 133)` exports the same binding), and it replaced the earlier two-vector result in 3.0. |
 | `vector-index-of` | `(vector-index-of vector x [equal?])` | The index of the first element equal to `x`, or `#f`. |
 | `zip` | `(zip sequence ...)` | A list of the rows of several sequences, stopping at the shortest one. |
 | `unzip` | `(unzip rows)` | Transposes rows (the inverse of `zip`), stopping at the narrowest row. |
@@ -265,8 +265,10 @@ system's cryptographic source instead.
   arithmetic variants write into the vector they were given and return it
   (`vector-swap!` returns an unspecified value).  Everything else builds a new
   sequence.
-* `any` and `every` return booleans, not the predicate's own value, so they
-  differ from the SRFI-1 versions there.
+* `any` and `every` are SRFI-1's: they return the predicate's own value (the
+  last one for `every`) rather than a boolean, and they accept several lists.
+  A predicate written in Scheme is called once per element, so only a builtin
+  one keeps the loop in Go.
 * The names avoid the R7RS-small ones, so importing `(goscheme fast)` together
   with `(scheme base)` or `(scheme char)` never clashes.
 * Pure Scheme data is not synchronized in this implementation; the randomness
@@ -292,9 +294,9 @@ system's cryptographic source instead.
 ;; sort-by computes its key once per element.
 (write (sort-by string-length '("ccc" "a" "bb")))  ; => ("a" "bb" "ccc")
 
-;; The two values of a partition.
+;; The two values of a partition: the reordered vector and the count.
 (call-with-values (lambda () (vector-partition even? #(1 2 3 4)))
-  (lambda (yes no) (write yes) (write no)))   ; => #(2 4)#(1 3)
+  (lambda (vec kept) (write vec) (write kept)))   ; => #(2 4 1 3)2
 
 ;; Number theory, strings and hashing.
 (write (factor 1234567890))  ; => (2 3 3 5 3607 3803)

@@ -77,6 +77,10 @@ var extensionSuites = []string{
 	"goscheme-data-tests.scm",
 	"goscheme-match-tests.scm",
 	"goscheme-fast-tests.scm",
+	"srfi-1-tests.scm",
+	"srfi-small-tests.scm",
+	"srfi-133-tests.scm",
+	"srfi-128-tests.scm",
 }
 
 func TestExtensionSuites(t *testing.T) {
