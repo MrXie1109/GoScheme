@@ -97,7 +97,28 @@ func (m *Machine) evalStep() {
 						return
 					}
 				}
-				// A variable binding shadows any syntactic keyword.
+				// A variable binding shadows any syntactic keyword.  The
+				// operator's value is in hand, so the application can start
+				// from it: evaluating the symbol again would repeat the whole
+				// environment search, which is the most expensive thing a call
+				// does.
+				if _, un := v.(unassigned); un {
+					// Evaluating the symbol would say the same thing; keep the
+					// message identical now that we skip that step.
+					m.Raise(NewError("variable used before initialization", s))
+					return
+				}
+				if p, ok := x.Cdr.(*Pair); ok {
+					m.stack = append(m.stack, &fAppArgs{op: v, rest: p.Cdr, env: env})
+					m.Eval(p.Car, env)
+					return
+				}
+				if _, isNil := x.Cdr.(Empty); isNil {
+					m.apply(v, nil)
+					return
+				}
+				m.raiseErrorf("improper argument list")
+				return
 			} else if fn, isSpecial := specialForms[s.Name]; isSpecial {
 				fn(m, expr, env)
 				return
