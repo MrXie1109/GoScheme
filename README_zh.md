@@ -289,7 +289,7 @@ Makefile                 构建、测试与打包目标
 `(scheme lazy)` `(scheme load)` `(scheme process-context)` `(scheme read)`
 `(scheme repl)` `(scheme time)` `(scheme write)` `(scheme r5rs)`
 
-外加扩展库 `(goscheme hash-table)`、`(goscheme channel)` 与 `(goscheme process)`。
+外加扩展库 `(goscheme hash-table)`、`(goscheme channel)`、`(goscheme fast)` 与 `(goscheme process)`。
 
 ### 从文件加载库
 
@@ -443,6 +443,21 @@ $ goscheme -e '(let loop ((i 0)) (if (= i 2000000) i (loop (+ i 1))))'
 
 ### 扩展
 
+* `(goscheme fast)` —— 把 Scheme 干得慢的活交给 Go。排序（`sort`、
+  `vector-sort`、`sort!`、`vector-binary-search`）、序列（`iota`、
+  `vector-reverse`、`vector-reverse!`、`vector-swap!`）、筛选（`filter`、
+  `vector-filter!`、`count`、`any`、`every`）、聚合（`sum`、`product`、
+  `min-of`、`max-of`、`vector-dot`）、字符串（`string-split`、`string-join`、
+  `string-contains`、`string-index`、`string-prefix?`、`string-suffix?`、
+  `string-trim`、`string-trim-left`、`string-trim-right`、`string-replace`、
+  `string-pad-left`、`string-pad-right`）与字节（`sha256`、`random-bytes`、
+  `hex-encode`、`hex-decode`、`base64-encode`、`base64-decode`）。它们都是
+  R7RS 风格的——`sort` 可选 `less?`，`string-split` 可选分隔符——但循环、索引
+  与复制都在 Go 里发生，而且当 `less?` 或谓词本身是内建过程（`<`、`string<?`、
+  `even?`、`string?` 等）时，**不会**回调进 Scheme。你自己写的谓词仍要为每个元素
+  付一次调用，那种情况下这个库提供的是方便而不是速度。实测数字见
+  [性能](#性能)；`examples/fast.scm` 会自己计时，然后展示库的其余部分。
+
 * `(goscheme sync)` —— 并发故事的另一半：`make-mutex`、`mutex-lock!`、
   `mutex-unlock!`、`with-mutex`（无论 body 怎样离开都会释放锁）、
   `make-waitgroup` 与 `waitgroup-add!`/`-done!`/`-wait`、`make-once` 与
@@ -560,6 +575,19 @@ $ goscheme -e '(let loop ((i 0)) (if (= i 2000000) i (loop (+ i 1))))'
 让机器跑得快主要是三件事：一次调用不再把操作数复制成切片（帧改为沿参数表行走，
 已收集的值放在帧内的小数组里）；小整数做缓存，比较不再经过 `big.Rat`；环境帧的前
 四个绑定放在自己的字段里，不再为此分配 map。三者合起来约为 2.1.1 的两倍。
+
+把慢活搬进 Go 的就是 `(goscheme fast)`。用 `go test ./internal/scheme -bench
+BenchmarkFast` 测得，每一对的输入用同样方式构造，因此差异只来自被比较的那一步：
+
+| 任务 | Scheme 写法 | `(goscheme fast)` |
+|---|---|---|
+| 归并排序 1500 个数 | ~58 ms | ~0.9 ms |
+| 用 `even?` 筛选 2 万个数 | ~40 ms | ~2.3 ms |
+| 构造 2 万元素列表 | ~32 ms | ~1.7 ms |
+| 在 2 万字符里找 `"xxxy"` | ~56 ms | ~1.4 ms |
+
+例外是用 Scheme 写的谓词：`filter` 必须逐元素调用它，开销与手写循环相当，所以只有
+内建谓词能胜任时这套接口才划算。
 
 帧只在**确实存在多个解释器线程**时才加锁，因此常见的单线程场景没有锁开销；
 `(go ...)` 与 HTTP handler 会在启动前把计数加上，共享环境照旧受锁保护。

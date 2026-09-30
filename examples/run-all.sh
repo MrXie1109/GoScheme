@@ -55,6 +55,7 @@ run regexp.scm         "$here/regexp.scm"
 run time.scm           "$here/time.scm"
 run fs.scm             "$here/fs.scm"
 run match.scm          "$here/match.scm"
+run fast.scm           "$here/fast.scm"
 run libraries/main.scm "$here/libraries/main.scm"
 
 echo

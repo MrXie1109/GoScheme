@@ -315,8 +315,8 @@ combination of `#b #o #d #x` and `#e #i` prefixes.
 `(scheme lazy)` `(scheme load)` `(scheme process-context)` `(scheme read)`
 `(scheme repl)` `(scheme time)` `(scheme write)` `(scheme r5rs)`
 
-plus the extension libraries `(goscheme hash-table)`, `(goscheme channel)`
-and `(goscheme process)`.
+plus the extension libraries `(goscheme hash-table)`, `(goscheme channel)`,
+`(goscheme fast)` and `(goscheme process)`.
 
 ### Loading libraries from files
 
@@ -495,6 +495,24 @@ communicating.
 
 ### Extensions
 
+* `(goscheme fast)` — the jobs Scheme is slow at, done in Go.  Ordering
+  (`sort`, `vector-sort`, `sort!`, `vector-binary-search`), sequences (`iota`,
+  `vector-reverse`, `vector-reverse!`, `vector-swap!`), selection (`filter`,
+  `vector-filter!`, `count`, `any`, `every`), aggregates (`sum`, `product`,
+  `min-of`, `max-of`, `vector-dot`), strings (`string-split`, `string-join`,
+  `string-contains`, `string-index`, `string-prefix?`, `string-suffix?`,
+  `string-trim`, `string-trim-left`, `string-trim-right`, `string-replace`,
+  `string-pad-left`, `string-pad-right`) and bytes (`sha256`, `random-bytes`,
+  `hex-encode`, `hex-decode`, `base64-encode`, `base64-decode`).  They are
+  R7RS-shaped — `sort` takes an optional `less?`, `string-split` an optional
+  separator — but the loop, the indexing and the copying happen in Go, and a
+  `less?` or predicate that is a builtin (`<`, `string<?`, `even?`, `string?`,
+  ...) is applied without a call back into Scheme.  A predicate you write
+  yourself still pays one call per element, so there the library is convenience
+  rather than speed.  Measured numbers are in
+  [Performance](#performance); `examples/fast.scm` times itself and then shows
+  the rest of the library.
+
 * `(goscheme sync)` — the other half of the concurrency story: `make-mutex`,
   `mutex-lock!`, `mutex-unlock!`, `with-mutex` (which releases the lock however
   the body leaves), `make-waitgroup` with `waitgroup-add!`/`-done!`/`-wait`,
@@ -630,6 +648,21 @@ in a small array), small exact integers are cached and compared without going
 through `big.Rat`, and an environment frame holds its first four bindings in its
 own fields instead of allocating a map.  Together they are about twice the speed
 of 2.1.1.
+
+`(goscheme fast)` is where the slow jobs were moved to Go.  Measured with `go
+test ./internal/scheme -bench BenchmarkFast`, each pair building its input the
+same way so that only the operation under test differs:
+
+| Job | In Scheme | `(goscheme fast)` |
+|---|---|---|
+| merge sort 1,500 numbers | ~58 ms | ~0.9 ms |
+| filter 20,000 numbers with `even?` | ~40 ms | ~2.3 ms |
+| build a 20,000 element list | ~32 ms | ~1.7 ms |
+| find `"xxxy"` in 20,000 characters | ~56 ms | ~1.4 ms |
+
+A predicate written in Scheme is the exception: `filter` has to call it once
+per element, which costs about what the Scheme loop cost, so the library's
+predicates are worth using only when a builtin one will do.
 
 A frame takes its lock only while more than one interpreter thread is running,
 which is what makes the common single-threaded case free; `(go ...)` and the

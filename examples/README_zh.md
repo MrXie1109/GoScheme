@@ -48,6 +48,7 @@ $ GOSCHEME=./dist/goscheme-linux-amd64 ./examples/run-all.sh
 | `time.scm` | `(goscheme time)`：睡眠与测量、格式化、解析，以及某个时刻的 UTC 分解。 |
 | `fs.scm` | `(goscheme fs)`：建一棵临时目录树、glob、遍历、路径辅助，然后清理干净。 |
 | `match.scm` | `(goscheme match)`：用模式写的小算术求值器，外加解构与 guard。 |
+| `fast.scm` | `(goscheme fast)`：同一个排序/过滤/查找，Scheme 版与 Go 版各自计时，外加库的其余部分。 |
 | `embed/main.go` | 把解释器当库用的 Go 程序 —— `go run ./examples/embed`。 |
 
 ## 从文件加载库

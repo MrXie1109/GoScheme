@@ -49,6 +49,7 @@ $ GOSCHEME=./dist/goscheme-linux-amd64 ./examples/run-all.sh
 | `time.scm` | `(goscheme time)`: sleeping and measuring it, formatting, parsing, and the UTC parts of an instant. |
 | `fs.scm` | `(goscheme fs)`: building a temporary tree, globbing it, walking it, the path helpers, and removing it again. |
 | `match.scm` | `(goscheme match)`: a small arithmetic evaluator written as patterns, plus destructuring and guards. |
+| `fast.scm` | `(goscheme fast)`: the same sort, filter and search written in Scheme next to the Go versions, timed, plus the rest of the library. |
 | `embed/main.go` | A Go program using the interpreter as a library — `go run ./examples/embed`. |
 
 ## Libraries from files
