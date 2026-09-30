@@ -275,6 +275,7 @@ scripts/build-dist.sh     `make dist` 使用的交叉编译脚本
 docs/extensions/         每个 (goscheme ...) 库一页接口参考
 docs/srfi/               每个 (srfi N) 库一页接口参考
 docs/ffi-design.md       (goscheme ffi) 的设计说明
+docs/development.md      本地构建、测试与交叉编译
 Makefile                 构建、测试与打包目标
 ```
 

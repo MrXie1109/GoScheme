@@ -299,6 +299,7 @@ scripts/build-dist.sh     cross-compilation script used by `make dist`
 docs/extensions/          one reference page per (goscheme ...) library
 docs/srfi/                one reference page per (srfi N) library
 docs/ffi-design.md        the design notes behind (goscheme ffi)
+docs/development.md       building, testing and cross-compiling locally
 Makefile                  build, test and dist targets
 ```
 
