@@ -52,11 +52,41 @@
 (test #f (call-with-values (lambda () (chan-recv! closed)) (lambda (v ok) ok)))
 (test #t (call-with-values (lambda () (chan-recv! closed)) (lambda (v ok) (eq? v (if #f #f)))))
 (test 'error (guard (e (#t 'error)) (chan-send! closed 1)))
+(test #f (chan-open? closed))
+;; The old spelling is the same binding.
+(test #t (eq? chan-open? channel-open?))
 (test #f (channel-open? closed))
 ;; Closing twice is a no-op.
 (test 'ok (begin (chan-close! closed) 'ok))
 ;; A closed channel is always ready for select.
 (test 'closed (select (chan-recv! closed) => (lambda (v) 'closed)))
+
+;; A nil channel is the opposite: never ready, which is how a clause is
+;; disabled — (set! ch (nil-channel)) is Go's ch = nil.
+(test #t (channel? (nil-channel)))
+(test #t (nil-channel? (nil-channel)))
+(test #f (nil-channel? (make-channel)))
+(test #f (nil-channel? 5))
+;; It is not closed, so chan-open? still says #t; what it is not is ready.
+(test #t (chan-open? (nil-channel)))
+(test 'error (guard (e (#t 'error)) (chan-close! (nil-channel))))
+(test 'timeout (select (chan-recv! (nil-channel)) => (lambda (v) 'got)
+                       (after 20) => (lambda () 'timeout)))
+(test 'timeout (select (chan-send! (nil-channel) 1) => (lambda () 'sent)
+                       (after 20) => (lambda () 'timeout)))
+(test 'idle (select (chan-recv! (nil-channel)) => (lambda (v) 'got)
+                    (else) => (lambda () 'idle)))
+
+;; The whole point: a closed clause keeps winning, and assigning a nil channel
+;; to it takes it out of the race.
+(define retirable (make-channel 1))
+(chan-send! retirable 'x)
+(chan-close! retirable)
+(test 'closed (select (chan-recv! retirable) => (lambda (v) 'closed)
+                      (else) => (lambda () 'idle)))
+(set! retirable (nil-channel))
+(test 'idle (select (chan-recv! retirable) => (lambda (v) 'got)
+                    (else) => (lambda () 'idle)))
 
 (test-end)
 

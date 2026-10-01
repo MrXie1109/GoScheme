@@ -405,18 +405,39 @@ func installConcurrency(m *Machine) {
 		return &Channel{Name: "channel", capacity: capacity, ch: make(chan Value, capacity)}, nil
 	}, libChannel)
 
+	// (nil-channel) is the Scheme spelling of Go's nil channel: it is never
+	// ready, so sending and receiving block for ever and select never picks
+	// it.  That is how a program disables one of its own select clauses:
+	//
+	//   (set! ch (nil-channel))
+	//
+	// A closed channel, by contrast, is *always* ready — a receive takes the
+	// zero value and a send raises — which is exactly why the nil channel is
+	// the thing to assign.
+	m.defSimple("nil-channel", 0, 0, func(a []Value) (Value, error) {
+		return &Channel{Name: "nil channel"}, nil
+	}, libChannel)
+
+	m.defSimple("nil-channel?", 1, 1, func(a []Value) (Value, error) {
+		c, ok := a[0].(*Channel)
+		return BooleanOf(ok && c.ch == nil), nil
+	}, libChannel)
+
 	m.defSimple("channel?", 1, 1, func(a []Value) (Value, error) {
 		_, ok := a[0].(*Channel)
 		return BooleanOf(ok), nil
 	}, libChannel)
 
-	m.defSimple("channel-open?", 1, 1, func(a []Value) (Value, error) {
+	// The operations on a channel are chan-something, so this is chan-open?;
+	// the other name is what 2.5.0 shipped and stays as an alias until 3.0.0.
+	chanOpen := m.defSimple("chan-open?", 1, 1, func(a []Value) (Value, error) {
 		c, ok := a[0].(*Channel)
 		if !ok {
-			panic(errf("channel-open?", "expected a channel but got %s", WriteToString(a[0])))
+			panic(errf("chan-open?", "expected a channel but got %s", WriteToString(a[0])))
 		}
 		return BooleanOf(!c.isClosed()), nil
 	}, libChannel)
+	m.defValue("channel-open?", chanOpen, libChannel)
 
 	m.def("chan-send!", 2, 2, func(m *Machine, a []Value) {
 		c, ok := a[0].(*Channel)
@@ -452,6 +473,11 @@ func installConcurrency(m *Machine) {
 		c, ok := a[0].(*Channel)
 		if !ok {
 			panic(errf("chan-close!", "expected a channel but got %s", WriteToString(a[0])))
+		}
+		// Closing a nil channel would be a Go panic ("close of nil channel"),
+		// so it is an ordinary condition instead.
+		if c.ch == nil {
+			panic(errf("chan-close!", "a nil channel cannot be closed"))
 		}
 		// Closing an already closed channel is a no-op, so that the
 		// "close when done" pattern composes with guard.

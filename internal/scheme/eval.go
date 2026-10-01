@@ -1159,7 +1159,20 @@ func evalDo(m *Machine, form Value, env *Env) {
 	}
 	// (if test (begin result...) (begin commands... (loop step...)))
 	recur := Cons(loopName, listFromSlice(steps))
-	tail := append(append([]Value{}, commands...), recur)
+	// (continue) raises a private token; this guard recognises it by identity
+	// and falls through to the step expressions.  It compares with the eq?
+	// primitive itself rather than the name, so a body that rebinds eq? cannot
+	// break the loop, and any other condition is re-raised by guard because no
+	// clause matches it.
+	var tail []Value
+	if len(commands) > 0 {
+		eq := builtinProc(m, "eq?")
+		clause := List(List(eq, Intern("e"), continueToken)) // ((eq? e token))
+		spec := List(Intern("e"), clause)                    // (e ((eq? e token)))
+		tail = append(tail, Cons(Intern("guard"),
+			Cons(spec, listFromSlice(commands))))
+	}
+	tail = append(tail, recur)
 	ifExpr := List(Intern("if"), testClause.Car,
 		Cons(Intern("begin"), result),
 		Cons(Intern("begin"), listFromSlice(tail)))

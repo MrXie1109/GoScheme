@@ -602,8 +602,14 @@ SRFI 库则在 [`docs/srfi/`](docs/srfi/README.md)，都列出全部导出过程
   [`docs/manual/`](docs/manual/README.md) 是把它们串起来的教程。
 
 * `(goscheme channel)` —— `make-channel`、`chan-send!`、`chan-recv!`、
-  `chan-close!`、`channel?`、`channel-open?`、`go`、`select`、`go-wait`
-  （见上文[并发](#并发go-风味)）。
+  `chan-close!`、`chan-open?`、`channel?`、`nil-channel`、`nil-channel?`、
+  `go`、`select`、`go-wait`（见上文[并发](#并发go-风味)）。`nil-channel`
+  就是 Go 的 nil channel：永远不就绪，所以 `(set! ch (nil-channel))` 能把一个
+  子句永久移出 `select` 的竞争——关闭它做不到这点，因为**已关闭**的通道永远就绪。
+* `(continue)` —— 在 `do` 的 body 里放弃 body 的剩余部分，直接进入该循环的步进
+  表达式（步进照常执行），即 Go 的 `continue`。与 Go 不同，它是动态的而非词法的，
+  因此 body 调用的过程里也能用；实现上它抛出一个私有条件，所以 body 里"什么都抓"
+  的 `guard` 会拦截住它。在循环外使用它是一个普通的、可捕获的条件。
 * `(goscheme process)` —— `(system command)` 把命令行交给系统命令处理器执行
   （Unix 为 `/bin/sh -c`，Windows 为 `cmd /c`）；`(system* program arg ...)`
   直接执行程序、不经 shell。两者都返回精确整数形式的退出状态：正常退出返回退出码，
@@ -709,8 +715,8 @@ go test -short ./...                          # 跳过参考套件
 
 ```
 == 1227 passed, 0 failed     参考 R7RS 套件（test/scheme/r7rs-tests.scm）
-==  235 passed, 0 failed     GoScheme 回归套件（test/scheme/goscheme-tests.scm）
-==   70 passed, 0 failed     并发套件（test/scheme/goscheme-concurrency-tests.scm）
+==  244 passed, 0 failed     GoScheme 回归套件（test/scheme/goscheme-tests.scm）
+==   83 passed, 0 failed     并发套件（test/scheme/goscheme-concurrency-tests.scm）
 ==   42 passed, 0 failed     网络套件（test/scheme/goscheme-network-tests.scm）
 ==   35 passed, 0 failed     进程与文件系统套件（test/scheme/goscheme-process-tests.scm）
 ==   86 passed, 0 failed     数据套件（test/scheme/goscheme-data-tests.scm）
@@ -721,7 +727,7 @@ go test -short ./...                          # 跳过参考套件
 ==   73 passed, 0 failed     SRFI-133 套件（test/scheme/srfi-133-tests.scm）
 ==   94 passed, 0 failed     SRFI-128 套件（test/scheme/srfi-128-tests.scm）
 ```
-合计 2589 条断言；goscheme 套件在 cgo 构建下是 235 条而不是 220 条，因为 FFI
+合计 2611 条断言；goscheme 套件在 cgo 构建下是 244 条而不是 229 条，因为 FFI
 那一段只在有 FFI 的构建里运行。
 
 并发套件同样通过 Go 竞态检测器（`go test -race ./...`）。

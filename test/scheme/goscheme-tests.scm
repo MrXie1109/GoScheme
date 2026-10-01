@@ -689,6 +689,49 @@
       (test #t (guard (e (#t (string? (error-object-message e))))
                  (load-shared-library "libm.so.6")))))
 
+
+;; ------------------------------------------------------------- (continue)
+(test-begin "Continue")
+
+;; (continue) abandons the rest of the body of the innermost do loop and goes
+;; on with the step expressions, which still run.
+(define seen '())
+(test '(0 2 4) (do ((i 0 (+ i 1))) ((= i 5) (reverse seen))
+                 (if (odd? i) (continue))
+                 (set! seen (cons i seen))))
+(test '(0 2 3) (let ((acc '()))
+                 (do ((i 0 (+ i 1))) ((= i 4) (reverse acc))
+                   (when (= i 1) (continue))
+                   (set! acc (cons i acc)))))
+(test '(0 3) (let ((acc '()))
+               (do ((i 0 (+ i 1))) ((= i 4) (reverse acc))
+                 (cond ((= i 1) (continue))
+                       ((= i 2) (continue))
+                       (else #f))
+                 (set! acc (cons i acc)))))
+;; It works from a procedure the body calls, and from inside a macro.
+(define (skip-even n) (if (even? n) (continue) #f))
+(test '(1 3 5) (let ((acc '()))
+                 (do ((i 0 (+ i 1))) ((= i 6) (reverse acc))
+                   (skip-even i)
+                   (set! acc (cons i acc)))))
+;; The step expressions still run when the body is abandoned.
+(test 3 (do ((i 0 (+ i 1)) (n 0 (+ n 1))) ((= i 3) n) (if (even? i) (continue))))
+;; An inner loop's continue belongs to the inner loop.
+(test '((0 2) (0 2)) (do ((i 0 (+ i 1)) (out '() (cons (do ((j 0 (+ j 1)) (c '()))
+                                                          ((= j 3) (reverse c))
+                                                        (if (= j 1) (continue))
+                                                        (set! c (cons j c)))
+                                                      out)))
+                         ((= i 2) (reverse out))))
+;; A real error is not swallowed by the loop.
+(test 'caught (guard (e (#t 'caught))
+                (do ((i 0 (+ i 1))) ((= i 1) 'done) (error "boom"))))
+;; Outside any loop it is an ordinary, catchable condition.
+(test 'caught (guard (e (#t 'caught)) (continue)))
+(test 'arity (guard (e (#t 'arity)) (continue 1)))
+
+(test-end)
 (test-end)
 
 (test-end)

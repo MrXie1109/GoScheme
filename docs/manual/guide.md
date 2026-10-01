@@ -38,6 +38,14 @@ R7RS 6.14, so `(cdr (command-line))` is exactly the argument list.
 (cond ((assv 2 '((1 . a) (2 . b))) => cdr) (else 'none))   ; => b
 (case 3 ((1 2) 'low) ((3 4) 'high) (else 'other))          ; => high
 (do ((i 0 (+ i 1)) (acc '() (cons i acc))) ((= i 3) acc))  ; => (2 1 0)
+
+;; (continue) is Go's: it abandons the rest of a do body and goes on with the
+;; step expressions, which still run.  A procedure the body calls may use it
+;; too, because it is dynamic rather than lexical.
+(define kept '())
+(do ((i 0 (+ i 1))) ((= i 5) (reverse kept))
+  (if (odd? i) (continue))
+  (set! kept (cons i kept)))                 ; => (0 2 4)
 ```
 
 Recursion in tail position does not grow the stack, and `call/cc` is
@@ -181,6 +189,17 @@ body leaves:
 (waitgroup-add! wg 1)
 (go (with-mutex some-mutex (chan-send! results 'done)) (waitgroup-done! wg))
 (waitgroup-wait wg)
+```
+
+A *closed* channel is always ready, so a clause that reads one keeps winning; a
+*nil* channel is never ready, so assigning one is how a clause is retired:
+
+```scheme
+;; (set! ch (nil-channel)) is Go's ch = nil: the clause can never be chosen
+;; again, while close would make it win immediately and for ever.
+(set! ch (nil-channel))
+(select (chan-recv! ch) => (lambda (v) 'got)
+        (else) => (lambda () 'idle))     ; => idle
 ```
 
 `go-wait` waits for every thread started so far, so leave long-lived servers

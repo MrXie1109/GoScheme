@@ -676,8 +676,17 @@ Beyond R7RS-small the interpreter also provides:
   together.
 
 * `(goscheme channel)` — `make-channel`, `chan-send!`, `chan-recv!`,
-  `chan-close!`, `channel?`, `channel-open?`, `go`, `select` and `go-wait`
-  (see [Concurrency](#concurrency-go-flavour) above).
+  `chan-close!`, `chan-open?`, `channel?`, `nil-channel`, `nil-channel?`,
+  `go`, `select` and `go-wait` (see [Concurrency](#concurrency-go-flavour)
+  above).  `nil-channel` is Go's nil channel: never ready, so
+  `(set! ch (nil-channel))` takes a clause out of a `select` for good, which
+  closing it would not — a closed channel is always ready.
+* `(continue)` — inside a `do` body, abandons the rest of the body and goes on
+  with the loop's step expressions, which still run: Go's `continue`.  Unlike
+  Go's it is dynamic rather than lexical, so a procedure the body calls may use
+  it; it is implemented as a raise of a private condition, so a `guard` in the
+  body that catches everything can intercept it.  Using it outside a loop is an
+  ordinary, catchable condition.
 * `(goscheme process)` — `(system command)` runs a command line through the
   system's command processor (`/bin/sh -c`, or `cmd /c` on Windows) and
   `(system* program arg ...)` runs a program directly, both returning the exit
@@ -804,8 +813,8 @@ go test -short ./...                          # skip the reference suite
 
 ```
 == 1227 passed, 0 failed     reference R7RS suite (test/scheme/r7rs-tests.scm)
-==  235 passed, 0 failed     GoScheme regression suite (test/scheme/goscheme-tests.scm)
-==   70 passed, 0 failed     concurrency suite (test/scheme/goscheme-concurrency-tests.scm)
+==  244 passed, 0 failed     GoScheme regression suite (test/scheme/goscheme-tests.scm)
+==   83 passed, 0 failed     concurrency suite (test/scheme/goscheme-concurrency-tests.scm)
 ==   42 passed, 0 failed     network suite (test/scheme/goscheme-network-tests.scm)
 ==   35 passed, 0 failed     process and fs suite (test/scheme/goscheme-process-tests.scm)
 ==   86 passed, 0 failed     data suite (test/scheme/goscheme-data-tests.scm)
@@ -816,8 +825,8 @@ go test -short ./...                          # skip the reference suite
 ==   73 passed, 0 failed     SRFI-133 suite (test/scheme/srfi-133-tests.scm)
 ==   94 passed, 0 failed     SRFI-128 suite (test/scheme/srfi-128-tests.scm)
 ```
-That is 2589 assertions in total, and the count for the goscheme suite is 235
-with cgo rather than 220 without it, because the FFI section only runs when the
+That is 2611 assertions in total, and the count for the goscheme suite is 244
+with cgo rather than 229 without it, because the FFI section only runs when the
 build has it.
 
 The concurrency suite also passes under the Go race detector

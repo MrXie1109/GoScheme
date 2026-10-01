@@ -4,7 +4,24 @@ package scheme
 
 // installControl provides the procedure-calling procedures: apply, map,
 // continuations, multiple values, exceptions and promises.
+// continueToken is the condition (continue) raises; a do loop installs a guard
+// that recognises it by identity, so the token never has to be named in
+// Scheme.  It is an error object so that using (continue) outside a loop
+// reports something readable rather than an opaque value.
+var continueToken = NewError("continue: not inside a do loop")
+
+// installContinue registers (continue), which abandons the rest of the body of
+// the innermost do loop and goes on with its step expressions — Go's continue,
+// except that it is dynamic: a procedure called by the body may use it too.
+func installContinue(m *Machine) {
+	m.def("continue", 0, 0, func(m *Machine, a []Value) {
+		m.Raise(continueToken)
+	})
+}
+
 func installControl(m *Machine) {
+	installContinue(m)
+
 	m.def("apply", 2, -1, func(m *Machine, a []Value) {
 		proc := wantProcedure("apply", a[0])
 		flat := append([]Value{}, a[1:len(a)-1]...)

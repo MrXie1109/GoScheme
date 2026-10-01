@@ -37,6 +37,13 @@ R7RS 6.14 的有意偏离，因此 `(cdr (command-line))` 就正好是参数表�
 (cond ((assv 2 '((1 . a) (2 . b))) => cdr) (else 'none))   ; => b
 (case 3 ((1 2) 'low) ((3 4) 'high) (else 'other))          ; => high
 (do ((i 0 (+ i 1)) (acc '() (cons i acc))) ((= i 3) acc))  ; => (2 1 0)
+
+;; (continue) 就是 Go 的那个：放弃 do body 的剩余部分，直接进入步进表达式
+;; （步进照常执行）。它是动态的而不是词法的，所以 body 调用的过程里也能用。
+(define kept '())
+(do ((i 0 (+ i 1))) ((= i 5) (reverse kept))
+  (if (odd? i) (continue))
+  (set! kept (cons i kept)))                 ; => (0 2 4)
 ```
 
 尾位置的递归不会增长栈；`call/cc` 是多发射的：续延返回之后还能再被调用一次。
@@ -173,6 +180,17 @@ Scheme 写起来慢的整数活由 `(goscheme fast)` 补上：`expt-mod`、`isqr
 (waitgroup-add! wg 1)
 (go (with-mutex some-mutex (chan-send! results 'done)) (waitgroup-done! wg))
 (waitgroup-wait wg)
+```
+
+**已关闭**的通道永远就绪，所以读它的子句会一直抢到；**nil** 通道则永远不就绪，
+因此把变量赋成 nil 通道才是"退役"一个子句的办法：
+
+```scheme
+;; (set! ch (nil-channel)) 就是 Go 的 ch = nil：这个子句再也不会被选中，
+;; 而 close 会让它立刻并永远获胜。
+(set! ch (nil-channel))
+(select (chan-recv! ch) => (lambda (v) 'got)
+        (else) => (lambda () 'idle))     ; => idle
 ```
 
 `go-wait` 等待此前启动的每一个线程，所以长期运行的服务线程要留到最后。有两种误用
