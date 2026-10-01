@@ -1,0 +1,50 @@
+# SPDX-License-Identifier: MIT
+#
+# The test steps every platform job runs: the Go tests (which drive every
+# Scheme suite), a build through the command line driver, the same suites again
+# through that binary, and the examples.  It is an action rather than a copy of
+# the steps because the Intel macOS job needs them too and is a job of its own
+# (see ci.yml for why).
+name: suite
+description: Run the Go tests, the Scheme suites and the examples
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v5
+      with:
+        go-version: '1.22'
+
+    - name: go test
+      shell: bash
+      run: go test ./...
+
+    - name: build
+      shell: bash
+      run: go build -trimpath -ldflags "-s -w" -o goscheme ./cmd/goscheme
+
+    - name: suites
+      shell: bash
+      run: |
+        set -e
+        for s in r7rs goscheme concurrency network process data match \
+                 fast srfi-1 srfi-small srfi-133 srfi-128; do
+          printf '%-12s ' "$s"
+          ./goscheme "test/scheme/run-$s.scm" | tail -1
+        done
+
+    - name: examples
+      shell: bash
+      run: |
+        set -e
+        if [ "$RUNNER_OS" = "Windows" ]; then
+          # The process and pipe examples need a POSIX shell; the runner
+          # script does too, so the portable examples are run one by one.
+          for f in numbers recursion hash-tables concurrency script-args json regexp time fs match tcp-server http-server; do
+            printf '%-16s ' "$f"
+            ./goscheme "examples/$f.scm" > /dev/null && echo ok
+          done
+          ./goscheme examples/libraries/main.scm > /dev/null && echo "libraries        ok"
+        else
+          GOSCHEME=./goscheme ./examples/run-all.sh
+        fi

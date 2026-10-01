@@ -11,6 +11,12 @@ the GitHub release:
 * if a release for the tag already exists, the assets are re-uploaded with
   `--clobber` instead, so re-running a tag rebuilds the artifacts in place.
 
+The release job waits for the `test` matrix (Linux amd64/arm64, Apple silicon
+macOS and Windows) and not for the Intel macOS job, which is separate because
+its runner is capacity constrained and a queued job would hold a release
+hostage.  The Intel binary is still built, attached and covered by the suites
+whenever that runner appears.
+
 So the release process is: write the notes here if the change deserves prose,
 commit, then `git tag -a vX.Y.Z && git push origin vX.Y.Z`.  Nothing is built
 or uploaded by hand, and no cross toolchain is needed anywhere: the test matrix
