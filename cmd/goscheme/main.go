@@ -19,6 +19,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -165,7 +166,7 @@ func commandLine(script string, args []string) []string {
 	return append(out, args...)
 }
 
-// runBundled runs the script bound into this executable.  There is no separate
+// runBundled runs the program bound into this executable.  There is no separate
 // script name — the program *is* the script — so (command-line) reports the
 // program as it was invoked, followed by the arguments, exactly as a compiled
 // program would.
@@ -176,16 +177,33 @@ func runBundled(exe string, info *bundleInfo) int {
 		prog = os.Args[0]
 	}
 	m.Args = commandLine(prog, os.Args[1:])
+	// Files shipped next to the executable are found by include and load.
+	m.AddLoadPath(filepath.Dir(exe))
 
-	r := scheme.NewStringReader(string(info.Script))
+	return runPayload(m, info)
+}
+
+// runPayload runs what a bundle carries: a compiled program, or the source of
+// a script the build machine could not compile.
+func runPayload(m *scheme.Machine, info *bundleInfo) int {
+	if info.Kind == kindBytecode {
+		p, err := scheme.ReadBytecode(bytes.NewReader(info.Payload))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", info.Name, err)
+			return 1
+		}
+		if _, err := m.RunProgram(p, m.Global); err != nil {
+			return reportError(err)
+		}
+		return 0
+	}
+	r := scheme.NewStringReader(string(info.Payload))
 	r.Source = info.Name
 	forms, err := r.ReadAll()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", info.Name, err)
 		return 1
 	}
-	// Files shipped next to the executable are found by include and load.
-	m.AddLoadPath(filepath.Dir(exe))
 	if _, err := m.RunForms(forms, m.Global); err != nil {
 		return reportError(err)
 	}

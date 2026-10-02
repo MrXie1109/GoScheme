@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -10,31 +11,53 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/MrXie1109/GoScheme/internal/scheme"
 )
 
-// A bundled executable is an interpreter binary with a script appended to it:
+// A bundled executable is an interpreter binary with a program appended to it:
 //
-//	[ interpreter ][ script ][ name ][ magic ][ trailer length ]
+//	[ interpreter ][ payload ][ name ][ magic ][ trailer length ]
 //
 // Appending data to an ELF, PE or Mach-O image is harmless — the loader reads
 // the headers it knows and ignores the tail — so the interpreter keeps working
 // normally, and at startup it checks its own tail for the magic.  That makes a
 // script into a single self-contained executable without needing a compiler,
 // or anything else, on the machine that runs it.
+//
+// The payload is bytecode when the build machine could compile the script, so
+// starting the program does not read source at all, and the script itself when
+// it could not.  Which one it is comes from the magic: bundles written before
+// there was bytecode to put in them carry the script and the older magic, and
+// are still read.
 const (
-	bundleMagic = "GOSCHEME1" // 9 bytes
+	// bundleMagicCode marks a bundle whose payload is a compiled program.
+	bundleMagicCode = "GOSCHEME2" // 9 bytes
+	// bundleMagicSource marks a bundle whose payload is the script text.
+	bundleMagicSource = "GOSCHEME1" // 9 bytes
 	// bundleTail is the fixed part of the trailer: the magic and the length.
-	bundleTail = int64(len(bundleMagic) + 8)
-	// bundleHeader is the fixed part in front of the script and its name.
-	bundleHeader = int64(16)
+	bundleTail = int64(len(bundleMagicCode) + 8)
+	// bundleHead is the fixed part in front of the payload and its name: the
+	// payload length, the name length, and which kind of payload this is.
+	bundleHead = int64(17)
+	// bundleHeadV1 is the head of a script-only bundle, which has no kind.
+	bundleHeadV1 = int64(16)
+)
+
+// Payload kinds.  A payload that is not kindBytecode is source.
+const (
+	kindSource   = byte(0)
+	kindBytecode = byte(1)
 )
 
 var errNotBundled = errors.New("not a bundled executable")
 
-// bundleInfo is the script carried by a bundled executable.
+// bundleInfo is the program carried by a bundled executable.
 type bundleInfo struct {
-	Script []byte
-	Name   string
+	// Payload is bytecode when Kind is kindBytecode, and script text otherwise.
+	Payload []byte
+	Name    string
+	Kind    byte
 }
 
 // readBundle reads the bundle trailer of the executable at path.
@@ -50,7 +73,7 @@ func readBundle(path string) (*bundleInfo, error) {
 		return nil, err
 	}
 	size := st.Size()
-	if size < bundleTail+bundleHeader {
+	if size < bundleTail+bundleHeadV1 {
 		return nil, errNotBundled
 	}
 
@@ -59,11 +82,19 @@ func readBundle(path string) (*bundleInfo, error) {
 	if _, err := f.ReadAt(tail, size-bundleTail); err != nil {
 		return nil, err
 	}
-	if string(tail[:len(bundleMagic)]) != bundleMagic {
+	magic := string(tail[:len(bundleMagicCode)])
+	head := bundleHeadV1
+	kind := kindSource
+	hasKind := false
+	switch magic {
+	case bundleMagicCode:
+		head, hasKind = bundleHead, true // the kind byte is in the trailer
+	case bundleMagicSource:
+	default:
 		return nil, errNotBundled
 	}
-	trailerLen := int64(binary.BigEndian.Uint64(tail[len(bundleMagic):]))
-	if trailerLen < bundleTail+bundleHeader || trailerLen > size {
+	trailerLen := int64(binary.BigEndian.Uint64(tail[len(bundleMagicCode):]))
+	if trailerLen < bundleTail+head || trailerLen > size {
 		return nil, errNotBundled
 	}
 
@@ -71,14 +102,18 @@ func readBundle(path string) (*bundleInfo, error) {
 	if _, err := f.ReadAt(trailer, size-trailerLen); err != nil {
 		return nil, err
 	}
-	scriptLen := int64(binary.BigEndian.Uint64(trailer[0:8]))
+	payloadLen := int64(binary.BigEndian.Uint64(trailer[0:8]))
 	nameLen := int64(binary.BigEndian.Uint64(trailer[8:16]))
-	if scriptLen < 0 || nameLen < 0 || bundleHeader+scriptLen+nameLen+bundleTail != trailerLen {
+	if hasKind {
+		kind = trailer[16]
+	}
+	if payloadLen < 0 || nameLen < 0 || head+payloadLen+nameLen+bundleTail != trailerLen {
 		return nil, errNotBundled
 	}
 	info := &bundleInfo{
-		Script: trailer[16 : 16+scriptLen],
-		Name:   string(trailer[16+scriptLen : 16+scriptLen+nameLen]),
+		Payload: trailer[head : head+payloadLen],
+		Name:    string(trailer[head+payloadLen : head+payloadLen+nameLen]),
+		Kind:    kind,
 	}
 	if info.Name == "" {
 		info.Name = "script"
@@ -86,8 +121,9 @@ func readBundle(path string) (*bundleInfo, error) {
 	return info, nil
 }
 
-// writeBundle writes a copy of interpreter to out with script appended to it.
-func writeBundle(interpreter, out, name string, script []byte) error {
+// writeBundle writes a copy of interpreter to out with a program appended to
+// it.  The payload is bytecode or script text, according to kind.
+func writeBundle(interpreter, out, name string, kind byte, payload []byte) error {
 	if _, err := readBundle(interpreter); err == nil {
 		return fmt.Errorf("%s is already a bundle", interpreter)
 	}
@@ -110,22 +146,23 @@ func writeBundle(interpreter, out, name string, script []byte) error {
 	if _, err := io.Copy(f, in); err != nil {
 		return err
 	}
-	// Trailer: [scriptLen][nameLen][script][name][magic][trailerLen]
-	var head [16]byte
-	binary.BigEndian.PutUint64(head[0:8], uint64(len(script)))
+	// Trailer: [payloadLen][nameLen][kind][payload][name][magic][trailerLen]
+	var head [bundleHead]byte
+	binary.BigEndian.PutUint64(head[0:8], uint64(len(payload)))
 	binary.BigEndian.PutUint64(head[8:16], uint64(len(name)))
+	head[16] = kind
 	if _, err := f.Write(head[:]); err != nil {
 		return err
 	}
-	if _, err := f.Write(script); err != nil {
+	if _, err := f.Write(payload); err != nil {
 		return err
 	}
 	if _, err := f.WriteString(name); err != nil {
 		return err
 	}
-	trailerLen := bundleHeader + int64(len(script)+len(name)) + bundleTail
+	trailerLen := bundleHead + int64(len(payload)+len(name)) + bundleTail
 	var num [8]byte
-	if _, err := io.WriteString(f, bundleMagic); err != nil {
+	if _, err := io.WriteString(f, bundleMagicCode); err != nil {
 		return err
 	}
 	binary.BigEndian.PutUint64(num[:], uint64(trailerLen))
@@ -214,14 +251,54 @@ func runBuild(args []string) int {
 			return 1
 		}
 	}
-	if err := writeBundle(interpreter, out, filepath.Base(scriptPath), script); err != nil {
+	payload, kind, note := payloadFor(scriptPath, script)
+	if err := writeBundle(interpreter, out, filepath.Base(scriptPath), kind, payload); err != nil {
 		fmt.Fprintf(os.Stderr, "goscheme build: %v\n", err)
 		return 1
 	}
+	fmt.Fprintf(os.Stderr, "%s: %s\n", out, note)
 	// A Mach-O binary carries a code signature that appending to it
 	// invalidates, so re-sign it ad hoc when we can.
 	resignIfNeeded(out)
 	return 0
+}
+
+// payloadFor turns a script into what a bundle carries: its compiled program
+// when the compiler can produce one, and the script text when it cannot.
+//
+// Compiling needs the libraries the script imports, because macros have to be
+// expanded at build time, and a script may import one that is only there when
+// the program runs (beside the executable, say).  That is the one case where
+// this falls back, and the note says so: the bundle then starts by reading
+// source, which is slower and never wrong.
+func payloadFor(scriptPath string, script []byte) (payload []byte, kind byte, note string) {
+	abs, err := filepath.Abs(scriptPath)
+	if err != nil {
+		abs = scriptPath
+	}
+	source := func(why error) ([]byte, byte, string) {
+		return script, kindSource, fmt.Sprintf("embedding source: %v", why)
+	}
+	r := scheme.NewStringReader(string(script))
+	r.Source = abs
+	forms, err := r.ReadAll()
+	if err != nil {
+		return source(err)
+	}
+	m := scheme.NewMachine()
+	m.Args = []string{scriptPath}
+	m.AddLoadPath(filepath.Dir(abs))
+	prog, err := scheme.CompileProgram(m, forms, m.Global)
+	if err != nil {
+		return source(err)
+	}
+	var buf bytes.Buffer
+	if err := scheme.WriteBytecode(&buf, prog); err != nil {
+		return source(err)
+	}
+	compiled, total := prog.Compiled()
+	return buf.Bytes(), kindBytecode,
+		fmt.Sprintf("%d of %d top-level forms compiled to bytecode", compiled, total)
 }
 
 // defaultOutput is the name used when -o is omitted: a.out, or a.exe when
@@ -265,8 +342,10 @@ func buildUsage(w io.Writer) {
 	fmt.Fprintln(w, "usage: goscheme build <script> [-o <output>] [-i <interpreter>] [-static]")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Writes a standalone executable that runs <script>: a copy of the")
-	fmt.Fprintln(w, "interpreter with the script bound to it.  The result needs nothing")
-	fmt.Fprintln(w, "else on the machine that runs it.")
+	fmt.Fprintln(w, "interpreter with the compiled script bound to it.  The result needs")
+	fmt.Fprintln(w, "nothing else on the machine that runs it, and it starts without")
+	fmt.Fprintln(w, "reading source.  A script the compiler cannot translate — because it")
+	fmt.Fprintln(w, "imports a library that is not on this machine — is bound as source")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "  -o, --output FILE       name of the executable (default: a.out, or")
 	fmt.Fprintln(w, "                          a.exe when binding a Windows interpreter)")

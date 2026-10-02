@@ -452,15 +452,18 @@ func TestBundleTrailerRoundTrip(t *testing.T) {
 	script := []byte("(display (+ 1 2))\n")
 	out := filepath.Join(dir, "prog")
 
-	if err := writeBundle(interp, out, "prog.scm", script); err != nil {
+	if err := writeBundle(interp, out, "prog.scm", kindSource, script); err != nil {
 		t.Fatalf("writeBundle: %v", err)
 	}
 	info, err := readBundle(out)
 	if err != nil {
 		t.Fatalf("readBundle: %v", err)
 	}
-	if string(info.Script) != string(script) {
-		t.Errorf("script = %q, want %q", info.Script, script)
+	if string(info.Payload) != string(script) {
+		t.Errorf("payload = %q, want %q", info.Payload, script)
+	}
+	if info.Kind != kindSource {
+		t.Errorf("kind = %d, want source", info.Kind)
 	}
 	if info.Name != "prog.scm" {
 		t.Errorf("name = %q, want %q", info.Name, "prog.scm")
@@ -474,7 +477,7 @@ func TestBundleTrailerRoundTrip(t *testing.T) {
 	if !bytes.HasPrefix(data, []byte(fake)) {
 		t.Error("the interpreter was not copied verbatim")
 	}
-	if want := len(fake) + 16 + len(script) + len("prog.scm") + len(bundleMagic) + 8; len(data) != want {
+	if want := len(fake) + int(bundleHead) + len(script) + len("prog.scm") + len(bundleMagicCode) + 8; len(data) != want {
 		t.Errorf("bundle is %d bytes, want %d", len(data), want)
 	}
 
@@ -493,7 +496,7 @@ func TestBundleRejectsCorruptTrailer(t *testing.T) {
 		t.Fatal(err)
 	}
 	good := filepath.Join(dir, "good")
-	if err := writeBundle(interp, good, "s.scm", []byte("(display 1)\n")); err != nil {
+	if err := writeBundle(interp, good, "s.scm", kindSource, []byte("(display 1)\n")); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(good)
@@ -503,7 +506,7 @@ func TestBundleRejectsCorruptTrailer(t *testing.T) {
 
 	cases := map[string][]byte{
 		"truncated":       data[:len(data)-8],
-		"bad magic":       append(append([]byte{}, data[:len(data)-len(bundleMagic)-8]...), []byte("XXXXXXXXX")...),
+		"bad magic":       append(append([]byte{}, data[:len(data)-len(bundleMagicCode)-8]...), []byte("XXXXXXXXX")...),
 		"absurd length":   nil, // built below
 		"length mismatch": nil,
 	}
@@ -511,7 +514,7 @@ func TestBundleRejectsCorruptTrailer(t *testing.T) {
 	binary.BigEndian.PutUint64(absurd[len(absurd)-8:], uint64(1)<<40)
 	cases["absurd length"] = absurd
 	mismatch := append([]byte{}, data...)
-	binary.BigEndian.PutUint64(mismatch[len(mismatch)-8-len(bundleMagic):], uint64(len(data))) // scriptLen way off
+	binary.BigEndian.PutUint64(mismatch[len(mismatch)-8-len(bundleMagicCode):], uint64(len(data))) // payloadLen way off
 	cases["length mismatch"] = mismatch
 
 	for name, b := range cases {
@@ -523,6 +526,91 @@ func TestBundleRejectsCorruptTrailer(t *testing.T) {
 			t.Errorf("%s: readBundle accepted a damaged trailer: %+v", name, info)
 		}
 	}
+}
+
+// A bundle carries the compiled script when the build machine can compile it,
+// and running it must not need the source — so the source file is deleted
+// before the payload runs.  A form the compiler declines goes into the payload
+// as source, which is how a mixed program still runs.
+func TestBundleBytecodePayload(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "prog.scm")
+	src := `(define (square x) (* x x))
+(define (sum-to n)
+  (let loop ((i 0) (acc 0))
+    (if (= i n) acc (loop (+ i 1) (+ acc (square i))))))
+(display (list (sum-to 5) (do ((i 0 (+ i 1)) (acc '() (cons i acc))) ((= i 3) acc))))
+(newline)`
+	if err := os.WriteFile(scriptPath, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	payload, kind, note := payloadFor(scriptPath, []byte(src))
+	if kind != kindBytecode {
+		t.Fatalf("kind = %d (%s), want bytecode", kind, note)
+	}
+
+	interp := filepath.Join(dir, "interp")
+	if err := os.WriteFile(interp, []byte("FAKE"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "prog")
+	if err := writeBundle(interp, out, "prog.scm", kind, payload); err != nil {
+		t.Fatalf("writeBundle: %v", err)
+	}
+	info, err := readBundle(out)
+	if err != nil {
+		t.Fatalf("readBundle: %v", err)
+	}
+	if info.Kind != kindBytecode {
+		t.Fatalf("the bundle carries kind %d, want bytecode", info.Kind)
+	}
+
+	// The source is gone: whatever runs now comes from the payload.
+	if err := os.Remove(scriptPath); err != nil {
+		t.Fatal(err)
+	}
+	got := runPayloadOnStringPort(t, info)
+
+	want := runPayloadOnStringPort(t, &bundleInfo{Payload: []byte(src), Name: "prog.scm", Kind: kindSource})
+	if got != want {
+		t.Errorf("bytecode payload printed %q, source printed %q", got, want)
+	}
+	if !strings.Contains(want, "(30 (2 1 0))") {
+		t.Fatalf("the program itself is wrong: %q", want)
+	}
+}
+
+// A script that imports a library this machine cannot find cannot be compiled
+// here, so the bundle carries the source instead of failing the build.
+func TestBundlePayloadFallsBackToSource(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "prog.scm")
+	src := "(import (no such lib))\n(display 1)\n"
+	if err := os.WriteFile(scriptPath, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	payload, kind, note := payloadFor(scriptPath, []byte(src))
+	if kind != kindSource {
+		t.Fatalf("kind = %d, want source", kind)
+	}
+	if string(payload) != src {
+		t.Errorf("payload = %q, want the script", payload)
+	}
+	if !strings.Contains(note, "source") {
+		t.Errorf("note = %q, want it to say the script was embedded", note)
+	}
+}
+
+// runPayloadOnStringPort runs a bundle's payload with its output captured.
+func runPayloadOnStringPort(t *testing.T, info *bundleInfo) string {
+	t.Helper()
+	m := scheme.NewMachine()
+	out := scheme.NewOutputStringPort()
+	m.SetStandardOutput(out)
+	if code := runPayload(m, info); code != 0 {
+		t.Fatalf("runPayload returned %d", code)
+	}
+	return out.OutputString()
 }
 
 func TestBundleDefaultOutputName(t *testing.T) {
