@@ -732,7 +732,9 @@ BenchmarkFast` 测得，每一对的输入用同样方式构造，因此差异�
 的过程时直接**替换**当前活动而不是递归，因此一百万层非尾递归在 Go 栈上只占两帧。它
 还带来"编译一次、存起来"的能力：`goscheme compile script.scm` 写出 `.scmc` 文件，
 运行时**不再解析源码**。表格、注意事项以及编译器拒绝的表单都在
-[docs/bytecode.md](docs/bytecode.md)。
+[docs/bytecode.md](docs/bytecode.md)；字节码的逐字节格式、指令集、虚拟机执行一次
+调用时究竟做了什么，以及实测差异，在
+[docs/bytecode-internals.md](docs/bytecode-internals.md)。
 
 帧只在**确实存在多个解释器线程**时才加锁，因此常见的单线程场景没有锁开销；
 `(go ...)` 与 HTTP handler 会在启动前把计数加上，共享环境照旧受锁保护。

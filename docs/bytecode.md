@@ -7,6 +7,10 @@ GoScheme runs a program two ways, and they are meant to be indistinguishable:
 * **interpreted** — the tree-walker in `internal/scheme/machine.go`, which is
   what everything ran on before this existed.
 
+This page is the overview; [bytecode-internals.md](bytecode-internals.md) is the
+reference underneath it — the file format, the instruction set, the call
+protocol in full, and the measurements.
+
 The compiler never imitates the interpreter for a form it cannot handle: it
 *declines the whole body*, and that body runs interpreted.  The two paths
 therefore agree by construction, and the tests are there to prove the

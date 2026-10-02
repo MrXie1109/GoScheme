@@ -38,6 +38,7 @@ $ goscheme -e '(display (map (lambda (x) (* x x)) (list 1 2 3 4))) (newline)'
 - [Extension and SRFI reference](docs/extensions/README.md)
 - [Implementation notes](#implementation-notes)
 - [The bytecode VM](docs/bytecode.md)
+  - [The format, the machine and the numbers](docs/bytecode-internals.md)
 - [Performance](#performance)
 - [Testing](#testing)
 - [Cross-compilation](#cross-compilation)
@@ -845,7 +846,10 @@ current activation instead of recursing, so a non-tail recursion a million deep
 costs two Go stack frames.  It also means a program can be compiled once and
 stored: `goscheme compile script.scm` writes a `.scmc` file that runs without
 being parsed as source.  [docs/bytecode.md](docs/bytecode.md) has the table, the
-caveats and what the compiler declines.
+caveats and what the compiler declines;
+[docs/bytecode-internals.md](docs/bytecode-internals.md) is the reference
+underneath it — the file format byte by byte, the instruction set, what the
+machine does when it runs a call, and the measured difference.
 
 A frame takes its lock only while more than one interpreter thread is running,
 which is what makes the common single-threaded case free; `(go ...)` and the
