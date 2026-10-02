@@ -24,9 +24,17 @@ func runFile(m *Machine, path string) error {
 // runSuite runs a Scheme test file with the (chibi test) shim preloaded and
 // returns the captured output together with the exit status.
 func runSuite(t *testing.T, file string) (string, int, error) {
+	return runSuiteMode(t, file, false)
+}
+
+// runSuiteMode runs a suite with the bytecode VM (interpret false) or in the
+// tree-walker (true).  Every suite is run both ways: the two execution paths
+// have to agree on all of it, not just on the programs in vm_test.go.
+func runSuiteMode(t *testing.T, file string, interpret bool) (string, int, error) {
 	t.Helper()
 	out := NewOutputStringPort()
 	m := NewMachine()
+	m.Interpret = interpret
 	m.CurOut = out
 	m.OutParam.values[0] = out
 
@@ -54,17 +62,19 @@ func TestR7RSReferenceSuite(t *testing.T) {
 	if _, err := os.Stat(path); err != nil {
 		t.Skipf("reference suite not available: %v", err)
 	}
-	out, code, err := runSuite(t, path)
-	if err != nil {
-		t.Fatalf("suite aborted: %v\n%s", err, out)
+	for _, interpret := range []bool{false, true} {
+		out, code, err := runSuiteMode(t, path, interpret)
+		if err != nil {
+			t.Fatalf("suite aborted (interpret=%v): %v\n%s", interpret, err, out)
+		}
+		if code != 0 {
+			t.Fatalf("reference suite reported failures (interpret=%v):\n%s", interpret, out)
+		}
+		if !strings.Contains(out, "0 failed") {
+			t.Fatalf("unexpected summary (interpret=%v):\n%s", interpret, out)
+		}
+		t.Log(strings.TrimSpace(out))
 	}
-	if code != 0 {
-		t.Fatalf("reference suite reported failures:\n%s", out)
-	}
-	if !strings.Contains(out, "0 failed") {
-		t.Fatalf("unexpected summary:\n%s", out)
-	}
-	t.Log(strings.TrimSpace(out))
 }
 
 // extensionSuites are the suites for the extensions this interpreter adds to
@@ -91,14 +101,20 @@ func TestExtensionSuites(t *testing.T) {
 			if _, err := os.Stat(path); err != nil {
 				t.Skipf("suite not available: %v", err)
 			}
-			out, code, err := runSuite(t, path)
-			if err != nil {
-				t.Fatalf("suite aborted: %v\n%s", err, out)
+			for _, interpret := range []bool{false, true} {
+				mode := "vm"
+				if interpret {
+					mode = "interp"
+				}
+				out, code, err := runSuiteMode(t, path, interpret)
+				if err != nil {
+					t.Fatalf("suite aborted (%s): %v\n%s", mode, err, out)
+				}
+				if code != 0 {
+					t.Fatalf("suite reported failures (%s):\n%s", mode, out)
+				}
+				t.Logf("%s: %s", mode, strings.TrimSpace(out))
 			}
-			if code != 0 {
-				t.Fatalf("suite reported failures:\n%s", out)
-			}
-			t.Log(strings.TrimSpace(out))
 		})
 	}
 }
