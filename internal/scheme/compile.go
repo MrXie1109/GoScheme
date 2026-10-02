@@ -272,6 +272,28 @@ func (c *comp) special(name string, x *Pair, tail bool) bool {
 		c.emit(opConst, c.konst(args[0]), 0)
 		return true
 
+	case "go":
+		if len(args) == 0 {
+			c.fail("go: expected a body")
+			return true
+		}
+		// The thread's body is a thunk, and it should be compiled: it is the
+		// one piece of a concurrent program that runs on another machine.
+		thunk := c.bodyWithFormals(Empty{}, args, "go", func(sub *comp) {
+			sub.body(args, true)
+		})
+		if thunk == nil {
+			return true
+		}
+		c.emit(opConst, c.konst(goHelper), 0)
+		c.emit(opClosure, c.konst(thunk), 0)
+		if tail {
+			c.emit(opTailCall, 1, 0)
+		} else {
+			c.emit(opCall, 1, 0)
+		}
+		return true
+
 	case "assert":
 		if len(args) != 1 {
 			c.fail("assert: expected one expression")

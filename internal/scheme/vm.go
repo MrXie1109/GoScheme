@@ -2,7 +2,10 @@
 
 package scheme
 
-import "fmt"
+import (
+	"fmt"
+	"sync"
+)
 
 // The bytecode virtual machine.
 //
@@ -64,6 +67,15 @@ const opcodeCount = int(opReturn) + 1
 // evalGuardClauses does too.
 var guardReRaise = &Primitive{Name: "guard-re-raise", MinArgs: 1, MaxArgs: 1,
 	Fn: func(m *Machine, a []Value) { m.Raise(a[0]) }}
+
+// goHelper is what a compiled (go body ...) calls: it spawns a thread running
+// the compiled thunk and returns, as evalGo does with the thunk the
+// interpreter would have made.
+var goHelper = &Primitive{Name: "go", MinArgs: 1, MaxArgs: 1, Sync: true,
+	Fn: func(m *Machine, a []Value) {
+		m.Spawn(a[0])
+		m.Return(UnspecifiedValue)
+	}}
 
 // promiseHelper makes the promise (delay e) and (delay-force e) stand for,
 // with the thunk the compiler built rather than one the interpreter would walk.
@@ -177,6 +189,30 @@ type Code struct {
 // closure and the frame it came from see the same binding.
 type cell struct {
 	v Value
+}
+
+// vmCellsMu guards the cells of variables that set! can change, and is taken
+// only while more than one interpreter thread is running — the discipline the
+// interpreter's Env uses.  A compiled thread body shares the frames of the
+// closure it came from, so a set! in a thread and a read in its parent have to
+// be ordered here as they are there; with one thread the atomic load is all it
+// costs.
+var vmCellsMu sync.Mutex
+
+func cellGet(c *cell) Value {
+	if concurrentThreads.Load() != 0 {
+		vmCellsMu.Lock()
+		defer vmCellsMu.Unlock()
+	}
+	return c.v
+}
+
+func cellSet(c *cell, v Value) {
+	if concurrentThreads.Load() != 0 {
+		vmCellsMu.Lock()
+		defer vmCellsMu.Unlock()
+	}
+	c.v = v
 }
 
 // vmInlineSlots is how many slots a frame keeps inside itself.  A frame whose
@@ -456,7 +492,7 @@ func vmRun(m *Machine, code *Code, ip int, env *vmEnv, globals *Env, vals []Valu
 		case opLocal:
 			vals = append(vals, env.up(int(in.arg1)).slots[in.arg2])
 		case opLocalCell:
-			vals = append(vals, env.up(int(in.arg1)).slots[in.arg2].(*cell).v)
+			vals = append(vals, cellGet(env.up(int(in.arg1)).slots[in.arg2].(*cell)))
 		case opLocalCheck:
 			v := env.up(int(in.arg1)).slots[in.arg2]
 			if _, un := v.(unassigned); un {
@@ -466,7 +502,7 @@ func vmRun(m *Machine, code *Code, ip int, env *vmEnv, globals *Env, vals []Valu
 			}
 			vals = append(vals, v)
 		case opLocalCellCheck:
-			v := env.up(int(in.arg1)).slots[in.arg2].(*cell).v
+			v := cellGet(env.up(int(in.arg1)).slots[in.arg2].(*cell))
 			if _, un := v.(unassigned); un {
 				m.Raise(NewError("variable used before initialization",
 					code.Names[in.arg2]))
@@ -481,7 +517,7 @@ func vmRun(m *Machine, code *Code, ip int, env *vmEnv, globals *Env, vals []Valu
 		case opSetCell:
 			var v Value
 			v, vals = popValue(vals)
-			env.up(int(in.arg1)).slots[in.arg2].(*cell).v = v
+			cellSet(env.up(int(in.arg1)).slots[in.arg2].(*cell), v)
 		case opNewCell:
 			var v Value
 			v, vals = popValue(vals)

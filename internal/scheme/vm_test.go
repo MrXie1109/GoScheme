@@ -93,6 +93,24 @@ var vmPrograms = []struct {
 	                                       ((x) (list 'one x))
 	                                       ((x y . z) (list 'many x y z))))
 	                 (display (list (f) (f 1) (f 1 2) (f 1 2 3))) (newline)`},
+	// A thread's body is compiled now, so the channel handshake it takes part
+	// in has to work exactly as it did; the programs below are written so that
+	// the order of what they print is fixed by the channels themselves.
+	{"go", `(define ch (make-channel 1))
+	          (go (chan-send! ch (+ 1 2)))
+	          (display (chan-recv! ch)) (newline)
+	          (define c (make-channel))
+	          (define order (make-channel))
+	          (go (chan-send! c 'first) (chan-send! order 'sent))
+	          (display (list (chan-recv! c) (chan-recv! order))) (newline)
+	          (define shared 0)
+	          (define guards (make-mutex))
+	          (let loop ((i 0))
+	            (if (< i 50)
+	                (begin (go (with-mutex guards (set! shared (+ shared 1))))
+	                       (loop (+ i 1)))))
+	          (go-wait)
+	          (display shared) (newline)`},
 	{"assert", `(display (assert (+ 1 1))) (newline)
 	            (display (guard (e (#t (error-object-message e))) (assert #f))) (newline)`},
 	{"do-continue", `(define kept '())

@@ -550,6 +550,7 @@ var internalPrimitives = map[string]*Primitive{
 	"delay":          promiseHelper,
 	"case-lambda":    caseLambdaHelper,
 	"assert":         assertFailed,
+	"go":             goHelper,
 }
 
 func (b *byteWriter) datum(v Value, seen map[interface{}]bool) {
