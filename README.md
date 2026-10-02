@@ -200,8 +200,8 @@ for an uncaught error.
 
 `goscheme build` turns a script into a single self-contained executable by
 **binding an interpreter to it**: it copies the interpreter and appends the
-script, so the result needs neither Go nor goscheme on the machine that runs
-it.
+script, compiled, so the result needs neither Go nor goscheme on the machine
+that runs it and starts without reading source.
 
 ```sh
 $ goscheme build hello.scm        # writes ./a.out, as a C compiler would
@@ -213,14 +213,20 @@ argv: ("./hello" "world")
 The result is an ordinary interpreter image with a trailer:
 
 ```
-[ interpreter ][ script ][ script name ][ magic ][ trailer length ]
+[ interpreter ][ payload ][ script name ][ magic ][ trailer length ]
 ```
 
 Appending to an ELF, PE or Mach-O image is harmless — the loader reads the
 headers it knows and ignores the tail — so the file still runs the interpreter,
-which at startup checks its own tail and, finding a script there, runs that
-instead of the command line.  Nothing is recompiled and the script is stored
-verbatim, so a bundle is exactly `interpreter + script + trailer` bytes.
+which at startup checks its own tail and, finding a program there, runs that
+instead of the command line.  Nothing is recompiled on the user's machine, and
+a bundle is exactly `interpreter + payload + trailer` bytes.
+
+The payload is the script's **bytecode**, written at build time; a script the
+build machine cannot compile — because it imports a library that is only there
+when the program runs — is stored as source instead, and `goscheme build` says
+so.  Either way the parts the compiler declines run on the tree-walker, exactly
+as they do from a file.
 
 * `-o, --output FILE` names the executable.  Like a C compiler, the default is
   `a.out` in the current directory — or `a.exe` when the bound interpreter is a
@@ -249,7 +255,7 @@ cmd/goscheme/             command line driver
   VERSION                 the version reported by -v and the REPL banner
   version.go              embeds VERSION so any build reports it
   main.go                 file execution, -e, the REPL loop
-  bundle.go               goscheme build: binding a script to an interpreter
+  bundle.go               goscheme build: binding a compiled script to an interpreter
   static.go               goscheme build -static: resolving libraries up front
   ffi_cgo.go / ffi_stub.go  load-shared-library and foreign-function
   lineedit.go             raw mode line editor and bracketed paste

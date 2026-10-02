@@ -91,9 +91,10 @@ why loading a `.scmc` file still applies its imports and still defines its
 macros, while the rest of the program is never parsed again.
 
 ```
-GSCM 01 | chunk count | chunk ... 
+GSCM 02 | chunk count | chunk ... 
 chunk   = 0 <datum>            ; a source form to evaluate
         | 1 <code>             ; bytecode to run
+        | 2 <count> <chunk>... ; steps that share one continuation extent
 code    = name | instructions | constants | frame shape | parameters
 datum   = tagged and recursive: numbers (exact, rational, inexact), strings,
           symbols (interned on load), characters, booleans, pairs, vectors,
@@ -104,14 +105,23 @@ Consecutive ordinary forms become **one chunk holding a `begin`**, because that
 is what running the same file does: a continuation captured in one top-level
 form has to span the rest of the program, and a chunk boundary would end it.
 
-A `.scmc` file is not portable across versions: the loader refuses a version it
-does not speak rather than misreading it.
+When that `begin` does not compile — a body is all or nothing, and one form in
+it may use something the compiler declines — the forms are compiled one at a
+time instead and written as the **steps** of a single chunk (`2` above).  They
+still run in one extent, so the continuation rule above holds either way, but
+the compiler now takes what it can from a file rather than nothing: a 44-form
+example compiles 42 of them.  Steps are never nested; a step is a form or a
+piece of code.
+
+Version 2 added the steps chunk; version 1 files are still read, and a file
+from a newer version than the interpreter speaks is refused rather than
+misread.
 
 ## Guarantees
 
 The two paths are held together by tests, not by hope:
 
-* `internal/scheme/vm_test.go` runs a corpus of 45 programs — arithmetic,
+* `internal/scheme/vm_test.go` runs a corpus of 46 programs — arithmetic,
   closures and `set!`, internal definitions, every compiled derived form, tail
   calls, a 200 000-deep non-tail recursion, `call/cc` escapes and re-entries,
   `dynamic-wind`, macro definitions, records, `parameterize`, `match`, strings,
@@ -211,6 +221,12 @@ behind the tests.
   compiling `do` would quietly change what `(continue)` means.
 * `case-lambda` clauses are interpreted for now, although each clause could be
   compiled independently.
-* `goscheme build` still embeds a script as source; embedding the compiled
-  program instead would let a standalone executable start without parsing,
-  which is the obvious next step.
+* `goscheme build` binds the *compiled* program, so a bundled executable starts
+  without reading source.  It falls back to binding the script when the build
+  machine cannot compile it — a script that imports a library only present
+  beside the executable at run time — and says so; the bundle format carries
+  which of the two it holds.
+* The compiler declines a whole *body*, so a lambda whose body uses a `do` or
+  `guard` runs interpreted all the way through, and so do the lambdas inside
+  it.  At the top level that is per form, not per file (see the steps chunk
+  above), which is what keeps a mixed program mostly compiled.

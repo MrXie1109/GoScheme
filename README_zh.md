@@ -179,8 +179,8 @@ $ ./a.out 1 2 3            ; (command-line) => ("./a.out" "1" "2" "3")
 ## 独立可执行文件
 
 `goscheme build` 通过**把解释器绑定到脚本上**，把一份脚本变成单个自包含的可执行
-文件：它复制解释器、把脚本附加在后面，因此运行它的机器上既不需要 Go，也不需要
-goscheme。
+文件：它复制解释器、把**编译后**的脚本附加在后面，因此运行它的机器上既不需要 Go，
+也不需要 goscheme，启动时也不用再解析源码。
 
 ```sh
 $ goscheme build hello.scm        # 生成 ./a.out，与 C 编译器一致
@@ -192,13 +192,17 @@ argv: ("./hello" "world")
 产物就是一张普通的解释器镜像加一段尾部数据：
 
 ```
-[ 解释器 ][ 脚本 ][ 脚本名 ][ magic ][ 尾部长度 ]
+[ 解释器 ][ 载荷 ][ 脚本名 ][ magic ][ 尾部长度 ]
 ```
 
 往 ELF / PE / Mach-O 镜像末尾追加数据是无害的——加载器只读它认识的头部、忽略尾巴
-——所以这个文件仍然会启动解释器；解释器在启动时检查自己的尾部，发现里面有脚本就
-运行脚本，而不是走命令行。整个过程不重新编译，脚本按原样存放，因此产物大小正好是
-`解释器 + 脚本 + 尾部`。
+——所以这个文件仍然会启动解释器；解释器在启动时检查自己的尾部，发现里面有程序就
+运行程序，而不是走命令行。用户机器上不重新编译，产物大小正好是
+`解释器 + 载荷 + 尾部`。
+
+载荷是**编译后的字节码**（构建期写好）；若本机编译不了（例如脚本导入的库只在运行时
+才在可执行文件旁边），则退回存放源码，`goscheme build` 会把这一点说出来。两种情况
+下，编译器不接受的部分仍然在树遍历器上运行，与从文件运行完全一致。
 
 * `-o, --output FILE` 指定输出名。默认与 C 编译器一致：当前目录下的 `a.out`；
   若绑定的解释器是 Windows 二进制，则为 `a.exe`。
@@ -222,7 +226,7 @@ cmd/goscheme/             命令行入口
   VERSION                 `-v` 与 REPL banner 使用的版本号
   version.go              内嵌 VERSION，使任何构建方式都能报告版本
   main.go                 文件执行、-e 求值、REPL 主循环
-  bundle.go               goscheme build：把脚本绑定到解释器
+  bundle.go               goscheme build：把编译后的脚本绑定到解释器
   static.go               goscheme build -static：构建期解析全部库
   ffi_cgo.go / ffi_stub.go  load-shared-library 与 foreign-function
   lineedit.go             raw 模式行编辑器与 bracketed paste
