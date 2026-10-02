@@ -35,16 +35,27 @@ or a lambda body.  Inside a body it handles
 * `and`, `or`, `when`, `unless`, `cond`, `case` (including `=>`),
 * `guard`, whose clauses compile to a procedure of the condition and whose body
   to a thunk, both handed to a runtime helper that installs the handler the
-  interpreter installs, and
+  interpreter installs,
+* the concurrency forms `go` and `select`, whose bodies and clause expressions
+  compile to thunks that a helper spawns or chooses between, and
 * applications, tail calls, and every self-evaluating literal.
 
 plus anything a macro expands into, because **macros are expanded at compile
-time** with the same expander the interpreter uses — which is also why `match`
-compiles now: its expansion is written with `guard`.
+time** with the same expander the interpreter uses.
 
-Everything else — `do`, `parameterize`, `dynamic-wind`, `define-record-type`,
-`define-values`, `let-values`, `case-lambda`, `delay` — makes the compiler
-decline that body, so it runs interpreted.
+That is the whole language: **nothing is left for the interpreter to decide.**
+It was not always so.  `do`, `guard`, `parameterize`, `define-record-type`,
+`define-values`, `let-values`, `case-lambda`, `delay`, `quasiquote`, `match`,
+`select` and `go` each used to make the compiler decline a whole body.  Each is
+now a form the compiler takes, most of them by expanding into forms it already
+took — a `do` loop is a `letrec` whose body is guarded, a `let-values` is
+`call-with-values` around fresh temporaries, `quasiquote` is `cons` and
+`append` — or by handing a runtime helper the pieces it needs as compiled
+procedures, which is how `guard`, `select`, `match`, `go` and the record types
+work.  The matching in `match`, the selection in `select` and the handler in
+`guard` are the interpreter's own code: only the pieces around them became
+bytecode, so the two paths cannot disagree about what a pattern matches or
+which clause wins.
 
 The compiler's table is a list of what it *does* handle rather than what it does
 not, so adding a form is a local change to `special` in `compile.go`.
@@ -145,7 +156,7 @@ misread.
 
 The two paths are held together by tests, not by hope:
 
-* `internal/scheme/vm_test.go` runs a corpus of 50 programs — arithmetic,
+* `internal/scheme/vm_test.go` runs a corpus of 63 programs — arithmetic,
   closures and `set!`, internal definitions, every compiled derived form, tail
   calls, a 200 000-deep non-tail recursion, `call/cc` escapes and re-entries,
   `dynamic-wind`, macro definitions, records, `parameterize`, `match`, strings,
@@ -241,17 +252,16 @@ behind the tests.
 
 ## Limits
 
-* A body that uses a form outside the compiler's table runs interpreted, and so
-  do the lambdas written inside it.  `do` is deliberately in that list: its
-  `(continue)` is implemented with a guard the interpreter installs, and
-  compiling `do` would quietly change what `(continue)` means.
-* `case-lambda` clauses are interpreted for now, although each clause could be
-  compiled independently.
+* There is no form the compiler declines.  A *body* is still all or nothing
+  when it is compiled in one piece, which is why a file is compiled form by
+  form (see the steps chunk above) — but every form itself is now something the
+  compiler takes, so a file compiles whole.
 * `goscheme build` binds the *compiled* program, so a bundled executable starts
   without reading source.  It falls back to binding the script when the build
   machine cannot compile it — a script that imports a library only present
   beside the executable at run time — and says so; the bundle format carries
   which of the two it holds.
-* The compiler declines a whole *body*, so a lambda whose body uses a `do` runs
-  interpreted all the way through, and so do the lambdas inside it.  At the top level that is per form, not per file (see the steps chunk
-  above), which is what keeps a mixed program mostly compiled.
+* Compiling a form is not the same as compiling the *data* a program builds:
+  `eval` and `load` still walk the tree, because the code they run does not
+  exist until the program runs.  A lambda written as data has no bytecode until
+  something evaluates the expression that makes it.

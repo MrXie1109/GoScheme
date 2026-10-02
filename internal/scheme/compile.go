@@ -272,6 +272,69 @@ func (c *comp) special(name string, x *Pair, tail bool) bool {
 		c.emit(opConst, c.konst(args[0]), 0)
 		return true
 
+	case "match":
+		if len(args) < 2 {
+			c.fail("match: expected an expression and at least one clause")
+			return true
+		}
+		// The subject, then four values per clause: the pattern, the variables
+		// its body takes, the guard (or #f) and the body.  The matching stays
+		// in matchPattern; what compiles is the guard and the body, which is
+		// where the work in a match is.
+		type matchClause struct {
+			pattern Value
+			vars    []*Symbol
+			guard   Value
+			body    []Value
+		}
+		var parsed []matchClause
+		for _, cl := range args[1:] {
+			pattern, guard, body, err := parseMatchClause(cl)
+			if err != nil {
+				c.fail("%v", err)
+				return true
+			}
+			parsed = append(parsed, matchClause{
+				pattern: pattern, vars: matchPatternVars(pattern),
+				guard: guard, body: body,
+			})
+		}
+		// The operator goes on the stack first, then the subject, then the
+		// clauses — the layout a call expects.
+		c.emit(opConst, c.konst(matchHelper), 0)
+		c.expr(args[0], false)
+		argc := int32(1) // the subject; the helper is the operator
+		for _, cl := range parsed {
+			formals := make([]Value, len(cl.vars))
+			for i, v := range cl.vars {
+				formals[i] = v
+			}
+			formalList := listFromSlice(formals)
+			c.emit(opConst, c.konst(cl.pattern), 0)
+			c.emit(opConst, c.konst(formalList), 0)
+			if cl.guard != nil {
+				thunk := c.boundThunk(formalList, []Value{cl.guard}, "match guard")
+				if thunk == nil {
+					return true
+				}
+				c.emit(opClosure, c.konst(thunk), 0)
+			} else {
+				c.emit(opConst, c.konst(False), 0)
+			}
+			thunk := c.boundThunk(formalList, cl.body, "match")
+			if thunk == nil {
+				return true
+			}
+			c.emit(opClosure, c.konst(thunk), 0)
+			argc += 4
+		}
+		if tail {
+			c.emit(opTailCall, argc, 0)
+		} else {
+			c.emit(opCall, argc, 0)
+		}
+		return true
+
 	case "select":
 		specs, err := selectSpecs(args)
 		if err != nil {
@@ -1417,6 +1480,24 @@ func (c *comp) inScope(sym *Symbol, from int) bool {
 		}
 	}
 	return false
+}
+
+// boundThunk compiles a body whose parameters are a pattern's variables.  Its
+// parameters are checked, so a clause whose pattern bound none of them — the
+// other branch of an `or` — reports reading one instead of handing back the
+// unassigned marker.
+func (c *comp) boundThunk(formals Value, body []Value, name string) *Code {
+	sub := c.beginBody(formals, body, name)
+	if sub == nil {
+		return nil
+	}
+	for _, param := range sub.code.Params {
+		if _, slot, _, ok := sub.lookup(param); ok {
+			sub.frame.checked[slot] = true
+		}
+	}
+	sub.body(body, true)
+	return c.finishBody(sub)
 }
 
 // flatFormals lists the variables of a formals list in order, whether it is a

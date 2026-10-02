@@ -116,6 +116,55 @@ func parseMatchClause(clause Value) (pat, guard Value, body []Value, err error) 
 	return pat, guard, body, nil
 }
 
+// matchPatternVars lists the variables a pattern binds, in the order
+// matchPattern binds them.  A compiled clause uses it to build the thunk its
+// body runs in: the values are passed by name, because a branch of an `or`
+// binds a different set from the branch beside it.
+func matchPatternVars(pat Value) []*Symbol {
+	var out []*Symbol
+	var walk func(p Value)
+	var list func(p Value)
+	walk = func(p Value) {
+		switch t := p.(type) {
+		case *Symbol:
+			if t.Name != "_" && t.Name != "else" {
+				out = append(out, t)
+			}
+		case *Pair:
+			if sym, ok := t.Car.(*Symbol); ok {
+				switch sym.Name {
+				case "quote", "not":
+					return
+				case "and", "or":
+					for _, sub := range mustSlice(t.Cdr) {
+						walk(sub)
+					}
+					return
+				}
+			}
+			list(p)
+		case *Vector:
+			for _, e := range t.Items {
+				walk(e)
+			}
+		}
+	}
+	list = func(p Value) {
+		cur := p
+		for {
+			cp, ok := cur.(*Pair)
+			if !ok {
+				break
+			}
+			walk(cp.Car)
+			cur = cp.Cdr
+		}
+		walk(cur) // an improper tail is a pattern of its own
+	}
+	walk(pat)
+	return out
+}
+
 // matchPattern reports whether v matches pat, appending the bindings it makes.
 func matchPattern(pat, v Value, binds *[]matchBinding) (bool, error) {
 	switch p := pat.(type) {

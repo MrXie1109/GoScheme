@@ -133,6 +133,65 @@ func selectExprCount(kind int) int {
 	}
 }
 
+// matchHelper does what matchClauses does, with the clauses compiled: it
+// matches each pattern in turn, and runs the clause's guard and body — thunks
+// the compiler built — with the values the pattern bound.  The matching itself
+// is matchPattern, the same code the interpreter runs, so the two paths agree
+// about what matches and what it binds.
+//
+// Its arguments are the subject, then four per clause: the pattern, the list of
+// variables the body's thunk takes, the guard thunk (or #f), and the body thunk.
+var matchHelper = &Primitive{Name: "match", MinArgs: 2, MaxArgs: -1,
+	Fn: func(m *Machine, a []Value) {
+		subject := a[0]
+		clauses := a[1:]
+		var try func(i int)
+		try = func(i int) {
+			if i*4 >= len(clauses) {
+				m.Raise(NewError("match: no pattern matched " + WriteToString(subject)))
+				return
+			}
+			pattern := clauses[i*4]
+			vars, _ := ListToSlice(clauses[i*4+1])
+			guardThunk, bodyThunk := clauses[i*4+2], clauses[i*4+3]
+			var binds []matchBinding
+			ok, err := matchPattern(pattern, subject, &binds)
+			if err != nil {
+				m.RaiseError(err)
+				return
+			}
+			if !ok {
+				try(i + 1)
+				return
+			}
+			// The thunk's parameters are the pattern's variables, and the
+			// values go by name: a branch that did not bind one leaves it
+			// unassigned, which reading it reports.
+			argv := make([]Value, len(vars))
+			for k, name := range vars {
+				argv[k] = Unassigned
+				for j := len(binds) - 1; j >= 0; j-- {
+					if binds[j].sym == name {
+						argv[k] = binds[j].val
+						break
+					}
+				}
+			}
+			if guardThunk != Value(False) {
+				m.ApplyWith(guardThunk, argv, func(mm *Machine, gv Value) {
+					if IsFalse(gv) {
+						try(i + 1)
+						return
+					}
+					mm.apply(bodyThunk, argv)
+				})
+				return
+			}
+			m.apply(bodyThunk, argv)
+		}
+		try(0)
+	}}
+
 // bindValues applies a producer and hands every value it returns to a
 // consumer, which is what call-with-values does.  It is a value of the
 // compiler's own rather than that procedure, because a compiled binding form

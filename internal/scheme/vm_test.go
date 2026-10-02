@@ -161,6 +161,19 @@ var vmPrograms = []struct {
 	             (display (select (chan-recv! closed9) => (lambda (v) (list 'closed v)))) (newline)
 	             (display (select (chan-recv! (make-channel)) => (lambda (v) 'never)
 	                              (else) => (lambda () 'else))) (newline)`},
+	// match compiles too: the patterns are matched by the same code the
+	// interpreter uses, and what compiles is the guard and the body of each
+	// clause, with the pattern's variables as their parameters.
+	{"match", `(display (list (match (list 1 2 3) ((a b c) (list 'three a b c)) ((_ ... rest) 'longer))
+	                          (match 5 (1 'one) (5 'five) (else 'other))
+	                          (match '(1 2 . 3) ((a b . r) (list a b r)))
+	                          (match #(1 2) (#(a b) (+ a b)) (else 'no))
+	                          (match 'sym ((quote sym) 'quoted) (else 'no))
+	                          (match 4 ((and (not 1) x) (list 'not-one x)))
+	                          (match 3 ((or 1 3) 'one-or-three) (else 'no))
+	                          (match 9 (x (guard (> x 5)) (list 'big x)) (x (list 'small x)))
+	                          (match 2 (x (guard (> x 5)) (list 'big x)) (x (list 'small x))))) (newline)
+	           (display (guard (e (#t 'nomatch)) (match 'zzz (1 'one)))) (newline)`},
 	{"assert", `(display (assert (+ 1 1))) (newline)
 	            (display (guard (e (#t (error-object-message e))) (assert #f))) (newline)`},
 	{"do-continue", `(define kept '())
@@ -395,9 +408,9 @@ func TestVMReallyCompiles(t *testing.T) {
 	if len(body.Instrs) < 8 {
 		t.Fatalf("the compiled body is suspiciously small: %d instructions", len(body.Instrs))
 	}
-	// do compiles: it is an expansion into a letrec whose body is guarded,
-	// and both of those compile.  What is left to the interpreter is the
-	// handful of forms below.
+	// Every form the language has compiles now, so this is the list that used
+	// to be "left to the interpreter": it is a guard against one of them
+	// quietly going back.
 	for _, src := range []string{
 		`(do ((i 0 (+ i 1))) ((= i 1) i))`,
 		`(guard (e (#t e)) (error "x"))`,
@@ -411,64 +424,41 @@ func TestVMReallyCompiles(t *testing.T) {
 		`(go 1)`,
 		`(define-values (a b) (values 1 2))`,
 		`(define-record-type p (make-p x) p? (x p-x))`,
+		`(match 1 (1 'one))`,
+		`(select (else) => 'x)`,
 	} {
 		if _, err := compileTop(m, mustRead(t, src), m.Global); err != nil {
-			t.Errorf("%s should compile now: %v", src, err)
+			t.Errorf("%s should compile: %v", src, err)
 		}
-	}
-	// What is still left to the interpreter, until it is not.
-	for _, src := range []string{
-		`(match 1 (1 'one))`,
-		`(select (else => 'x))`,
-	} {
-		if _, err := compileTop(m, mustRead(t, src), m.Global); err == nil {
-			t.Errorf("%s is still left to the interpreter", src)
-		}
-	}
-	// A file is compiled a group at a time, and a group is all or nothing —
-	// so one form the compiler declines used to send every form around it
-	// down the source path.  The forms are compiled one at a time instead,
-	// as steps of one chunk, and they still run in a single extent.
-	mixed := m2MustProgram(t, `(define (f x) (* x x))
-	                            (display (f 3))
-	                            (match 1 (1 'one))
-	                            (define (g y) (+ y 1))
-	                            (display (g 1))`)
-	compiledN, total := mixed.Compiled()
-	if compiledN < 3 || total != 5 {
-		t.Errorf("mixed program compiled %d of %d forms, want at least 3 of 5", compiledN, total)
-	}
-	steps := 0
-	for _, c := range mixed.Chunks {
-		if len(c.Steps) > 0 {
-			steps++
-		}
-	}
-	if steps != 1 {
-		t.Errorf("the program should be one run of steps, got %d", steps)
 	}
 
+	// A group the compiler can only take form by form becomes a chunk of
+	// steps, which run in one extent.  Nothing in the language forces that any
+	// more, so the chunk is built here rather than found in a program.
+	stepCode, err := compileTop(m, mustRead(t, `(display "a")`), m.Global)
+	if err != nil {
+		t.Fatalf("step: %v", err)
+	}
+	out := NewOutputStringPort()
+	run := NewMachine()
+	run.CurOut = out
+	run.OutParam.values[0] = out
+	prog := &Program{Chunks: []Chunk{{Steps: []Chunk{
+		{Code: stepCode},
+		{Form: mustRead(t, `(display "b")`)},
+	}}}}
+	if _, err := run.RunProgram(prog, run.Global); err != nil {
+		t.Fatalf("running steps: %v", err)
+	}
+	if got := out.OutputString(); got != "ab" {
+		t.Errorf("the steps printed %q, want %q", got, "ab")
+	}
 	// Compiled code must not be produced when the machine is asked to
 	// interpret everything.
 	m.Interpret = true
 	if code, _ := m.compile(mustRead(t, `(+ 1 2)`), m.Global); code != nil {
 		t.Errorf("Interpret should turn compilation off")
 	}
-}
-
-// m2MustProgram compiles a whole program text, the way a file is compiled.
-func m2MustProgram(t *testing.T, src string) *Program {
-	t.Helper()
-	m := NewMachine()
-	forms, err := NewStringReader(src).ReadAll()
-	if err != nil {
-		t.Fatalf("reading: %v", err)
-	}
-	prog, err := CompileProgram(m, forms, m.Global)
-	if err != nil {
-		t.Fatalf("compiling: %v", err)
-	}
-	return prog
 }
 
 // A file loaded at run time whose top-level forms come out as a mixed group
