@@ -174,6 +174,21 @@ var vmPrograms = []struct {
 	                          (match 9 (x (guard (> x 5)) (list 'big x)) (x (list 'small x)))
 	                          (match 2 (x (guard (> x 5)) (list 'big x)) (x (list 'small x))))) (newline)
 	           (display (guard (e (#t 'nomatch)) (match 'zzz (1 'one)))) (newline)`},
+	// cond-expand chooses a clause while compiling, and a macro defined inside
+	// a body is expanded there: a template that mentions an outer variable has
+	// to mean that variable, not one the use site happens to have.
+	{"cond-expand-and-lexical-macros", `(display (cond-expand ((and r7rs (not (library (nope)))) 'r7rs)
+	                                                       (else 'other))) (newline)
+	                                    (display (let () (define-syntax m (syntax-rules () ((_ x) (list 'm x)))) (m 1))) (newline)
+	                                    (display (let-syntax ((ls (syntax-rules () ((_ x) (list 'ls x))))) (ls 2))) (newline)
+	                                    (display (letrec-syntax ((lrs (syntax-rules () ((_ x) (list 'lrs x))))) (lrs 3))) (newline)
+	                                    (define (f x)
+	                                      (define-syntax double (syntax-rules () ((_ e) (* 2 e))))
+	                                      (double x))
+	                                    (display (f 21)) (newline)
+	                                    (display (let ((x 'var))
+	                                               (let-syntax ((x (syntax-rules () ((_ e) (list 'macro e)))))
+	                                                 (x 9)))) (newline)`},
 	{"assert", `(display (assert (+ 1 1))) (newline)
 	            (display (guard (e (#t (error-object-message e))) (assert #f))) (newline)`},
 	{"do-continue", `(define kept '())
@@ -426,6 +441,10 @@ func TestVMReallyCompiles(t *testing.T) {
 		`(define-record-type p (make-p x) p? (x p-x))`,
 		`(match 1 (1 'one))`,
 		`(select (else) => 'x)`,
+		`(cond-expand (else 1))`,
+		`(let-syntax ((m (syntax-rules () ((_ x) x)))) (m 1))`,
+		`(letrec-syntax ((m (syntax-rules () ((_ x) x)))) (m 1))`,
+		`(let () (define-syntax m (syntax-rules () ((_ x) x))) (m 1))`,
 	} {
 		if _, err := compileTop(m, mustRead(t, src), m.Global); err != nil {
 			t.Errorf("%s should compile: %v", src, err)

@@ -283,6 +283,18 @@ func (m *Machine) Run(expr Value, env *Env) (Value, error) {
 	})
 }
 
+// runInterpreted evaluates expr in env with the tree-walker, whether or not it
+// could be compiled.  It is what a form that teaches the compiler something has
+// to do: a define-syntax or an import is run for its effect on the environment,
+// and a compiled version of it would have no environment to have an effect on.
+func (m *Machine) runInterpreted(expr Value, env *Env) (Value, error) {
+	return m.guardedRun(func() (Value, error) {
+		baseStack, baseWinds, baseHands := len(m.stack), len(m.winds), len(m.hands)
+		m.Eval(expr, env)
+		return m.runLoop(baseStack, baseWinds, baseHands)
+	})
+}
+
 // guardedRun runs fn, converting the panic used for non-local exits and Go
 // runtime errors into ordinary Scheme errors.
 func (m *Machine) guardedRun(fn func() (Value, error)) (result Value, err error) {

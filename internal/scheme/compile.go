@@ -61,6 +61,140 @@ type cblock struct {
 	frame  *cframe
 	names  []*Symbol
 	slots  []int
+	// macros are the syntax bindings this scope introduces — a let-syntax, a
+	// letrec-syntax, or a define-syntax in a body.  They live beside the
+	// variables because that is how the interpreter's environments hold them:
+	// one namespace, and the innermost binding of either kind wins.
+	macros []*Symbol
+	syn    []*Macro
+	// senv is the shadow environment of this scope: a real Env with the same
+	// names, kept only so that a macro defined in this scope has somewhere for
+	// its marks to point.  A compiled body's variables are slots, so this is
+	// how the compiler remembers where a template's identifiers came from.
+	senv *Env
+}
+
+// pushScope starts a scope of its own: a block whose names are its own, and a
+// shadow environment for the macro expander.
+func (c *comp) pushScope(frame *cframe) (*cblock, *Env) {
+	savedBlock, savedEnv := c.block, c.env
+	c.block = &cblock{parent: savedBlock, frame: frame, senv: c.shadowEnv()}
+	c.env = c.block.senv
+	return savedBlock, savedEnv
+}
+
+// shadowEnv makes the shadow environment of a new scope.  Its parent is the
+// global one when there is nothing else, because a template's identifiers that
+// are not lexical have to resolve to the globals they name — the mark machinery
+// follows the chain the macro was defined in.
+func (c *comp) shadowEnv() *Env {
+	if c.env == nil {
+		return NewEnv(c.globals)
+	}
+	return NewEnv(c.env)
+}
+
+func (c *comp) popScope(block *cblock, env *Env) {
+	c.block, c.env = block, env
+}
+
+// lookupMarked resolves an identifier the macro expander marked.  The mark
+// names the environment the template was written in; when that scope is still
+// an ancestor of the one being compiled — which it is whenever a macro is used
+// inside the scope that defined it — the binding it stands for has a slot here,
+// and hygiene comes out right without an environment at run time.
+func (c *comp) lookupMarked(sym *Symbol) (*Macro, int, int, *cframe, bool) {
+	def := markEnvOf(sym.Mark)
+	if def == nil {
+		return nil, 0, 0, nil, false
+	}
+	name := sym.orig
+	if name == nil {
+		name = sym.Base()
+	}
+	for b := c.block; b != nil; b = b.parent {
+		if b.senv != def {
+			continue
+		}
+		for i := len(b.names) - 1; i >= 0; i-- {
+			if b.names[i] == name {
+				return nil, c.frameDepth(b.frame), b.slots[i], b.frame, true
+			}
+		}
+		for i := len(b.macros) - 1; i >= 0; i-- {
+			if b.macros[i] == name {
+				return b.syn[i], 0, 0, nil, true
+			}
+		}
+		return nil, 0, 0, nil, false
+	}
+	return nil, 0, 0, nil, false
+}
+
+// lookupMacro finds a lexical syntax binding of sym.
+func (c *comp) lookupMacro(sym *Symbol) (*Macro, bool) {
+	for b := c.block; b != nil; b = b.parent {
+		for i := len(b.macros) - 1; i >= 0; i-- {
+			if b.macros[i] == sym {
+				return b.syn[i], true
+			}
+		}
+	}
+	return nil, false
+}
+
+// lookupName finds the innermost binding of sym in the lexical scopes, and says
+// which kind it is: a variable or a syntax binding.  They share one namespace,
+// as they do in the interpreter's environments, so the innermost binding of
+// either kind is the one that counts.
+func (c *comp) lookupName(sym *Symbol) (depth, slot int, frame *cframe, mac *Macro, ok bool) {
+	for b := c.block; b != nil; b = b.parent {
+		for i := len(b.names) - 1; i >= 0; i-- {
+			if b.names[i] == sym {
+				return c.frameDepth(b.frame), b.slots[i], b.frame, nil, true
+			}
+		}
+		for i := len(b.macros) - 1; i >= 0; i-- {
+			if b.macros[i] == sym {
+				return 0, 0, nil, b.syn[i], true
+			}
+		}
+	}
+	return 0, 0, nil, nil, false
+}
+
+// dropLocal removes a variable binding from the scope being compiled, for a
+// name that a definition in the same scope turns into something else: the
+// interpreter's Define replaces the binding it finds, and a define-syntax of a
+// name the body had pre-bound as a variable is the case that matters.
+func (c *comp) dropLocal(sym *Symbol) {
+	for i := len(c.block.names) - 1; i >= 0; i-- {
+		if c.block.names[i] == sym {
+			c.block.names = append(c.block.names[:i], c.block.names[i+1:]...)
+			c.block.slots = append(c.block.slots[:i], c.block.slots[i+1:]...)
+			return
+		}
+	}
+}
+
+// defineMacro records a syntax binding in the scope being compiled.  It is how
+// a compiled body knows a macro the interpreter would have put in its
+// environment; nothing is emitted, because every use of it is expanded here.
+func (c *comp) defineMacro(name *Symbol, mac *Macro) {
+	c.block.macros = append(c.block.macros, name)
+	c.block.syn = append(c.block.syn, mac)
+	if c.env != nil {
+		c.env.Define(name, mac)
+	}
+}
+
+// useEnv is the environment a macro is expanded in: the shadow one, so that a
+// template's identifiers resolve the way they would in the interpreter.
+func (c *comp) useEnv() *Env {
+	if c.env != nil {
+		return c.env
+	}
+	return c.globals
 }
 
 // lookup finds sym and reports the lexical depth from the frame being
@@ -93,6 +227,8 @@ type comp struct {
 	block   *cblock
 	code    *Code
 	err     error
+	// env is the shadow environment of the scope being compiled (see cblock).
+	env *Env
 	// assigned is the set of variables the body being compiled assigns with
 	// set!; exactly those bindings are boxed.
 	assigned map[*Symbol]bool
@@ -155,7 +291,24 @@ func (c *comp) expr(e Value, tail bool) {
 }
 
 func (c *comp) symbolRef(sym *Symbol) {
+	if mac, depth, slot, frame, ok := c.lookupMarked(sym); ok {
+		if mac != nil {
+			c.fail("a macro name is not an expression: %s", sym.Name)
+			return
+		}
+		c.emitLocalRef(depth, slot, frame)
+		return
+	}
 	if depth, slot, frame, ok := c.lookup(sym); ok {
+		c.emitLocalRef(depth, slot, frame)
+		return
+	}
+	c.emit(opGlobal, c.konst(sym), 0)
+}
+
+// emitLocalRef reads a local, with the check and the box a variable may need.
+func (c *comp) emitLocalRef(depth, slot int, frame *cframe) {
+	{
 		switch {
 		case frame.checked[slot] && frame.boxed[slot]:
 			c.emit(opLocalCellCheck, int32(depth), int32(slot))
@@ -166,9 +319,7 @@ func (c *comp) symbolRef(sym *Symbol) {
 		default:
 			c.emit(opLocal, int32(depth), int32(slot))
 		}
-		return
 	}
-	c.emit(opGlobal, c.konst(sym), 0)
 }
 
 // combination compiles a pair: a special form, a macro use, or an application.
@@ -183,8 +334,28 @@ func (c *comp) combination(x *Pair, tail bool) {
 		c.application(x, tail)
 		return
 	}
-	if _, _, _, local := c.lookup(sym); local {
-		c.application(x, tail)
+	if sym.IsMarked() {
+		if mac, _, _, _, ok := c.lookupMarked(sym); ok && mac != nil {
+			expanded, err := mac.Expand(x, c.useEnv())
+			if err != nil {
+				c.fail("macro %s: %v", sym.Name, err)
+				return
+			}
+			c.expr(expanded, tail)
+			return
+		}
+	}
+	if _, _, _, mac, local := c.lookupName(sym); local {
+		if mac == nil {
+			c.application(x, tail)
+			return
+		}
+		expanded, err := mac.Expand(x, c.globals)
+		if err != nil {
+			c.fail("macro %s: %v", sym.Name, err)
+			return
+		}
+		c.expr(expanded, tail)
 		return
 	}
 	v, bound := c.globals.Lookup(sym)
@@ -333,6 +504,82 @@ func (c *comp) special(name string, x *Pair, tail bool) bool {
 		} else {
 			c.emit(opCall, argc, 0)
 		}
+		return true
+
+	case "define-syntax":
+		if len(args) != 2 {
+			c.fail("define-syntax: expected (define-syntax keyword transformer)")
+			return true
+		}
+		name, ok := args[0].(*Symbol)
+		if !ok {
+			c.fail("define-syntax: keyword is not an identifier")
+			return true
+		}
+		mac, err := makeSyntaxRules(name.Name, args[1], c.useEnv())
+		if err != nil {
+			c.fail("%v", err)
+			return true
+		}
+		// A body pre-binds the names of its definitions, this one included; a
+		// syntactic definition replaces that binding, as it does in an
+		// environment.
+		c.dropLocal(name)
+		c.defineMacro(name, mac)
+		// The interpreter also defines it in its environment, which a compiled
+		// frame does not have; every use in this body was expanded here, so
+		// the form is worth the unspecified value and nothing else.
+		c.emit(opConst, c.konst(UnspecifiedValue), 0)
+		return true
+
+	case "let-syntax", "letrec-syntax":
+		if len(args) < 1 {
+			c.fail("%s: malformed", name)
+			return true
+		}
+		bindings, ok := ListToSlice(args[0])
+		if !ok {
+			c.fail("%s: malformed bindings", name)
+			return true
+		}
+		// A scope of syntax bindings, and the body compiled inside it.
+		saved := c.block
+		block := &cblock{parent: saved, frame: saved.frame}
+		c.block = block
+		for _, b := range bindings {
+			p, ok := b.(*Pair)
+			if !ok {
+				c.fail("%s: malformed binding", name)
+				return true
+			}
+			kw, ok := p.Car.(*Symbol)
+			if !ok {
+				c.fail("%s: keyword is not an identifier", name)
+				return true
+			}
+			items, _ := ListToSlice(p.Cdr)
+			if len(items) != 1 {
+				c.fail("%s: malformed binding", name)
+				return true
+			}
+			mac, err := makeSyntaxRules(kw.Name, items[0], c.useEnv())
+			if err != nil {
+				c.fail("%v", err)
+				return true
+			}
+			c.defineMacro(kw, mac)
+		}
+		c.bodyWithLocals(args[1:], tail, 0)
+		c.block = saved
+		return true
+
+	case "cond-expand":
+		chosen, ok := condExpandBody(c.m, args)
+		if !ok {
+			c.fail("cond-expand: malformed clause")
+			return true
+		}
+		c.body(chosen, tail)
 		return true
 
 	case "select":
@@ -841,10 +1088,11 @@ func (c *comp) letForm(args []Value, tail bool) {
 		}
 		// The loop variable is a letrec binding: allocate it, make it visible
 		// to the lambda (which recurses through it), then fill it in.
-		saved := len(c.block.names)
+		savedBlock, savedEnv := c.pushScope(c.frame)
 		slot, boxed := c.declare(name, true)
 		c.block.names = append(c.block.names, name)
 		c.block.slots = append(c.block.slots, slot)
+		c.env.Define(name, Unassigned)
 		code := c.lambda(listFromSlice(params), args[2:], name.Name)
 		if c.err != nil {
 			return
@@ -862,8 +1110,7 @@ func (c *comp) letForm(args []Value, tail bool) {
 		} else {
 			c.emit(opCall, int32(len(inits)), 0)
 		}
-		c.block.names = c.block.names[:saved]
-		c.block.slots = c.block.slots[:saved]
+		c.popScope(savedBlock, savedEnv)
 		return
 	}
 	bindings, ok := ListToSlice(args[0])
@@ -871,7 +1118,9 @@ func (c *comp) letForm(args []Value, tail bool) {
 		c.fail("let: malformed bindings")
 		return
 	}
-	saved := len(c.block.names)
+	// A scope of its own, though the variables are slots of this body's frame:
+	// the block and the shadow environment are what make the scope a scope.
+	savedBlock, savedEnv := c.pushScope(c.frame)
 	var slots []int
 	var boxed []bool
 	var syms []*Symbol
@@ -912,10 +1161,10 @@ func (c *comp) letForm(args []Value, tail bool) {
 		c.block.names = append(c.block.names, sym)
 		c.block.slots = append(c.block.slots, slots[i])
 		c.frame.boxed[slots[i]] = boxed[i]
+		c.env.Define(sym, Unassigned)
 	}
-	c.bodyWithLocals(args[1:], tail, saved)
-	c.block.names = c.block.names[:saved]
-	c.block.slots = c.block.slots[:saved]
+	c.bodyWithLocals(args[1:], tail, 0)
+	c.popScope(savedBlock, savedEnv)
 }
 
 // letStar compiles let*, whose bindings are visible to the ones after them.
@@ -929,7 +1178,7 @@ func (c *comp) letStar(args []Value, tail bool) {
 		c.fail("let*: malformed bindings")
 		return
 	}
-	saved := len(c.block.names)
+	savedBlock, savedEnv := c.pushScope(c.frame)
 	for _, b := range bindings {
 		p, ok := b.(*Pair)
 		if !ok {
@@ -955,10 +1204,10 @@ func (c *comp) letStar(args []Value, tail bool) {
 		c.storeLocal(slot, bx)
 		c.block.names = append(c.block.names, sym)
 		c.block.slots = append(c.block.slots, slot)
+		c.env.Define(sym, Unassigned)
 	}
-	c.bodyWithLocals(args[1:], tail, saved)
-	c.block.names = c.block.names[:saved]
-	c.block.slots = c.block.slots[:saved]
+	c.bodyWithLocals(args[1:], tail, 0)
+	c.popScope(savedBlock, savedEnv)
 }
 
 // letrec compiles letrec and letrec*, which differ in one thing: letrec
@@ -977,7 +1226,7 @@ func (c *comp) letrec(args []Value, tail bool, sequential bool) {
 		c.fail("letrec: malformed bindings")
 		return
 	}
-	saved := len(c.block.names)
+	savedBlock, savedEnv := c.pushScope(c.frame)
 	var slots []int
 	var boxed []bool
 	var syms []*Symbol
@@ -1012,6 +1261,7 @@ func (c *comp) letrec(args []Value, tail bool, sequential bool) {
 		}
 		c.block.names = append(c.block.names, sym)
 		c.block.slots = append(c.block.slots, slot)
+		c.env.Define(sym, Unassigned)
 		slots = append(slots, slot)
 		boxed = append(boxed, bx)
 	}
@@ -1042,9 +1292,8 @@ func (c *comp) letrec(args []Value, tail bool, sequential bool) {
 			c.storeLocal(slots[i], boxed[i])
 		}
 	}
-	c.bodyWithLocals(args[1:], tail, saved)
-	c.block.names = c.block.names[:saved]
-	c.block.slots = c.block.slots[:saved]
+	c.bodyWithLocals(args[1:], tail, 0)
+	c.popScope(savedBlock, savedEnv)
 }
 
 // condForm compiles cond, including the => clauses.  Every clause ends by
@@ -1382,11 +1631,13 @@ func (c *comp) beginBody(formals Value, body []Value, name string) *comp {
 	saved := c.frame
 	savedBlock := c.block
 	frame := &cframe{parent: saved}
+	senv := c.shadowEnv()
 	sub := &comp{
 		m:        c.m,
 		globals:  c.globals,
+		env:      senv,
 		frame:    frame,
-		block:    &cblock{parent: savedBlock, frame: frame},
+		block:    &cblock{parent: savedBlock, frame: frame, senv: senv},
 		code:     &Code{Name: name},
 		assigned: assignedNames(body),
 	}
@@ -1402,6 +1653,7 @@ func (c *comp) beginBody(formals Value, body []Value, name string) *comp {
 		// called — (lambda args args) is the whole of the bug's surface.
 		sub.block.names = append(sub.block.names, f)
 		sub.block.slots = append(sub.block.slots, slot)
+		sub.env.Define(f, Unassigned)
 	case Empty:
 		// no parameters
 	case *Pair:
@@ -1419,6 +1671,7 @@ func (c *comp) beginBody(formals Value, body []Value, name string) *comp {
 			slot := sub.frame.slot(sym, sub.assigned[sym], false)
 			sub.block.names = append(sub.block.names, sym)
 			sub.block.slots = append(sub.block.slots, slot)
+			sub.env.Define(sym, Unassigned)
 			sub.code.Params = append(sub.code.Params, sym)
 			sub.code.NParams++
 			cur = p.Cdr
@@ -1429,6 +1682,7 @@ func (c *comp) beginBody(formals Value, body []Value, name string) *comp {
 			sub.code.RestSlot = slot
 			sub.block.names = append(sub.block.names, sym)
 			sub.block.slots = append(sub.block.slots, slot)
+			sub.env.Define(sym, Unassigned)
 		}
 	default:
 		c.fail("lambda: malformed formals")
@@ -1461,6 +1715,9 @@ func (c *comp) reserveBodyNames(body []Value, from int) {
 		}
 		c.block.names = append(c.block.names, s)
 		c.block.slots = append(c.block.slots, slot)
+		if c.env != nil {
+			c.env.Define(s, Unassigned)
+		}
 	}
 }
 
@@ -1498,6 +1755,39 @@ func (c *comp) boundThunk(formals Value, body []Value, name string) *Code {
 	}
 	sub.body(body, true)
 	return c.finishBody(sub)
+}
+
+// makeSyntaxRules builds the macro a define-syntax or let-syntax binding
+// stands for, so that a compiled body can expand it where the interpreter
+// would have put it in an environment.
+func makeSyntaxRules(name string, transformer Value, env *Env) (*Macro, error) {
+	tf, ok := transformer.(*Pair)
+	if !ok {
+		return nil, NewError("unsupported transformer", transformer)
+	}
+	kw, _ := tf.Car.(*Symbol)
+	if kw == nil || kw.Name != "syntax-rules" {
+		return nil, NewError("only syntax-rules transformers are supported", transformer)
+	}
+	return ParseSyntaxRules(name, tf, env)
+}
+
+// condExpandBody picks the clause of a cond-expand whose requirement holds, in
+// the same order the interpreter tries them, and returns its forms.
+func condExpandBody(m *Machine, args []Value) ([]Value, bool) {
+	for _, cl := range args {
+		p, ok := cl.(*Pair)
+		if !ok {
+			return nil, false
+		}
+		if s, ok := p.Car.(*Symbol); ok && s.Name == "else" {
+			return mustSlice(p.Cdr), true
+		}
+		if FeatureMatch(m, p.Car) {
+			return mustSlice(p.Cdr), true
+		}
+	}
+	return nil, true
 }
 
 // flatFormals lists the variables of a formals list in order, whether it is a

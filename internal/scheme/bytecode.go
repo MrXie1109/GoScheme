@@ -128,7 +128,11 @@ func CompileProgram(m *Machine, forms []Value, env *Env) (*Program, error) {
 	for _, form := range forms {
 		if teachingForm(form, m, env) {
 			flush()
-			if _, err := m.Run(form, env); err != nil {
+			// Interpreted, not compiled: the point of this run is its effect
+			// on the environment — the macro it defines, the library it loads
+			// — and a compiled define-syntax expands its uses at compile time
+			// and defines nothing.
+			if _, err := m.runInterpreted(form, env); err != nil {
 				return nil, err
 			}
 			prog.Chunks = append(prog.Chunks, Chunk{Form: form, ran: true})
@@ -156,6 +160,11 @@ func teachingForm(form Value, m *Machine, env *Env) bool {
 	if syntacticTeachingForm(form) {
 		return true
 	}
+	if p, ok := form.(*Pair); ok {
+		if s, ok := p.Car.(*Symbol); ok && s.Name == "cond-expand" {
+			return condExpandIsTeaching(m, form)
+		}
+	}
 	p, ok := form.(*Pair)
 	if !ok {
 		return false
@@ -177,6 +186,26 @@ func teachingForm(form Value, m *Machine, env *Env) bool {
 		return false // the compiler will report it when it compiles the form
 	}
 	return syntacticTeachingForm(expanded)
+}
+
+// condExpandIsTeaching runs the same choice cond-expand would, to see whether
+// what it chose teaches the compiler something: an import or a define-syntax
+// inside a cond-expand has to be run while compiling like any other.
+func condExpandIsTeaching(m *Machine, form Value) bool {
+	p, ok := form.(*Pair)
+	if !ok {
+		return false
+	}
+	forms, ok := condExpandBody(m, mustSlice(p.Cdr))
+	if !ok {
+		return false
+	}
+	for _, f := range forms {
+		if teachingForm(f, m, m.Global) {
+			return true
+		}
+	}
+	return false
 }
 
 // syntacticTeachingForm is the check that needs no expansion.
