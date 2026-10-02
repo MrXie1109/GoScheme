@@ -102,29 +102,68 @@ The two paths are held together by tests, not by hope:
 
 ## Performance
 
-Measured on this machine (a 12th-generation i3), best of three runs, with the
-programs in `/tmp` and the released binary:
+The panel in `internal/scheme/vm_panel_test.go` runs twelve shapes of program
+both ways; the numbers below are the best of three `-benchtime 20x` runs on this
+machine (a 12th-generation i3), and each one includes building the machine and
+compiling the program, because that is what a run costs:
 
-| Program | Interpreted | Compiled |
-|---|---|---|
-| `(fib 27)` | 0.46 s | 0.47 s |
-| a 3,000,000-turn tail loop | 2.70 s | 2.59 s |
-| `go test -bench BenchmarkFib` | 15.2 ms | 15.6 ms |
+```sh
+go test ./internal/scheme -run XXX -bench BenchmarkPanel -benchtime 20x -count 3
+```
 
-So the VM is at **parity** today, not faster, and that is worth being plain
-about.  What the bytecode buys now is the architecture: a program can be
-compiled ahead of time and stored, the compiler's decisions are explicit, and
-the hot path is a switch over a byte slice rather than a tree walk.
+| Program | VM | interpreted | speed-up | VM allocated | interpreted | ratio |
+|---|---|---|---|---|---|---|
+| `callcc` | 16.7 ms | 23.5 ms | **1.41×** | 14.5 MB | 28.1 MB | 0.52× |
+| `locals` | 169.9 ms | 211.4 ms | **1.24×** | 179.5 MB | 325.1 MB | 0.55× |
+| `sort` | 25.1 ms | 30.2 ms | **1.20×** | 26.3 MB | 38.4 MB | 0.69× |
+| `higher-order` | 55.5 ms | 66.0 ms | **1.19×** | 43.1 MB | 67.1 MB | 0.64× |
+| `lists` | 291.6 ms | 342.9 ms | **1.18×** | 185.2 MB | 273.2 MB | 0.68× |
+| `globals` | 168.2 ms | 194.9 ms | **1.16×** | 179.5 MB | 325.1 MB | 0.55× |
+| `closures` | 31.9 ms | 35.3 ms | **1.11×** | 37.4 MB | 54.2 MB | 0.69× |
+| `mini-eval` | 60.4 ms | 66.8 ms | **1.11×** | 56.8 MB | 90.3 MB | 0.63× |
+| `tail-loop` | 166.9 ms | 184.4 ms | **1.10×** | 174.8 MB | 291.6 MB | 0.60× |
+| `vectors` | 97.6 ms | 107.2 ms | **1.10×** | 106.5 MB | 173.9 MB | 0.61× |
+| `strings` | 9.5 ms | 10.3 ms | **1.09×** | 41.2 MB | 43.0 MB | 0.96× |
+| `fib` | 15.1 ms | 15.2 ms | **1.01×** | 16.5 MB | 24.4 MB | 0.68× |
+
+**The VM is faster on all twelve, by 1.01× to 1.41×
+(geometric mean 1.15×), and allocates 0.52× to
+0.96× as much.**
+
+Why it wins, in order of how much it matters:
+
+1. **Bindings are resolved at compile time.** A variable reference is a
+   (depth, slot) pair, where the interpreter walks an environment chain
+   comparing symbols.  That is the `locals` and `globals` rows.
+2. **Macros are expanded once**, not on every evaluation of the form, and the
+   shape of an expression is decided once instead of at every step.
+3. **A compiled call allocates less than an interpreted one**: no `Env` object,
+   no operator/operand frames — a frame slice and a continuation, and the
+   continuation is only a slice copy when a call is pending.
+4. **Special forms cost nothing at run time.** `cond`, `case`, `and`, `or` and
+   the rest are jumps by then.
+
+The honest caveats:
+
+* `fib` is the thinnest margin (1.01×) because it is nothing but calls and
+  arithmetic: both paths allocate about one frame per call, and that dominates.
+* These are microbenchmarks of specific shapes, not a suite of real programs;
+  `mini-eval` and `sort` are the closest to "a real program" here, at 1.11× and
+  1.20×.
+* The comparison is against *this* interpreter.  A tree-walker that cached
+  resolved bindings and pre-expanded macros would close much of the gap; the VM
+  wins because those decisions are made once, ahead of time, which is also what
+  makes the bytecode worth writing to a file.
 
 Where the remaining cost is, in the order it should be attacked:
 
-1. a frame and its operand-stack copy are allocated per non-tail call
-   (the interpreter keeps its first four operands in the frame itself);
-2. `slots` and `vmEnv` are two allocations per call, where one would do;
-3. global references look a symbol up in the environment each time, where an
-   index into a global vector would do;
-4. primitive calls go through the same generic `apply` as the interpreter, so
-   `(+ a b)` is not yet an instruction.
+1. a frame and its operand-stack copy are allocated per non-tail call (the
+   interpreter keeps its first four operands inside the frame itself);
+2. `slots` and `vmEnv` are two allocations per call where one would do;
+3. a primitive call goes through the same generic `apply` as the interpreter,
+   so `(+ a b)` is not yet an instruction of its own;
+4. global references look a symbol up in the environment each time, where a
+   cached slot with a generation check would do.
 
 None of those changes the semantics, which is why they can be done later,
 behind the tests.
