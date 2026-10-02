@@ -51,11 +51,35 @@ not, so adding a form is a local change to `special` in `compile.go`.
   loop and not a growing stack.
 * **Continuations.**  A compiled activation is *not* on the continuation stack
   while it runs; it puts a frame there only while it waits for a call it made.
-  That frame, like every interpreted frame, is written once and never mutated —
-  a resumption builds a new one with its own copy of the operand stack.  So a
-  continuation captured by `call/cc` inside compiled code can be invoked any
-  number of times, and it composes with `dynamic-wind` and `guard` because
-  those are the machine's frames, not the VM's.
+  That frame is written once and never mutated — a resumption gives the
+  activation a fresh operand stack.  So a continuation captured by `call/cc`
+  inside compiled code can be invoked any number of times, and it composes with
+  `dynamic-wind` and `guard` because those are the machine's frames, not the
+  VM's.
+
+### The call protocol
+
+A call does not nest Go calls, and it does not wait to find out what it is
+calling.  `vmRun` is a loop with a *current activation*; `opCall` does one of
+three things:
+
+* **a simple primitive** — one registered through `defSimple`, 596 of the 644
+  builtins.  Its Go function cannot reach the machine at all, so it can only
+  return a value or raise; either way it finishes inside the call, and no
+  continuation frame is built.  A `(+ a b)` in a loop is a call with no
+  allocation.  (If it raises, the frame the caller *would* have built is built
+  at that point, which is indistinguishable: the primitive pushed nothing.)
+* **a compiled procedure** — its body becomes the current activation, in the
+  same Go frame, after the caller's state is saved.  The caller's operand array
+  is handed on as the callee's.
+* **anything else** — an interpreted closure, a `call/cc` continuation, a
+  parameter, a multi-clause or `case-lambda` procedure, a primitive that calls
+  back into Scheme: the frame is pushed and the machine's `apply` runs it.
+
+Because the second case replaces the activation instead of recursing, a
+non-tail recursion a million deep costs a million frames on the Scheme stack
+and *two* Go ones.  A tail call is the same replacement with nothing saved, so
+it costs neither.
 
 ## Bytecode files
 
@@ -87,12 +111,14 @@ does not speak rather than misreading it.
 
 The two paths are held together by tests, not by hope:
 
-* `internal/scheme/vm_test.go` runs a corpus of 33 programs — arithmetic,
+* `internal/scheme/vm_test.go` runs a corpus of 45 programs — arithmetic,
   closures and `set!`, internal definitions, every compiled derived form, tail
-  calls, `call/cc` escapes and re-entries, `dynamic-wind`, macro definitions,
-  records, `parameterize`, `match`, strings, vectors, hash tables, SRFI-1, and
-  a dozen error cases — **three ways**: compiled, compiled-to-bytes-and-back,
-  and interpreted.  All three have to print the same thing.
+  calls, a 200 000-deep non-tail recursion, `call/cc` escapes and re-entries,
+  `dynamic-wind`, macro definitions, records, `parameterize`, `match`, strings,
+  vectors, hash tables, SRFI-1, rest-only parameter lists, multiple values, and
+  a dozen error cases (including a simple primitive that raises from compiled
+  code) — **three ways**: compiled, compiled-to-bytes-and-back, and interpreted.
+  All three have to print the same thing.
 * The whole existing test suite (2611 assertions: the R7RS reference suite and
   every extension suite) is run **twice**, once per execution path, by
   `TestR7RSReferenceSuite` and `TestExtensionSuites`.
@@ -113,57 +139,66 @@ go test ./internal/scheme -run XXX -bench BenchmarkPanel -benchtime 20x -count 3
 
 | Program | VM | interpreted | speed-up | VM allocated | interpreted | ratio |
 |---|---|---|---|---|---|---|
-| `callcc` | 16.7 ms | 23.5 ms | **1.41×** | 14.5 MB | 28.1 MB | 0.52× |
-| `locals` | 169.9 ms | 211.4 ms | **1.24×** | 179.5 MB | 325.1 MB | 0.55× |
-| `sort` | 25.1 ms | 30.2 ms | **1.20×** | 26.3 MB | 38.4 MB | 0.69× |
-| `higher-order` | 55.5 ms | 66.0 ms | **1.19×** | 43.1 MB | 67.1 MB | 0.64× |
-| `lists` | 291.6 ms | 342.9 ms | **1.18×** | 185.2 MB | 273.2 MB | 0.68× |
-| `globals` | 168.2 ms | 194.9 ms | **1.16×** | 179.5 MB | 325.1 MB | 0.55× |
-| `closures` | 31.9 ms | 35.3 ms | **1.11×** | 37.4 MB | 54.2 MB | 0.69× |
-| `mini-eval` | 60.4 ms | 66.8 ms | **1.11×** | 56.8 MB | 90.3 MB | 0.63× |
-| `tail-loop` | 166.9 ms | 184.4 ms | **1.10×** | 174.8 MB | 291.6 MB | 0.60× |
-| `vectors` | 97.6 ms | 107.2 ms | **1.10×** | 106.5 MB | 173.9 MB | 0.61× |
-| `strings` | 9.5 ms | 10.3 ms | **1.09×** | 41.2 MB | 43.0 MB | 0.96× |
-| `fib` | 15.1 ms | 15.2 ms | **1.01×** | 16.5 MB | 24.4 MB | 0.68× |
+| `lists` | 67.9 ms | 339.1 ms | **4.99×** | 29.9 MB | 273.1 MB | 0.11× |
+| `higher-order` | 16.2 ms | 59.1 ms | **3.65×** | 13.3 MB | 67.1 MB | 0.20× |
+| `mini-eval` | 15.5 ms | 55.2 ms | **3.56×** | 14.7 MB | 90.3 MB | 0.16× |
+| `locals` | 53.7 ms | 191.3 ms | **3.56×** | 38.7 MB | 325.1 MB | 0.12× |
+| `sort` | 7.7 ms | 26.4 ms | **3.43×** | 5.6 MB | 38.4 MB | 0.15× |
+| `vectors` | 27.1 ms | 90.4 ms | **3.34×** | 14.7 MB | 173.9 MB | 0.08× |
+| `tail-loop` | 47.0 ms | 154.4 ms | **3.28×** | 33.9 MB | 291.5 MB | 0.12× |
+| `globals` | 54.5 ms | 175.9 ms | **3.23×** | 38.7 MB | 325.1 MB | 0.12× |
+| `callcc` | 8.5 ms | 21.2 ms | **2.48×** | 5.2 MB | 28.1 MB | 0.19× |
+| `fib` | 5.5 ms | 13.2 ms | **2.40×** | 6.7 MB | 24.4 MB | 0.27× |
+| `closures` | 13.1 ms | 30.7 ms | **2.36×** | 21.4 MB | 54.2 MB | 0.40× |
+| `strings` | 5.8 ms | 7.7 ms | **1.33×** | 39.1 MB | 43.0 MB | 0.91× |
 
-**The VM is faster on all twelve, by 1.01× to 1.41×
-(geometric mean 1.15×), and allocates 0.52× to
-0.96× as much.**
+**The VM is faster on all twelve, by 1.33× to 4.99×
+(geometric mean 3.00×), and allocates 0.08× to
+0.91× as much.**
 
 Why it wins, in order of how much it matters:
 
 1. **Bindings are resolved at compile time.** A variable reference is a
    (depth, slot) pair, where the interpreter walks an environment chain
    comparing symbols.  That is the `locals` and `globals` rows.
-2. **Macros are expanded once**, not on every evaluation of the form, and the
+2. **Most calls allocate nothing.**  A call to a simple primitive is a Go call
+   and a result value; a call to a compiled procedure saves the caller into one
+   small frame and continues.  The interpreter, for the same call, builds an
+   `Env`, operator and operand frames, and a `*Pair` per argument list.
+3. **A frame keeps its own storage.**  Slots and the first four operands live
+   inside the `vmEnv` and `fVM` structs, so an activation is one allocation
+   rather than three, and resuming one usually allocates nothing at all.
+4. **Macros are expanded once**, not on every evaluation of the form, and the
    shape of an expression is decided once instead of at every step.
-3. **A compiled call allocates less than an interpreted one**: no `Env` object,
-   no operator/operand frames — a frame slice and a continuation, and the
-   continuation is only a slice copy when a call is pending.
-4. **Special forms cost nothing at run time.** `cond`, `case`, `and`, `or` and
+5. **Special forms cost nothing at run time.** `cond`, `case`, `and`, `or` and
    the rest are jumps by then.
 
 The honest caveats:
 
-* `fib` is the thinnest margin (1.01×) because it is nothing but calls and
-  arithmetic: both paths allocate about one frame per call, and that dominates.
+* `strings` is the thinnest margin (1.33×): the workload spends most of its
+  time inside two or three big primitives, where both paths are doing the same
+  Go work.
 * These are microbenchmarks of specific shapes, not a suite of real programs;
-  `mini-eval` and `sort` are the closest to "a real program" here, at 1.11× and
-  1.20×.
+  `mini-eval` and `sort` are the closest to "a real program" here, at 3.56× and
+  3.43×.
 * The comparison is against *this* interpreter.  A tree-walker that cached
-  resolved bindings and pre-expanded macros would close much of the gap; the VM
+  resolved bindings and pre-expanded macros would close part of the gap; the VM
   wins because those decisions are made once, ahead of time, which is also what
   makes the bytecode worth writing to a file.
+* The interpreted numbers move by 5–15% between runs on this machine, so the
+  ratios in a row are more trustworthy than the ratios between rows.
 
 Where the remaining cost is, in the order it should be attacked:
 
-1. a frame and its operand-stack copy are allocated per non-tail call (the
-   interpreter keeps its first four operands inside the frame itself);
-2. `slots` and `vmEnv` are two allocations per call where one would do;
-3. a primitive call goes through the same generic `apply` as the interpreter,
-   so `(+ a b)` is not yet an instruction of its own;
-4. global references look a symbol up in the environment each time, where a
-   cached slot with a generation check would do.
+1. a continuation frame is still allocated per non-tail call to a compiled
+   procedure — 88 bytes — although nothing else about the call is;
+2. global references look a symbol up in the environment each time, where a
+   cached slot with a generation check would do (`mapaccess2_fast64` is the
+   last non-GC symbol left in the profile);
+3. a frame is a second allocation per call when it has more than four slots,
+   and a boxed variable (`set!` on a parameter) is a third;
+4. `+`, `car` and friends still go through a Go call with a `defer`/`recover`
+   wrapper each, where an inline arithmetic instruction would not.
 
 None of those changes the semantics, which is why they can be done later,
 behind the tests.

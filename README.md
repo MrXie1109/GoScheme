@@ -822,17 +822,19 @@ A predicate written in Scheme is the exception: `filter` has to call it once
 per element, which costs about what the Scheme loop cost, so the library's
 predicates are worth using only when a builtin one will do.
 
-**The bytecode VM** is a further win, and it is the default execution path.  On
-a panel of twelve programs — calls and arithmetic, closures, global- and
-local-heavy loops, lists, vectors, strings, higher-order code, a small
-evaluator, a merge sort, tail loops and `call/cc` re-entry — it is **1.01× to
-1.41× faster** than the tree-walker (geometric mean 1.15×) and allocates **36%
-less**, because bindings are resolved at compile time, macros are expanded once
-rather than on every evaluation, and a compiled call allocates no environment.
-It also means a program can be compiled once and stored: `goscheme compile
-script.scm` writes a `.scmc` file that runs without being parsed as source.
-[docs/bytecode.md](docs/bytecode.md) has the table, the caveats and what the
-compiler declines.
+**The bytecode VM** is a bigger win than that, and it is the default execution
+path.  On a panel of twelve programs — calls and arithmetic, closures, global-
+and local-heavy loops, lists, vectors, strings, higher-order code, a small
+evaluator, a merge sort, tail loops and `call/cc` re-entry — it is **1.33× to
+4.99× faster** than the tree-walker (geometric mean 3.0×) and allocates **82%
+less**.  Bindings are resolved at compile time; macros are expanded once rather
+than on every evaluation; a call to a builtin such as `+` or `car` builds no
+continuation frame at all; and a call to a compiled procedure replaces the
+current activation instead of recursing, so a non-tail recursion a million deep
+costs two Go stack frames.  It also means a program can be compiled once and
+stored: `goscheme compile script.scm` writes a `.scmc` file that runs without
+being parsed as source.  [docs/bytecode.md](docs/bytecode.md) has the table, the
+caveats and what the compiler declines.
 
 A frame takes its lock only while more than one interpreter thread is running,
 which is what makes the common single-threaded case free; `(go ...)` and the
