@@ -11,6 +11,7 @@
 //	-e expr    evaluate expr (repeatable)
 //	-i         enter the REPL after loading the file
 //	-q         do not print the banner in interactive mode
+//	-interp    run in the tree-walker instead of the bytecode VM
 //	-v         print the version
 //
 // With no file and no -e the interpreter starts an interactive REPL.
@@ -57,10 +58,14 @@ func run() int {
 	if len(args) > 0 && args[0] == "build" {
 		return runBuild(args[1:])
 	}
+	if len(args) > 0 && args[0] == "compile" {
+		return runCompile(args[1:])
+	}
 	var files []string
 	var exprs []string
 	interactive := false
 	quiet := false
+	interpret := false
 	i := 0
 	for ; i < len(args); i++ {
 		a := args[i]
@@ -83,6 +88,10 @@ func run() int {
 			interactive = true
 		case "-q", "--quiet":
 			quiet = true
+		case "-interp", "--interpret":
+			// Run everything in the tree-walker: the bytecode VM is the
+			// default, and this is how the two are compared.
+			interpret = true
 		case "-v", "--version":
 			fmt.Println(versionString())
 			return 0
@@ -102,6 +111,7 @@ func run() int {
 	}
 
 	m := scheme.NewMachine()
+	m.Interpret = interpret
 	// (command-line) starts with the script and continues with the user's
 	// arguments; the interpreter's own name is deliberately left out, so that
 	// (cdr (command-line)) is the argument list whether the script is
@@ -140,8 +150,9 @@ func exitCodeFor(failed bool) int {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: goscheme [-i] [-q] [-e expr] [file] [args...]")
+	fmt.Fprintln(os.Stderr, "usage: goscheme [-i] [-q] [-interp] [-e expr] [file] [args...]")
 	fmt.Fprintln(os.Stderr, "       goscheme build <script> [-o <output>] [-i <interpreter>]")
+	fmt.Fprintln(os.Stderr, "       goscheme compile <script> [-o <output.scmc>]")
 }
 
 // commandLine builds the (command-line) list: the script (or, for a bundled
@@ -199,6 +210,25 @@ func loadFile(m *scheme.Machine, path string) int {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		abs = path
+	}
+	// A .scmc file is bytecode: it is loaded and run, never read as source.
+	if strings.HasSuffix(path, ".scmc") {
+		f, err := os.Open(abs)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "goscheme: %v\n", err)
+			return 1
+		}
+		defer f.Close()
+		prog, err := scheme.ReadBytecode(f)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "goscheme: %v\n", err)
+			return 1
+		}
+		m.AddLoadPath(filepath.Dir(abs))
+		if _, err := m.RunProgram(prog, m.Global); err != nil {
+			return reportError(err)
+		}
+		return 0
 	}
 	data, err := os.ReadFile(abs)
 	if err != nil {

@@ -1,0 +1,606 @@
+// SPDX-License-Identifier: MIT
+
+package scheme
+
+// Reading and writing .scmc files: a compiled program as bytes.
+//
+// A program is a sequence of chunks.  A chunk is either compiled Code, which
+// the VM runs, or a source form, which is evaluated — and that is how the
+// forms that teach the compiler something (import, define-syntax,
+// define-record-type) survive a round trip: they are stored as source and run
+// when the file is loaded, while everything the compiler understood is stored
+// as bytecode and never parsed again.
+//
+// The format is deliberately simple: a magic number and a version, then the
+// chunks, then the instructions with their literals.  Literals are tagged and
+// recursive, so a quoted list or vector is stored as itself.
+
+import (
+	"encoding/binary"
+	"fmt"
+	"io"
+	"math"
+	"math/big"
+)
+
+// Program is a compiled program: the chunks in source order.
+type Program struct {
+	Chunks []Chunk
+}
+
+// Chunk is one top-level form: compiled when Code is not nil, and source to
+// evaluate otherwise.
+type Chunk struct {
+	Code *Code
+	Form Value
+}
+
+const (
+	bytecodeMagic   = "GSCM"
+	bytecodeVersion = 1
+)
+
+// CompileProgram compiles the forms of a program.  Forms that affect the
+// compile-time environment — import, define-syntax, include — are evaluated as
+// they are met, because the compiler has to know the macros and bindings they
+// introduce; they are also kept as source chunks so that loading the file
+// performs them again for the run.
+func CompileProgram(m *Machine, forms []Value, env *Env) (*Program, error) {
+	prog := &Program{}
+	// Consecutive ordinary forms become one chunk holding a begin, because
+	// that is what running the same file does (see RunForms): a continuation
+	// captured in one top-level form has to span the rest of the program, and
+	// a chunk boundary would end it.  A form that teaches the compiler
+	// something — an import, a define-syntax — has to be a chunk of its own so
+	// that it runs before the code after it is compiled and loaded.
+	var group []Value
+	flush := func() {
+		if len(group) == 0 {
+			return
+		}
+		form := group[0]
+		if len(group) > 1 {
+			form = Cons(Intern("begin"), listFromSlice(group))
+		}
+		if code, err := compileTop(m, form, env); err == nil {
+			prog.Chunks = append(prog.Chunks, Chunk{Code: code})
+		} else {
+			prog.Chunks = append(prog.Chunks, Chunk{Form: form})
+		}
+		group = nil
+	}
+	for _, form := range forms {
+		if teachingForm(form) {
+			flush()
+			if _, err := m.Run(form, env); err != nil {
+				return nil, err
+			}
+			prog.Chunks = append(prog.Chunks, Chunk{Form: form})
+			continue
+		}
+		group = append(group, form)
+	}
+	flush()
+	return prog, nil
+}
+
+// teachingForm reports whether a top-level form changes what the compiler
+// knows, and so has to be run while compiling.
+func teachingForm(form Value) bool {
+	p, ok := form.(*Pair)
+	if !ok {
+		return false
+	}
+	s, ok := p.Car.(*Symbol)
+	if !ok {
+		return false
+	}
+	switch s.Name {
+	case "import", "define-syntax", "include", "include-ci", "define-library":
+		return true
+	case "begin":
+		// A top-level begin may hold definitions of macros, which have to be
+		// run for the rest to compile.
+		items, _ := ListToSlice(p.Cdr)
+		for _, it := range items {
+			if teachingForm(it) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// RunChunk runs one chunk of a program in env.
+func (m *Machine) RunChunk(c Chunk, env *Env) (Value, error) {
+	return m.guardedRun(func() (Value, error) {
+		baseStack, baseWinds, baseHands := len(m.stack), len(m.winds), len(m.hands)
+		if c.Code != nil {
+			m.runCompiledTop(c.Code, env)
+		} else {
+			m.Eval(c.Form, env)
+		}
+		return m.runLoop(baseStack, baseWinds, baseHands)
+	})
+}
+
+// RunProgram runs every chunk of a program, in order.
+func (m *Machine) RunProgram(p *Program, env *Env) (Value, error) {
+	result := Value(UnspecifiedValue)
+	for _, c := range p.Chunks {
+		v, err := m.RunChunk(c, env)
+		if err != nil {
+			return nil, err
+		}
+		result = v
+	}
+	return result, nil
+}
+
+// ---------------------------------------------------------------------------
+// Writing
+// ---------------------------------------------------------------------------
+
+// WriteBytecode writes a compiled program.
+func WriteBytecode(w io.Writer, p *Program) error {
+	bw := &byteWriter{w: &bufWriter{w: w}}
+	bw.raw([]byte(bytecodeMagic))
+	bw.u8(bytecodeVersion)
+	bw.uvarint(uint64(len(p.Chunks)))
+	for _, c := range p.Chunks {
+		switch {
+		case c.Code != nil:
+			bw.u8(1)
+			bw.code(c.Code)
+		default:
+			bw.u8(0)
+			bw.datum(c.Form, map[interface{}]bool{})
+		}
+	}
+	if bw.err != nil {
+		return bw.err
+	}
+	return bw.w.Flush()
+}
+
+// ---------------------------------------------------------------------------
+// Reading
+// ---------------------------------------------------------------------------
+
+// ReadBytecode reads a compiled program.
+func ReadBytecode(r io.Reader) (*Program, error) {
+	br := &byteReader{r: r}
+	magic := make([]byte, 4)
+	if _, err := io.ReadFull(br.r, magic); err != nil {
+		return nil, fmt.Errorf("bytecode: %v", err)
+	}
+	if string(magic) != bytecodeMagic {
+		return nil, fmt.Errorf("bytecode: not a .scmc file")
+	}
+	if v := br.u8(); v != bytecodeVersion {
+		return nil, fmt.Errorf("bytecode: version %d, but this interpreter speaks %d", v, bytecodeVersion)
+	}
+	n := br.uvarint()
+	if br.err != nil {
+		return nil, br.err
+	}
+	prog := &Program{Chunks: make([]Chunk, 0, n)}
+	for i := uint64(0); i < n; i++ {
+		switch br.u8() {
+		case 0:
+			prog.Chunks = append(prog.Chunks, Chunk{Form: br.datum()})
+		case 1:
+			prog.Chunks = append(prog.Chunks, Chunk{Code: br.code()})
+		default:
+			return nil, fmt.Errorf("bytecode: bad chunk tag")
+		}
+		if br.err != nil {
+			return nil, br.err
+		}
+	}
+	return prog, nil
+}
+
+// ---------------------------------------------------------------------------
+// The binary reader and writer
+// ---------------------------------------------------------------------------
+
+type byteWriter struct {
+	w   *bufWriter
+	err error
+}
+
+// bufWriter buffers the bytes of a file, so that a large constant pool does
+// not become one write per byte.
+type bufWriter struct {
+	w   io.Writer
+	buf []byte
+}
+
+func (b *bufWriter) Write(p []byte) (int, error) {
+	b.buf = append(b.buf, p...)
+	if len(b.buf) >= 64*1024 {
+		return len(p), b.Flush()
+	}
+	return len(p), nil
+}
+
+func (b *bufWriter) Flush() error {
+	if len(b.buf) == 0 {
+		return nil
+	}
+	_, err := b.w.Write(b.buf)
+	b.buf = b.buf[:0]
+	return err
+}
+
+func (b *byteWriter) raw(p []byte) {
+	if b.err != nil {
+		return
+	}
+	_, b.err = b.w.Write(p)
+}
+
+func (b *byteWriter) u8(v byte) { b.raw([]byte{v}) }
+
+func (b *byteWriter) uvarint(v uint64) {
+	var tmp [binary.MaxVarintLen64]byte
+	n := binary.PutUvarint(tmp[:], v)
+	b.raw(tmp[:n])
+}
+
+func (b *byteWriter) svarint(v int64) {
+	var tmp [binary.MaxVarintLen64]byte
+	n := binary.PutVarint(tmp[:], v)
+	b.raw(tmp[:n])
+}
+
+func (b *byteWriter) str(s string) {
+	b.uvarint(uint64(len(s)))
+	b.raw([]byte(s))
+}
+
+func (b *byteWriter) u64(v uint64) {
+	var tmp [8]byte
+	binary.LittleEndian.PutUint64(tmp[:], v)
+	b.raw(tmp[:])
+}
+
+func (b *byteWriter) code(c *Code) {
+	b.str(c.Name)
+	b.uvarint(uint64(len(c.Instrs)))
+	for _, in := range c.Instrs {
+		b.u8(byte(in.op))
+		b.svarint(int64(in.arg1))
+		b.svarint(int64(in.arg2))
+	}
+	b.uvarint(uint64(len(c.Consts)))
+	for _, k := range c.Consts {
+		b.datum(k, map[interface{}]bool{})
+	}
+	b.uvarint(uint64(c.NSlots))
+	b.bits(c.Boxed, c.NSlots)
+	b.bits(c.Checked, c.NSlots)
+	b.uvarint(uint64(c.NParams))
+	if c.HasRest {
+		b.u8(1)
+	} else {
+		b.u8(0)
+	}
+	b.uvarint(uint64(c.RestSlot))
+	// The slot names are only for error messages, but they are what a user
+	// sees, so they travel with the code.
+	b.uvarint(uint64(len(c.Names)))
+	for _, s := range c.Names {
+		if s == nil {
+			b.u8(0)
+			continue
+		}
+		b.u8(1)
+		b.str(s.Name)
+	}
+}
+
+func (b *byteWriter) bits(set []bool, n int) {
+	var cur byte
+	for i := 0; i < n; i++ {
+		if i < len(set) && set[i] {
+			cur |= 1 << uint(i%8)
+		}
+		if i%8 == 7 {
+			b.u8(cur)
+			cur = 0
+		}
+	}
+	if n%8 != 0 {
+		b.u8(cur)
+	}
+}
+
+// Datum tags.  The numbers are part of the file format.
+const (
+	tEmpty      = 0
+	tTrue       = 1
+	tFalse      = 2
+	tUnspec     = 3
+	tUnassigned = 4
+	tChar       = 5
+	tInt        = 6
+	tRational   = 7
+	tFloat      = 8
+	tComplex    = 9
+	tString     = 10
+	tSymbol     = 11
+	tPair       = 12
+	tVector     = 13
+	tBytevector = 14
+	tCode       = 15
+	tEof        = 16
+)
+
+func (b *byteWriter) datum(v Value, seen map[interface{}]bool) {
+	if b.err != nil {
+		return
+	}
+	switch x := v.(type) {
+	case Empty:
+		b.u8(tEmpty)
+	case Boolean:
+		if bool(x) {
+			b.u8(tTrue)
+		} else {
+			b.u8(tFalse)
+		}
+	case Unspecified:
+		b.u8(tUnspec)
+	case unassigned:
+		b.u8(tUnassigned)
+	case Char:
+		b.u8(tChar)
+		b.uvarint(uint64(x))
+	case *Integer:
+		b.u8(tInt)
+		b.str(x.Big().String())
+	case *Rational:
+		b.u8(tRational)
+		b.str(x.R.RatString())
+	case Float:
+		b.u8(tFloat)
+		b.u64(math.Float64bits(float64(x)))
+	case *Complex:
+		b.u8(tComplex)
+		b.datum(x.Re, seen)
+		b.datum(x.Im, seen)
+	case *String:
+		b.u8(tString)
+		b.str(x.Value())
+	case *Symbol:
+		b.u8(tSymbol)
+		b.str(x.Name)
+	case *Pair:
+		if seen[x] {
+			b.err = fmt.Errorf("bytecode: cannot store cyclic data")
+			return
+		}
+		seen[x] = true
+		b.u8(tPair)
+		b.datum(x.Car, seen)
+		b.datum(x.Cdr, seen)
+		delete(seen, x)
+	case *Vector:
+		if seen[x] {
+			b.err = fmt.Errorf("bytecode: cannot store cyclic data")
+			return
+		}
+		seen[x] = true
+		b.u8(tVector)
+		b.uvarint(uint64(len(x.Items)))
+		for _, e := range x.Items {
+			b.datum(e, seen)
+		}
+		delete(seen, x)
+	case *Bytevector:
+		b.u8(tBytevector)
+		b.uvarint(uint64(len(x.Bytes)))
+		b.raw(x.Bytes)
+	case *Code:
+		b.u8(tCode)
+		b.code(x)
+	case EOF:
+		b.u8(tEof)
+	case nil:
+		b.u8(tUnspec)
+	default:
+		b.err = fmt.Errorf("bytecode: cannot store %s", WriteToString(v))
+	}
+}
+
+type byteReader struct {
+	r   io.Reader
+	err error
+	one [1]byte
+	buf [8]byte
+}
+
+func (b *byteReader) u8() byte {
+	if b.err != nil {
+		return 0
+	}
+	_, b.err = io.ReadFull(b.r, b.one[:])
+	return b.one[0]
+}
+
+func (b *byteReader) uvarint() uint64 {
+	if b.err != nil {
+		return 0
+	}
+	v, err := binary.ReadUvarint(b)
+	if err != nil {
+		b.err = err
+		return 0
+	}
+	return v
+}
+
+func (b *byteReader) svarint() int64 {
+	if b.err != nil {
+		return 0
+	}
+	v, err := binary.ReadVarint(b)
+	if err != nil {
+		b.err = err
+		return 0
+	}
+	return v
+}
+
+// ReadByte implements io.ByteReader, which is what the varint readers need.
+func (b *byteReader) ReadByte() (byte, error) {
+	if b.err != nil {
+		return 0, b.err
+	}
+	_, err := io.ReadFull(b.r, b.one[:])
+	if err != nil {
+		b.err = err
+		return 0, err
+	}
+	return b.one[0], nil
+}
+
+func (b *byteReader) u64() uint64 {
+	if b.err != nil {
+		return 0
+	}
+	if _, b.err = io.ReadFull(b.r, b.buf[:8]); b.err != nil {
+		return 0
+	}
+	return binary.LittleEndian.Uint64(b.buf[:8])
+}
+
+func (b *byteReader) str() string {
+	n := b.uvarint()
+	if b.err != nil || n > 1<<30 {
+		if b.err == nil {
+			b.err = fmt.Errorf("bytecode: bad string length")
+		}
+		return ""
+	}
+	buf := make([]byte, n)
+	if _, b.err = io.ReadFull(b.r, buf); b.err != nil {
+		return ""
+	}
+	return string(buf)
+}
+
+func (b *byteReader) bits(n int) []bool {
+	out := make([]bool, n)
+	cur := byte(0)
+	for i := 0; i < n; i++ {
+		if i%8 == 0 {
+			cur = b.u8()
+		}
+		out[i] = cur&(1<<uint(i%8)) != 0
+	}
+	return out
+}
+
+func (b *byteReader) code() *Code {
+	c := &Code{}
+	c.Name = b.str()
+	n := b.uvarint()
+	c.Instrs = make([]instr, n)
+	for i := range c.Instrs {
+		op := b.u8()
+		a1 := b.svarint()
+		a2 := b.svarint()
+		c.Instrs[i] = instr{op: opcode(op), arg1: int32(a1), arg2: int32(a2)}
+	}
+	nc := b.uvarint()
+	c.Consts = make([]Value, nc)
+	for i := range c.Consts {
+		c.Consts[i] = b.datum()
+	}
+	c.NSlots = int(b.uvarint())
+	c.Boxed = b.bits(c.NSlots)
+	c.Checked = b.bits(c.NSlots)
+	c.NParams = int(b.uvarint())
+	c.HasRest = b.u8() == 1
+	c.RestSlot = int(b.uvarint())
+	nn := b.uvarint()
+	c.Names = make([]*Symbol, nn)
+	for i := range c.Names {
+		if b.u8() == 0 {
+			continue
+		}
+		c.Names[i] = Intern(b.str())
+	}
+	// A compiled clause carries parameter symbols for its arity checks, and
+	// they are not stored: they are placeholders that are never bound.
+	c.Params = placeholderParams(c.NParams)
+	return c
+}
+
+func (b *byteReader) datum() Value {
+	switch b.u8() {
+	case tEmpty:
+		return Nil
+	case tTrue:
+		return True
+	case tFalse:
+		return False
+	case tUnspec:
+		return UnspecifiedValue
+	case tUnassigned:
+		return Unassigned
+	case tChar:
+		return Char(b.uvarint())
+	case tInt:
+		v, ok := new(big.Int).SetString(b.str(), 10)
+		if !ok {
+			b.err = fmt.Errorf("bytecode: bad integer")
+			return nil
+		}
+		return BigInt(v)
+	case tRational:
+		r, ok := new(big.Rat).SetString(b.str())
+		if !ok {
+			b.err = fmt.Errorf("bytecode: bad rational")
+			return nil
+		}
+		return &Rational{R: r}
+	case tFloat:
+		return Float(math.Float64frombits(b.u64()))
+	case tComplex:
+		re := b.datum()
+		im := b.datum()
+		return &Complex{Re: re, Im: im}
+	case tString:
+		return NewString(b.str())
+	case tSymbol:
+		return Intern(b.str())
+	case tPair:
+		car := b.datum()
+		cdr := b.datum()
+		return Cons(car, cdr)
+	case tVector:
+		n := b.uvarint()
+		items := make([]Value, n)
+		for i := range items {
+			items[i] = b.datum()
+		}
+		return &Vector{Items: items}
+	case tBytevector:
+		n := b.uvarint()
+		buf := make([]byte, n)
+		if _, b.err = io.ReadFull(b.r, buf); b.err != nil {
+			return nil
+		}
+		return NewBytevectorFrom(buf)
+	case tCode:
+		return b.code()
+	case tEof:
+		return EOFObject
+	}
+	b.err = fmt.Errorf("bytecode: bad datum tag")
+	return nil
+}
