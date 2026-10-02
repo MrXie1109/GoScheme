@@ -272,6 +272,18 @@ func (c *comp) special(name string, x *Pair, tail bool) bool {
 		c.emit(opConst, c.konst(args[0]), 0)
 		return true
 
+	case "let-values", "let*-values":
+		// Both are call-with-values built at compile time.  The expansion is
+		// the interpreter's own (letValuesForm), so the two paths cannot
+		// disagree about what a producer may see.
+		expanded, err := letValuesForm(name, args)
+		if err != nil {
+			c.fail("%v", err)
+			return true
+		}
+		c.expr(expanded, tail)
+		return true
+
 	case "go":
 		if len(args) == 0 {
 			c.fail("go: expected a body")
@@ -771,7 +783,7 @@ func (c *comp) letForm(args []Value, tail bool) {
 		c.block.slots = append(c.block.slots, slots[i])
 		c.frame.boxed[slots[i]] = boxed[i]
 	}
-	c.bodyWithLocals(args[1:], tail)
+	c.bodyWithLocals(args[1:], tail, saved)
 	c.block.names = c.block.names[:saved]
 	c.block.slots = c.block.slots[:saved]
 }
@@ -814,7 +826,7 @@ func (c *comp) letStar(args []Value, tail bool) {
 		c.block.names = append(c.block.names, sym)
 		c.block.slots = append(c.block.slots, slot)
 	}
-	c.bodyWithLocals(args[1:], tail)
+	c.bodyWithLocals(args[1:], tail, saved)
 	c.block.names = c.block.names[:saved]
 	c.block.slots = c.block.slots[:saved]
 }
@@ -900,7 +912,7 @@ func (c *comp) letrec(args []Value, tail bool, sequential bool) {
 			c.storeLocal(slots[i], boxed[i])
 		}
 	}
-	c.bodyWithLocals(args[1:], tail)
+	c.bodyWithLocals(args[1:], tail, saved)
 	c.block.names = c.block.names[:saved]
 	c.block.slots = c.block.slots[:saved]
 }
@@ -1292,7 +1304,7 @@ func (c *comp) beginBody(formals Value, body []Value, name string) *comp {
 		c.fail("lambda: malformed formals")
 		return nil
 	}
-	sub.reserveBodyNames(body)
+	sub.reserveBodyNames(body, 0)
 	return sub
 }
 
@@ -1303,9 +1315,9 @@ func (c *comp) beginBody(formals Value, body []Value, name string) *comp {
 // interpreter does the same in prepBody, including the "not if the frame
 // already has it" rule: a parameter or a let binding of the same name is
 // reused rather than shadowed.
-func (c *comp) reserveBodyNames(body []Value) {
+func (c *comp) reserveBodyNames(body []Value, from int) {
 	for _, s := range scanBodyNames(body) {
-		if _, _, _, ok := c.lookup(s); ok {
+		if c.inScope(s, from) {
 			continue
 		}
 		slot, boxed := c.reserve(s)
@@ -1322,10 +1334,29 @@ func (c *comp) reserveBodyNames(body []Value) {
 	}
 }
 
+// inScope reports whether the scope that starts at index from already binds
+// sym.  It is deliberately not a lookup: a binding in an enclosing scope is a
+// different variable, and an internal definition of the same name is a new one
+// that shadows it — which is the question the interpreter's prepBody asks its
+// own frame, and only its own frame.
+//
+// The index matters because a compiled body keeps several scopes' names in one
+// block: a let's bindings are slots of the body's frame, so from is where that
+// let's own bindings begin, not where the block does.
+func (c *comp) inScope(sym *Symbol, from int) bool {
+	for i := len(c.block.names) - 1; i >= from; i-- {
+		if c.block.names[i] == sym {
+			return true
+		}
+	}
+	return false
+}
+
 // bodyWithLocals compiles the body of a binding form, whose internal
-// definitions are local to it rather than global.
-func (c *comp) bodyWithLocals(body []Value, tail bool) {
-	c.reserveBodyNames(body)
+// definitions are local to it rather than global.  from is the index in the
+// block where this scope's own bindings start.
+func (c *comp) bodyWithLocals(body []Value, tail bool, from int) {
+	c.reserveBodyNames(body, from)
 	c.body(body, tail)
 }
 

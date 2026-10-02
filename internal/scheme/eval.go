@@ -774,91 +774,145 @@ func evalLetrecCommon(m *Machine, form Value, env *Env, sequential bool) {
 	step()
 }
 
-func evalLetValues(m *Machine, form Value, env *Env) { evalLetValuesCommon(m, form, env, false) }
+func evalLetValues(m *Machine, form Value, env *Env) {
+	evalLetValuesForm(m, form, env, "let-values")
+}
 func evalLetStarValues(m *Machine, form Value, env *Env) {
-	evalLetValuesCommon(m, form, env, true)
+	evalLetValuesForm(m, form, env, "let*-values")
 }
 
-// let-values evaluates every producer in the outer environment and then binds
-// all the formals; let*-values is expanded into nested call-with-values forms
-// so that later producers see the earlier bindings.
-func evalLetValuesCommon(m *Machine, form Value, env *Env, sequential bool) {
-	args := formArgs(form)
-	if len(args) == 0 {
-		m.Raise(NewError("let-values: missing bindings", form))
+func evalLetValuesForm(m *Machine, form Value, env *Env, name string) {
+	expanded, err := letValuesForm(name, formArgs(form))
+	if err != nil {
+		m.Raise(err)
 		return
+	}
+	m.Eval(expanded, env)
+}
+
+// letValuesForm builds the call-with-values form let-values and let*-values
+// mean — one definition, shared with the compiler, so the two execution paths
+// cannot drift apart.
+//
+// The difference between the two is what a producer may see.  In let*-values
+// each producer sees the bindings before it, so the calls nest: the consumer of
+// one binding encloses the next producer.  In let-values no producer sees any
+// binding, so the values are collected into fresh temporaries first and the
+// names are bound at the end — the reference expansion, and the reason the
+// temporaries exist at all.
+func letValuesForm(name string, args []Value) (Value, error) {
+	if len(args) == 0 {
+		return nil, NewError(name + ": missing bindings")
 	}
 	bindings, ok := ListToSlice(args[0])
 	if !ok {
-		m.Raise(NewError("let-values: malformed bindings", args[0]))
-		return
+		return nil, NewError(name+": malformed bindings", args[0])
 	}
-	if len(bindings) == 0 {
-		m.EvalSeq(args[1:], NewEnv(env))
-		return
-	}
-	if sequential {
-		var buildStar func(i int) Value
-		buildStar = func(i int) Value {
-			if i >= len(bindings) {
-				return Cons(Intern("begin"), listFromSlice(args[1:]))
-			}
-			b, ok := bindings[i].(*Pair)
+	body := args[1:]
+	if name == "let*-values" {
+		// No bindings still means a body of its own: a definition in it must
+		// not reach the enclosing scope, which is what the report's test for
+		// this case checks.
+		var expr Value = Cons(Intern("let"), Cons(Nil, listFromSlice(body)))
+		for i := len(bindings) - 1; i >= 0; i-- {
+			p, ok := bindings[i].(*Pair)
 			if !ok {
-				m.Raise(NewError("let*-values: malformed binding", bindings[i]))
-				return Nil
+				return nil, NewError("let*-values: malformed binding", bindings[i])
 			}
-			var producer Value = UnspecifiedValue
-			if _, isNil := b.Cdr.(Empty); !isNil {
-				producer = cadr(b)
+			producer := Value(UnspecifiedValue)
+			if _, isNil := p.Cdr.(Empty); !isNil {
+				producer = cadr(p)
 			}
-			consumer := Cons(Intern("lambda"), Cons(b.Car, List(buildStar(i+1))))
-			return List(Intern("call-with-values"), List(Intern("lambda"), Nil, producer), consumer)
+			consumer := List(Intern("lambda"), p.Car, expr)
+			expr = List(Intern("call-with-values"),
+				List(Intern("lambda"), Nil, producer), consumer)
 		}
-		m.Eval(buildStar(0), env)
-		return
+		return expr, nil
 	}
-	var formalsList []Value
-	var producers []Value
+	var pairs, temps, producers []Value
 	for _, b := range bindings {
 		p, ok := b.(*Pair)
 		if !ok {
-			m.Raise(NewError("let-values: malformed binding", b))
-			return
+			return nil, NewError("let-values: malformed binding", b)
 		}
-		formalsList = append(formalsList, p.Car)
-		if _, isNil := p.Cdr.(Empty); isNil {
-			producers = append(producers, UnspecifiedValue)
-		} else {
-			producers = append(producers, cadr(p))
+		producer := Value(UnspecifiedValue)
+		if _, isNil := p.Cdr.(Empty); !isNil {
+			producer = cadr(p)
 		}
+		fresh, err := freshFormals(p.Car)
+		if err != nil {
+			return nil, err
+		}
+		bound, err := zipFormals(p.Car, fresh)
+		if err != nil {
+			return nil, err
+		}
+		pairs = append(pairs, bound...)
+		temps = append(temps, fresh)
+		producers = append(producers, producer)
 	}
-	results := make([][]Value, len(producers))
-	i := 0
-	var step func()
-	step = func() {
-		if i >= len(producers) {
-			newEnv := NewEnv(env)
-			for j, formals := range formalsList {
-				if err := bindFormals(newEnv, formals, results[j]); err != nil {
-					m.RaiseError(err)
-					return
-				}
-			}
-			m.EvalSeq(args[1:], newEnv)
-			return
-		}
-		j := i
-		i++
-		m.EvalWithMulti(producers[j], env, func(m *Machine, vs []Value) {
-			results[j] = vs
-			step()
-		})
+	var expr Value = Cons(Intern("let"), Cons(listFromSlice(pairs), listFromSlice(body)))
+	for i := len(bindings) - 1; i >= 0; i-- {
+		consumer := List(Intern("lambda"), temps[i], expr)
+		expr = List(Intern("call-with-values"),
+			List(Intern("lambda"), Nil, producers[i]), consumer)
 	}
-	step()
+	return expr, nil
 }
 
-// bindFormals binds a lambda-style formal list to already evaluated values.
+// freshFormals renames every variable of a formals list, keeping its shape, so
+// that a producer cannot accidentally see a name the bindings introduce.
+func freshFormals(formals Value) (Value, error) {
+	switch f := formals.(type) {
+	case *Symbol:
+		return FreshSymbol(f.Name), nil
+	case Empty:
+		return Nil, nil
+	case *Pair:
+		s, ok := f.Car.(*Symbol)
+		if !ok {
+			return nil, NewError("binding name is not an identifier", f.Car)
+		}
+		rest, err := freshFormals(f.Cdr)
+		if err != nil {
+			return nil, err
+		}
+		return Cons(FreshSymbol(s.Name), rest), nil
+	default:
+		return nil, NewError("malformed formals", formals)
+	}
+}
+
+// zipFormals pairs each variable of a formals list with its fresh counterpart:
+// ((a t1) (b t2) ...) for the let that binds the real names at the end.
+func zipFormals(orig, fresh Value) ([]Value, error) {
+	switch o := orig.(type) {
+	case *Symbol:
+		return []Value{List(o, fresh)}, nil
+	case Empty:
+		return nil, nil
+	case *Pair:
+		s, ok := o.Car.(*Symbol)
+		if !ok {
+			return nil, NewError("binding name is not an identifier", o.Car)
+		}
+		fp, ok := fresh.(*Pair)
+		if !ok {
+			return nil, NewError("malformed formals", orig)
+		}
+		rest, err := zipFormals(o.Cdr, fp.Cdr)
+		if err != nil {
+			return nil, err
+		}
+		return append([]Value{List(s, fp.Car)}, rest...), nil
+	default:
+		return nil, NewError("malformed formals", orig)
+	}
+}
+
+// bindFormals binds the values a producer returned to the formals of a
+// define-values or let-values binding: a proper list, a dotted one, or a single
+// name taking every value as a list.
 func bindFormals(env *Env, formals Value, vals []Value) error {
 	switch f := formals.(type) {
 	case *Symbol:

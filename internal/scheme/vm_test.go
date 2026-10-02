@@ -111,6 +111,21 @@ var vmPrograms = []struct {
 	                       (loop (+ i 1)))))
 	          (go-wait)
 	          (display shared) (newline)`},
+	// let-values collects each producer's values into temporaries before it
+	// binds, so no producer sees a binding — which is the whole difference
+	// from let*-values, and the reason a body of its own is needed when there
+	// are no bindings at all.
+	{"let-values", `(display (let-values (((a b) (values 1 2)) ((c) (values 3))) (list a b c))) (newline)
+	                (display (let*-values (((a b) (values 1 2)) ((c) (values (+ a b)))) (list a b c))) (newline)
+	                (display (let ((x 'outer))
+	                           (let-values (((x) (values 'inner)) ((y) x)) (list x y)))) (newline)
+	                (display (let ((x 'outer))
+	                           (let*-values (((x) (values 'inner)) ((y) x)) (list x y)))) (newline)
+	                (display (let ((x 1)) (let*-values () (define x 2) #f) x)) (newline)
+	                (display (let-values ((r (values 1 2 3))) r)) (newline)
+	                (display (let-values (((a b . r) (values 1 2 3 4))) (list a b r))) (newline)
+	                (display (guard (e (#t 'few)) (let-values (((a b) (values 1))) a))) (newline)
+	                (display (guard (e (#t 'many)) (let-values (((a) (values 1 2))) a))) (newline)`},
 	{"assert", `(display (assert (+ 1 1))) (newline)
 	            (display (guard (e (#t (error-object-message e))) (assert #f))) (newline)`},
 	{"do-continue", `(define kept '())
@@ -356,6 +371,9 @@ func TestVMReallyCompiles(t *testing.T) {
 		`(delay 1)`,
 		`(case-lambda (() 1) ((x) x))`,
 		`(parameterize ((p 1)) p)`,
+		`(let-values (((a b) (values 1 2))) a)`,
+		`(let*-values (((a) (values 1))) a)`,
+		`(go 1)`,
 	} {
 		if _, err := compileTop(m, mustRead(t, src), m.Global); err != nil {
 			t.Errorf("%s should compile now: %v", src, err)
@@ -364,7 +382,7 @@ func TestVMReallyCompiles(t *testing.T) {
 	// What is still left to the interpreter, until it is not.
 	for _, src := range []string{
 		`(define-record-type p (make-p x) p? (x p-x))`,
-		`(let-values (((a b) (values 1 2))) a)`,
+		`(define-values (a b) (values 1 2))`,
 	} {
 		if _, err := compileTop(m, mustRead(t, src), m.Global); err == nil {
 			t.Errorf("%s is still left to the interpreter", src)
@@ -376,7 +394,7 @@ func TestVMReallyCompiles(t *testing.T) {
 	// as steps of one chunk, and they still run in a single extent.
 	mixed := m2MustProgram(t, `(define (f x) (* x x))
 	                            (display (f 3))
-	                            (let-values (((i) (values 0))) i)
+	                            (define-record-type p (make-p x) p? (x p-x))
 	                            (define (g y) (+ y 1))
 	                            (display (g 1))`)
 	compiledN, total := mixed.Compiled()
