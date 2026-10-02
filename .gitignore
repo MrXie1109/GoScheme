@@ -16,3 +16,7 @@
 .vscode/
 *.swp
 .gocache/
+
+# Python bytecode, from the benchmark scripts.
+__pycache__/
+*.pyc

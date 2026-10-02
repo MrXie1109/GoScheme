@@ -1,8 +1,10 @@
 # bench
 
-The C comparison.  Twelve workloads, each written twice: once in C
-(`bench/c/`) and once in Scheme (`bench/scheme/`, extracted from the panel in
-`internal/scheme/vm_panel_test.go` so that the two can be read side by side).
+The comparison.  Twelve workloads, each written three times: in C
+(`bench/c/`), in Python (`bench/python/`) and in Scheme (`bench/scheme/`,
+extracted from the panel in `internal/scheme/vm_panel_test.go` so that the three
+can be read side by side).  All three compute the same answers, which is
+checked.
 
 ```sh
 make build
@@ -15,7 +17,8 @@ so timing has to come from inside something with a nanosecond clock.
 
 Read [docs/performance-vs-c.md](../docs/performance-vs-c.md) for the numbers and
 what they mean.  The short version: **66× slower than C doing the same work**,
-21× at best, 365× at worst, against a target of 10×.
+and **14.4× slower than CPython 3.12**, with eight of the twelve rows within ten
+of Python.  The target was 10×.
 
 Two things to know before changing anything here:
 
