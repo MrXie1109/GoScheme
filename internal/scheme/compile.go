@@ -272,6 +272,18 @@ func (c *comp) special(name string, x *Pair, tail bool) bool {
 		c.emit(opConst, c.konst(args[0]), 0)
 		return true
 
+	case "quasiquote":
+		// `x is not a special form to compile: it is syntax sugar, and the
+		// expander the interpreter uses turns it into cons/append/list->vector
+		// calls that compile like anything else.  Doing it here rather than at
+		// run time is the point of a compiler.
+		if len(args) != 1 {
+			c.fail("quasiquote: expected one template")
+			return true
+		}
+		c.expr(EvalQuasiquote(args[0]), tail)
+		return true
+
 	case "if":
 		if len(args) < 2 || len(args) > 3 {
 			c.fail("if: expected two or three forms")

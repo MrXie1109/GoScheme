@@ -93,6 +93,15 @@ var vmPrograms = []struct {
 	// clause with two expressions, and the compiled path used to apply 'ok.
 	{"aux-shadowed", `(display (let ((=> #f)) (cond (#t => 'ok)))) (newline)
 	                  (display (case 1 ((1) => (lambda (x) (+ x 1))) (else 'no))) (newline)`},
+	// Quasiquote is expanded by the compiler into the constructors the
+	// interpreter's own expander produces, including the nested and splicing
+	// cases where the depth decides what an unquote means.
+	{"quasiquote", `(define name 'world)
+	                 (define xs '(1 2 3))
+	                 (write ` + "`" + `(hello ,name ,@xs (nested ,(+ 1 2)) #(a ,name))) (newline)
+	                 (write ` + "`" + `(a ` + "`" + `(b ,(c ,name)))) (newline)
+	                 (write ` + "`" + `` + "`" + `(a ,(+ 1 2))) (newline)
+	                 (write (quasiquote (list (unquote (+ 1 2)) 4))) (newline)`},
 	{"callcc-across-steps", `(define k #f)
 	                        (define n 0)
 	                        (define v (call/cc (lambda (c) (set! k c) 1)))
