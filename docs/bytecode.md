@@ -11,10 +11,13 @@ This page is the overview; [bytecode-internals.md](bytecode-internals.md) is the
 reference underneath it — the file format, the instruction set, the call
 protocol in full, and the measurements.
 
-The compiler never imitates the interpreter for a form it cannot handle: it
-*declines the whole body*, and that body runs interpreted.  The two paths
-therefore agree by construction, and the tests are there to prove the
-construction right — see [Guarantees](#guarantees) below.
+The compiler takes every form the language has.  Where a form means another
+form it calls the interpreter's own expansion and compiles the result; where it
+needs something at run time, it compiles the pieces into procedures and hands
+them to a helper.  The two paths therefore agree by construction, and the tests
+are there to prove the construction right — see [Guarantees](#guarantees)
+below.  This was not always so: 3.0.0 declined thirteen forms, and 3.1.0 took
+them all.
 
 ```sh
 goscheme script.scm                 # compiled where possible (the default)
@@ -154,15 +157,16 @@ Consecutive ordinary forms become **one chunk holding a `begin`**, because that
 is what running the same file does: a continuation captured in one top-level
 form has to span the rest of the program, and a chunk boundary would end it.
 
-When that `begin` does not compile — a body is all or nothing, and one form in
-it may use something the compiler declines — the forms are compiled one at a
-time instead and written as the **steps** of a single chunk (`2` above).  They
-still run in one extent, so the continuation rule above holds either way, but
-the compiler now takes what it can from a file rather than nothing: a 44-form
-example compiles 42 of them.  Steps are never nested; a step is a form or a
-piece of code.
+If that `begin` ever fails to compile as a whole — a body is all or nothing,
+which is what the compiler's "I cannot do this form" amounts to — the forms are
+compiled one at a time instead and written as the **steps** of a single chunk
+(`2` above).  They still run in one extent, so the continuation rule above holds
+either way.  Nothing in the language reaches that path any more, so it is the
+safety net rather than the common case: it is what a compiler extension or a
+mistake falls back to, and it has a test of its own.
 
-Version 2 added the steps chunk; version 1 files are still read, and a file
+Version 3 added the primitive reference in a constant pool and version 2 the
+steps chunk; older files are still read, and a file
 from a newer version than the interpreter speaks is refused rather than
 misread.
 

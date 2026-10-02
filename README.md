@@ -226,8 +226,8 @@ a bundle is exactly `interpreter + payload + trailer` bytes.
 The payload is the script's **bytecode**, written at build time; a script the
 build machine cannot compile — because it imports a library that is only there
 when the program runs — is stored as source instead, and `goscheme build` says
-so.  Either way the parts the compiler declines run on the tree-walker, exactly
-as they do from a file.
+so.  Either way the forms that have to be evaluated as source — an `import`, a
+`define-syntax`, an `include` — are run the same way they are from a file.
 
 * `-o, --output FILE` names the executable.  Like a C compiler, the default is
   `a.out` in the current directory — or `a.exe` when the bound interpreter is a
@@ -286,7 +286,7 @@ internal/scheme/          the interpreter
   b_io.go                 ports, read and write
   machine.go              CEK machine, continuations, dynamic-wind, exceptions
   vm.go                   the bytecode VM: instructions, frames, cells
-  compile.go              the bytecode compiler, and what it declines
+  compile.go              the bytecode compiler: every form of the language
   bytecode.go             the .scmc file format: reading and writing
   b_system.go             files, process context, time, eval and load
   b_hashtable.go          hash tables (extension)
@@ -429,8 +429,10 @@ construction rather than by imitation.  Macros are expanded before compilation,
 tail calls are instructions of their own, and a continuation captured inside
 compiled code works because the VM's frames are written once and never mutated,
 exactly like the interpreted ones.  [docs/bytecode.md](docs/bytecode.md) has
-the instruction set, the `.scmc` file format, the measured numbers and what the
-compiler declines.
+the instruction set, the `.scmc` file format and the measured numbers;
+[docs/bytecode-internals.md](docs/bytecode-internals.md) has the format byte by
+byte and what the machine does when it runs a call.  Every form the language
+has is compiled.
 
 ### Proper tail calls
 
@@ -845,11 +847,12 @@ continuation frame at all; and a call to a compiled procedure replaces the
 current activation instead of recursing, so a non-tail recursion a million deep
 costs two Go stack frames.  It also means a program can be compiled once and
 stored: `goscheme compile script.scm` writes a `.scmc` file that runs without
-being parsed as source.  [docs/bytecode.md](docs/bytecode.md) has the table, the
-caveats and what the compiler declines;
-[docs/bytecode-internals.md](docs/bytecode-internals.md) is the reference
-underneath it — the file format byte by byte, the instruction set, what the
-machine does when it runs a call, and the measured difference.
+being parsed as source.  [docs/bytecode.md](docs/bytecode.md) has the table and
+the caveats; [docs/bytecode-internals.md](docs/bytecode-internals.md) is the
+reference underneath it — the file format byte by byte, the instruction set,
+what the machine does when it runs a call, and the measured difference.  Every
+form the language has is compiled; what is left to the tree-walker is a form
+that is *data* — `eval`, or `load` of a source file.
 
 A frame takes its lock only while more than one interpreter thread is running,
 which is what makes the common single-threaded case free; `(go ...)` and the

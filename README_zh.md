@@ -255,7 +255,7 @@ internal/scheme/          解释器实现
   b_control.go            apply、map、续延、多值、Promise
   b_io.go                 端口、read 与 write
   vm.go                   字节码虚拟机：指令、帧、变量 cell
-  compile.go              字节码编译器，以及它拒绝编译什么
+  compile.go              字节码编译器：语言里的每个表单
   bytecode.go             .scmc 文件格式的读写
   b_system.go             文件、进程上下文、时间、eval 与 load
   b_hashtable.go          哈希表（扩展）
@@ -376,12 +376,15 @@ Promise 与 `values`。
 
 ### 两条执行路径
 
-编译器看得懂的表达式编译成字节码在栈式虚拟机上执行，其余交给树遍历解释器；**一个
-body 里只要出现编译器不处理的表单，整个 body 就按原样解释执行**，因此两条路径是
-"构造上一致"，而不是"互相模仿"。宏在编译前展开，尾调用有自己的指令，而在编译代码里
+语言里的**每个表单**都会编译成字节码在栈式虚拟机上执行：表单本身是语法糖的（`do`、
+`let-values`、反引号），编译器就调用解释器自己的展开器再编译展开结果；需要在运行期
+做点什么的（`guard`、`match`、`select`、`go`、记录类型），就把周围的片段编译成过程
+交给一个助手。因此两条路径是"构造上一致"，而不是"互相模仿"——模式怎么匹配、哪条子句
+胜出，用的都是解释器那一份代码。宏在编译前展开，尾调用有自己的指令，而在编译代码里
 捕获的续延之所以可用，是因为虚拟机的帧与解释器的帧一样——写一次、永不修改。
-指令集、`.scmc` 文件格式、实测数字以及编译器拒绝的表单都在
-[docs/bytecode.md](docs/bytecode.md)。
+指令集、`.scmc` 文件格式与实测数字在 [docs/bytecode.md](docs/bytecode.md)，逐字节的
+格式与虚拟机执行一次调用的细节在
+[docs/bytecode-internals.md](docs/bytecode-internals.md)。
 
 ### 真尾调用
 
@@ -731,7 +734,7 @@ BenchmarkFast` 测得，每一对的输入用同样方式构造，因此差异�
 展开一次而不是每次求值都展开；`+`、`car` 这类内建过程调用完全不建续延帧；调用编译过
 的过程时直接**替换**当前活动而不是递归，因此一百万层非尾递归在 Go 栈上只占两帧。它
 还带来"编译一次、存起来"的能力：`goscheme compile script.scm` 写出 `.scmc` 文件，
-运行时**不再解析源码**。表格、注意事项以及编译器拒绝的表单都在
+运行时**不再解析源码**。表格与注意事项在
 [docs/bytecode.md](docs/bytecode.md)；字节码的逐字节格式、指令集、虚拟机执行一次
 调用时究竟做了什么，以及实测差异，在
 [docs/bytecode-internals.md](docs/bytecode-internals.md)。

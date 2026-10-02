@@ -52,9 +52,11 @@ chunk = 0 datum            ; a source form to evaluate
       | 2 uvarint chunk... ; a run of chunks that share one extent
 ```
 
-* **0** is a form the compiler declined, or a form that teaches the compiler
-  something — an `import`, a `define-syntax`, an `include`.  It is evaluated by
-  the tree-walker when the file is loaded.
+* **0** is a form that has to be evaluated as source: one that teaches the
+  compiler something — an `import`, a `define-syntax`, an `include` — or one
+  the compiler could not take.  It is evaluated by the tree-walker when the
+  file is loaded.  Nothing in the language is in the second group any more, so
+  in practice these are the teaching forms.
 * **1** is a compiled body.
 * **2** is a run of chunks that must run in **one continuation extent**, which
   is what a file's ordinary top-level forms need: a continuation captured in
@@ -159,7 +161,7 @@ Twenty-three opcodes.  `—` is an empty operand stack for that instruction.
 | `opSetGlobal` | symbol constant | v → u | `set!`, then push the unspecified value |
 | `opDefineGlobal` | symbol constant | v → u | `define`, then push the unspecified value |
 | `opClosure` | Code constant | — → p | a procedure over that body, capturing this frame |
-| `opInterpClosure` | `lambda` source constant | — → p | a procedure the compiler left to the interpreter |
+| `opInterpClosure` | `lambda` source constant | — → p | a procedure built from source, for a `lambda` the compiler did not compile.  No version of the compiler emits it any more; it is still executed and still read, so that a file written by 3.0.0 keeps working |
 | `opPop` | — | v → — | discard |
 | `opEqv` | — | a b → v | `(eqv? a b)`, which is what `case` compares |
 | `opJump` | target | — | go to the target |
@@ -296,11 +298,12 @@ The VM is not a separate interpreter: it is the same machine with a second way
 to run a body.  `m.stack` is the machine's continuation stack, `m.Return` and
 `m.apply` are the machine's, and `dynamic-wind`, `guard` and parameters are
 machine frames — which is why a continuation captured inside compiled code
-composes with them.  When the compiler declines a body, that body is evaluated
-by the tree-walker, and the compiled code that called into it sees an ordinary
-procedure call.  A group the compiler could not take whole is compiled form by
-form and run as a `Steps` chunk, so one `do` in a file does not send the file
-to the tree-walker (see [bytecode.md](bytecode.md)).
+composes with them.  Every form is compiled, so the boundary is reached in two
+places only: a form that has to be *data* (`eval`, `load` of a source file) is
+evaluated by the tree-walker, as it always was, and a body the compiler cannot
+take whole is compiled form by form and run as a `Steps` chunk — which nothing
+in the language triggers any more, and which a compiler extension or a mistake
+would (see [bytecode.md](bytecode.md)).
 
 ## Efficiency
 
