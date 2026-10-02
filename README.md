@@ -37,6 +37,7 @@ $ goscheme -e '(display (map (lambda (x) (* x x)) (list 1 2 3 4))) (newline)'
 - [Language coverage](#language-coverage)
 - [Extension and SRFI reference](docs/extensions/README.md)
 - [Implementation notes](#implementation-notes)
+- [The bytecode VM](docs/bytecode.md)
 - [Performance](#performance)
 - [Testing](#testing)
 - [Cross-compilation](#cross-compilation)
@@ -126,14 +127,23 @@ them all, so they cannot quietly rot.  Two are worth calling out:
 ```
 goscheme [options] [file] [argument ...]
 goscheme build <script> [-o <output>] [-i <interpreter>]
+goscheme compile <script> [-o <output.scmc>]
 
   -e, --eval EXPR     evaluate EXPR (may be repeated, evaluated in order)
   -i, --interactive   enter the REPL after loading FILE
   -q, --quiet         do not print the REPL banner
+  -interp             run in the tree-walker instead of the bytecode VM
   -v, --version       print the version and exit
   -h, --help          print usage
   --                  end of options; the next argument is the script
 ```
+
+A script is **compiled to bytecode and run on the VM** where the compiler
+understands it, and interpreted where it does not; `-interp` forces the
+tree-walker, which is how the two are compared.  `goscheme compile` writes the
+compiled program to a `.scmc` file, and a `.scmc` file given to the interpreter
+is loaded and run without being parsed as source.  See
+[docs/bytecode.md](docs/bytecode.md).
 
 With neither a file nor `-e`, the interpreter starts a REPL.  The primary
 prompt is `>>> `, and `... ` appears while a form is still open.
@@ -267,6 +277,10 @@ internal/scheme/          the interpreter
   b_vector.go             vectors and bytevectors
   b_control.go            apply, map, continuations, values, promises
   b_io.go                 ports, read and write
+  machine.go              CEK machine, continuations, dynamic-wind, exceptions
+  vm.go                   the bytecode VM: instructions, frames, cells
+  compile.go              the bytecode compiler, and what it declines
+  bytecode.go             the .scmc file format: reading and writing
   b_system.go             files, process context, time, eval and load
   b_hashtable.go          hash tables (extension)
   b_concurrent.go         channels, (go ...), (select ...) (extension)
@@ -393,6 +407,18 @@ operations, textual and binary I/O, file and process-context procedures,
 `with-exception-handler`, `parameterize`, promises and `values`.
 
 ## Implementation notes
+
+### Two execution paths
+
+Expressions the compiler understands run as bytecode on a stack machine, and
+everything else runs in the tree-walker; a body that uses a form the compiler
+does not handle is interpreted as a whole, so the two paths agree by
+construction rather than by imitation.  Macros are expanded before compilation,
+tail calls are instructions of their own, and a continuation captured inside
+compiled code works because the VM's frames are written once and never mutated,
+exactly like the interpreted ones.  [docs/bytecode.md](docs/bytecode.md) has
+the instruction set, the `.scmc` file format, the measured numbers and what the
+compiler declines.
 
 ### Proper tail calls
 

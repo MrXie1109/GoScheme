@@ -14,6 +14,19 @@ make build                        # 生成 .build/goscheme
 ./.build/goscheme                 # REPL
 ```
 
+脚本会被编译成字节码、在栈式虚拟机上执行（编译器看得懂的部分），其余回落到树遍历
+解释器；`-interp` 强制使用解释器，这也是两者对照的方式。`goscheme compile` 把编译
+结果写成 `.scmc` 文件，而 `.scmc` 直接运行、不再解析源码：
+
+```sh
+./.build/goscheme compile tool.scm -o tool.scmc
+./.build/goscheme tool.scmc
+./.build/goscheme -interp tool.scm     # 用解释器跑，便于对照
+```
+
+细节（哪些会编译、哪些留给解释器、文件格式、实测数字）见
+[docs/bytecode.md](../bytecode.md)。
+
 `(command-line)` 是**脚本名加上用户的参数**：解释器自己的名字从不出现，这是对
 R7RS 6.14 的有意偏离，因此 `(cdr (command-line))` 就正好是参数表。
 

@@ -14,6 +14,21 @@ make build                        # produces .build/goscheme
 ./.build/goscheme                 # the REPL
 ```
 
+A script is compiled to bytecode and run on a stack machine where the compiler
+understands it, and interpreted where it does not; `-interp` forces the
+tree-walker, which is how the two are compared.  `goscheme compile` writes the
+compiled program to a `.scmc` file, and a `.scmc` file runs without being parsed
+as source:
+
+```sh
+./.build/goscheme compile tool.scm -o tool.scmc
+./.build/goscheme tool.scmc
+./.build/goscheme -interp tool.scm     # the tree-walker, for comparison
+```
+
+[docs/bytecode.md](../bytecode.md) has the details: what compiles, what is left
+to the interpreter, the file format, and the measured numbers.
+
 `(command-line)` is the **script name followed by the user's arguments** — the
 interpreter's own name never appears, which is the deliberate departure from
 R7RS 6.14, so `(cdr (command-line))` is exactly the argument list.

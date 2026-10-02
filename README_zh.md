@@ -116,14 +116,21 @@ v, _ = i.Call(square, goscheme.Int(12)) // Go 调用 Scheme 过程
 ```
 goscheme [选项] [文件] [参数 ...]
 goscheme build <脚本> [-o <输出>] [-i <解释器>]
+goscheme compile <脚本> [-o <输出.scmc>]
 
   -e, --eval 表达式    求值表达式（可重复，按顺序求值）
   -i, --interactive    载入文件后进入 REPL
   -q, --quiet          REPL 不打印 banner
+  -interp              用树遍历解释器运行，而不是字节码虚拟机
   -v, --version        打印版本号后退出
   -h, --help           打印用法
   --                   选项结束；其后的参数作为脚本
 ```
+
+脚本会被**编译成字节码并在虚拟机上执行**（编译器能处理的部分），处理不了的部分
+回落到树遍历解释器；`-interp` 强制使用解释器，这也是两者对照的方式。
+`goscheme compile` 把编译结果写成 `.scmc` 文件，而把 `.scmc` 交给解释器会直接加载
+运行、不再解析源码。细节见 [docs/bytecode.md](docs/bytecode.md)。
 
 既没有文件也没有 `-e` 时进入 REPL。新表达式用 `>>> ` 提示，表达式尚未写完时用
 `... ` 提示。
@@ -243,6 +250,9 @@ internal/scheme/          解释器实现
   b_vector.go             向量与字节向量
   b_control.go            apply、map、续延、多值、Promise
   b_io.go                 端口、read 与 write
+  vm.go                   字节码虚拟机：指令、帧、变量 cell
+  compile.go              字节码编译器，以及它拒绝编译什么
+  bytecode.go             .scmc 文件格式的读写
   b_system.go             文件、进程上下文、时间、eval 与 load
   b_hashtable.go          哈希表（扩展）
   b_concurrent.go         通道、(go ...)、(select ...)（扩展）
@@ -358,6 +368,15 @@ Makefile                 构建、测试与打包目标
 Promise 与 `values`。
 
 ## 实现要点
+
+### 两条执行路径
+
+编译器看得懂的表达式编译成字节码在栈式虚拟机上执行，其余交给树遍历解释器；**一个
+body 里只要出现编译器不处理的表单，整个 body 就按原样解释执行**，因此两条路径是
+"构造上一致"，而不是"互相模仿"。宏在编译前展开，尾调用有自己的指令，而在编译代码里
+捕获的续延之所以可用，是因为虚拟机的帧与解释器的帧一样——写一次、永不修改。
+指令集、`.scmc` 文件格式、实测数字以及编译器拒绝的表单都在
+[docs/bytecode.md](docs/bytecode.md)。
 
 ### 真尾调用
 
