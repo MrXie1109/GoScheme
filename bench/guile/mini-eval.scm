@@ -1,0 +1,11 @@
+(import (common))
+(define (ev e env)
+  (cond ((number? e) e)
+        ((symbol? e) (cdr (assq e env)))
+        ((eq? (car e) 'add) (+ (ev (cadr e) env) (ev (caddr e) env)))
+        ((eq? (car e) 'mul) (* (ev (cadr e) env) (ev (caddr e) env)))
+        (else (ev (cadddr e) (cons (cons (cadr e) (ev (caddr e) env)) env)))))
+(define (loop i acc)
+  (if (= i 0) acc
+      (loop (- i 1) (+ acc (ev '(add 1 (mul 2 (let x 3 (add x x)))) '())))))
+(time-it "mini-eval" (lambda () (loop 5000 0)))

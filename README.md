@@ -39,7 +39,7 @@ $ goscheme -e '(display (map (lambda (x) (* x x)) (list 1 2 3 4))) (newline)'
 - [Implementation notes](#implementation-notes)
 - [The bytecode VM](docs/bytecode.md)
   - [The format, the machine and the numbers](docs/bytecode-internals.md)
-- [GoScheme against C](docs/performance-vs-c.md)
+- [Performance against C, Python and Guile](docs/performance.md)
   - [The format, the machine and the numbers](docs/bytecode-internals.md)
 - [Performance](#performance)
 - [Testing](#testing)

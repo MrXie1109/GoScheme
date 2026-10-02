@@ -1,0 +1,8 @@
+(import (common))
+(define (count-to n)
+  (define k #f)
+  (define i 0)
+  (define v (call/cc (lambda (c) (set! k c) 0)))
+  (set! i (+ i 1))
+  (if (< i n) (k (+ v 1)) v))
+(time-it "callcc" (lambda () (count-to 20000)))

@@ -1,0 +1,6 @@
+(import (common))
+(define (loop i)
+  (let ((a 1) (b 2))
+    (let inner ((j i) (acc 0))
+      (if (= j 0) acc (inner (- j 1) (+ acc a b))))))
+(time-it "locals" (lambda () (loop 200000)))

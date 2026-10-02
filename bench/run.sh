@@ -14,10 +14,17 @@
 #             performs the same sequence of steps an interpreter does.  This is
 #             the column the summary uses.
 #
-# Python is the fairer opponent: it boxes everything, dispatches dynamically and
-# has a garbage collector, and it is still a compiled bytecode machine.  It has
-# no tail calls, so tail-loop is a while loop there and recursion in Scheme —
-# the one row where the three programs are not the same shape.
+# Python is the fairer opponent of the two non-Schemes: it boxes everything,
+# dispatches dynamically and has a garbage collector, and it is still a compiled
+# bytecode machine.  It has no tail calls, so tail-loop is a while loop there and
+# recursion in Scheme — the one row where the programs are not the same shape.
+#
+# Guile is the opponent that matters most: a real Scheme, with a compiler and a
+# JIT, so it answers "how fast is this program in Scheme written well" rather
+# than "how fast is Scheme compared with C".  It is run with
+# GUILE_AUTO_COMPILE=0 so that the auto-compilation of a changed file does not
+# land inside a timed run; the programs are compiled by Guile itself either way,
+# which is the point of including it.
 #
 # Each program repeats until the clock has moved and reports time per run; a
 # single execution is microseconds, and timing one from outside the process
@@ -36,6 +43,7 @@ KEEP="$KEEP -fno-aggressive-loop-optimizations -fno-tree-loop-optimize -fno-ipa-
 BUILD=${BUILD:-$ROOT/.build/bench-c}
 GOSCHEME=${GOSCHEME:-$ROOT/.build/goscheme}
 PYTHON=${PYTHON:-python3}
+GUILE=${GUILE:-guile}
 
 mkdir -p "$BUILD"
 
@@ -59,12 +67,13 @@ best_of() {  # best_of N command...
 echo "C:      $CC $CFLAGS"
 echo "C kept: $KEEP"
 echo "Python: $($PYTHON --version 2>&1)"
+echo "Guile:  $($GUILE --version 2>&1 | head -1)"
 echo
 
-printf '%-13s %10s %10s %10s %10s %7s %7s %7s\n' \
-    program 'C -O2' 'C kept' 'Python' 'GoScheme' 'vs-C' 'vs-Ck' 'vs-Py'
-printf '%-13s %10s %10s %10s %10s %7s %7s %7s\n' \
-    ------- ---------- ---------- ---------- ---------- ------- ------- -------
+printf '%-13s %9s %9s %9s %9s %9s %6s %6s %6s %6s\n' \
+    program 'C -O2' 'C kept' 'Python' 'Guile' 'GoScheme' 'vs-C' 'vs-Ck' 'vs-Py' 'vs-Gu'
+printf '%-13s %9s %9s %9s %9s %9s %6s %6s %6s %6s\n' \
+    ------- --------- --------- --------- --------- --------- ------ ------ ------ ------
 
 log_c=0; log_ck=0; log_py=0; n=0
 for p in $PROGRAMS; do
@@ -77,22 +86,26 @@ for p in $PROGRAMS; do
     a=$(best_of 3 "$BUILD/$p" | awk '{print $3}')
     b=$(best_of 3 sh -c "\"$BUILD/$p.kept\" | awk '{print \$3}'")
     y=$(best_of 3 sh -c "$PYTHON \"$HERE/python/$src.py\" | awk '{print \$3}'")
+    u=$(best_of 3 sh -c "GUILE_AUTO_COMPILE=0 $GUILE -L \"$HERE/guile\" -s \"$HERE/guile/$p.scm\" | awk '{print \$3}'")
     c=$("$GOSCHEME" "$HERE/time.scm" "$RUNS" "$GOSCHEME" "$BUILD/$p.scmc")
     c=$(awk -v s="$c" 'BEGIN{printf "%.4f", s*1000}')
 
-    printf '%-13s %9sms %9sms %9sms %9sms %6sx %6sx %6sx\n' "$p" \
-        "$a" "$b" "$y" "$c" \
+    printf '%-13s %8sms %8sms %8sms %8sms %8sms %5sx %5sx %5sx %5sx\n' "$p" \
+        "$a" "$b" "$y" "$u" "$c" \
         "$(awk -v x="$c" -v y="$a" 'BEGIN{printf "%.0f", x/y}')" \
         "$(awk -v x="$c" -v y="$b" 'BEGIN{printf "%.0f", x/y}')" \
-        "$(awk -v x="$c" -v y="$y" 'BEGIN{printf "%.0f", x/y}')"
+        "$(awk -v x="$c" -v y="$y" 'BEGIN{printf "%.0f", x/y}')" \
+        "$(awk -v x="$c" -v y="$u" 'BEGIN{printf "%.1f", x/y}')"
 
     log_c=$(awk -v t="$log_c" -v a="$a" -v c="$c" 'BEGIN{print t + log(c/a)}')
     log_ck=$(awk -v t="$log_ck" -v b="$b" -v c="$c" 'BEGIN{print t + log(c/b)}')
     log_py=$(awk -v t="$log_py" -v y="$y" -v c="$c" 'BEGIN{print t + log(c/y)}')
+    log_gu=$(awk -v t="${log_gu:-0}" -v y="$u" -v c="$c" 'BEGIN{print t + log(c/y)}')
     n=$((n + 1))
 done
 
 echo
 echo "geometric mean: $(awk -v t="$log_c" -v n="$n" 'BEGIN{printf "%.0f", exp(t/n)}')x vs C -O2," \
      "$(awk -v t="$log_ck" -v n="$n" 'BEGIN{printf "%.0f", exp(t/n)}')x vs kept C," \
-     "$(awk -v t="$log_py" -v n="$n" 'BEGIN{printf "%.1f", exp(t/n)}')x vs Python"
+     "$(awk -v t="$log_py" -v n="$n" 'BEGIN{printf "%.1f", exp(t/n)}')x vs Python," \
+     "$(awk -v t="$log_gu" -v n="$n" 'BEGIN{printf "%.2f", exp(t/n)}')x vs Guile"

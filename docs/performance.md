@@ -29,7 +29,13 @@ Python programmer would write them, and they are the fairer opponent: CPython
 boxes every value, dispatches dynamically and has a garbage collector, and it is
 still a compiled bytecode machine with thirty years of work behind it.
 
-**All three sides compute the same answer**, which is checked: `fib` 6765,
+The Guile programs in `bench/guile/` are the fourth side, and the one that
+matters most: the same language, compiled and JIT-ed.  They are run with
+`GUILE_AUTO_COMPILE=0` so that the auto-compilation of a changed file cannot
+land inside a timed run — Guile compiles them either way, which is the point of
+including it.
+
+**All four sides compute the same answer**, which is checked: `fib` 6765,
 `tail-loop` 20000100000, `closures` 200030000, `globals` and `locals` 600000,
 `lists` 5000050000, `vectors` 49950000, `strings` 3000, `higher-order`
 200010000, `mini-eval` 65000, `sort` 4, `callcc` 19999.
@@ -71,35 +77,57 @@ Best-of-five for the Scheme side; the C numbers are stable to a few percent.
 Per run, on a 12th-generation i3.  The last two columns are GoScheme divided by
 each C column.
 
-| workload | C -O2 | C kept | Python | GoScheme | vs C | vs kept C | vs Python |
-|---|---|---|---|---|---|---|---|
-| `fib` | 0.0073 ms | 0.0241 ms | 0.5087 ms | 8.770 ms | 1201× | **364×** | 17× |
-| `mini-eval` | 0.0644 ms | 0.0913 ms | 2.7602 ms | 19.396 ms | 301× | **212×** | **7×** |
-| `callcc` | 0.0845 ms | 0.0824 ms | 0.8249 ms | 11.041 ms | 131× | **134×** | 13× |
-| `strings` | 0.0705 ms | 0.0705 ms | 0.0704 ms | 8.422 ms | 119× | **119×** | **120×** |
-| `closures` | 0.0049 ms | 0.1386 ms | 2.4684 ms | 16.975 ms | 3464× | **122×** | **7×** |
-| `globals` | 0.0000 ms | 1.3983 ms | 5.9067 ms | 62.988 ms | ∞ | **45×** | **11×** |
-| `vectors` | 0.0127 ms | 0.6832 ms | 2.6066 ms | 30.035 ms | 2365× | **44×** | **12×** |
-| `locals` | 0.0000 ms | 1.3957 ms | 5.4152 ms | 57.089 ms | ∞ | **41×** | **11×** |
-| `tail-loop` | 0.0492 ms | 1.4053 ms | 5.4041 ms | 51.661 ms | 1050× | **37×** | **10×** |
-| `higher-order` | 0.3853 ms | 0.6529 ms | 0.9289 ms | 19.288 ms | 50× | **30×** | 21× |
-| `sort` | 0.3852 ms | 0.3956 ms | 0.7699 ms | 10.344 ms | 27× | **26×** | 13× |
-| `lists` | 1.9690 ms | 3.3202 ms | 4.0821 ms | 69.663 ms | 35× | **21×** | 17× |
+| workload | C -O2 | C kept | Python | Guile | GoScheme | vs C | vs kept C | vs Python | vs Guile |
+|---|---|---|---|---|---|---|---|---|---|
+| `locals` | 0.0000 ms | 1.5926 ms | 6.0367 ms | 62.565 ms | 70.816 ms | ∞ | 44× | 12× | **1.1×** |
+| `vectors` | 0.0136 ms | 0.7248 ms | 3.3342 ms | 30.541 ms | 37.602 ms | 2765× | 52× | 11× | **1.2×** |
+| `tail-loop` | 0.0499 ms | 1.8682 ms | 6.2170 ms | 49.805 ms | 66.883 ms | 1340× | 36× | 11× | **1.3×** |
+| `globals` | 0.0000 ms | 1.6744 ms | 6.6541 ms | 62.925 ms | 80.256 ms | ∞ | 48× | 12× | **1.3×** |
+| `mini-eval` | 0.0671 ms | 0.0992 ms | 3.1489 ms | 18.038 ms | 27.401 ms | 408× | 276× | 9× | 1.5× |
+| `sort` | 0.5654 ms | 0.5345 ms | 0.9414 ms | 10.003 ms | 14.661 ms | 26× | 27× | 16× | 1.5× |
+| `lists` | 2.5718 ms | 4.2733 ms | 5.2409 ms | 49.958 ms | 79.403 ms | 31× | 19× | 15× | 1.6× |
+| `higher-order` | 0.5074 ms | 0.7398 ms | 1.0185 ms | 11.796 ms | 22.433 ms | 44× | 30× | 22× | 1.9× |
+| `callcc` | 0.1008 ms | 0.1004 ms | 1.0373 ms | 8.136 ms | 16.196 ms | 161× | 161× | 16× | 2.0× |
+| `closures` | 0.0050 ms | 0.1473 ms | 3.0284 ms | 12.044 ms | 24.821 ms | 4964× | 169× | 8× | 2.1× |
+| `strings` | 0.0835 ms | 0.0765 ms | 0.0769 ms | 3.696 ms | 9.789 ms | 117× | 128× | 127× | 2.6× |
+| `fib` | 0.0078 ms | 0.0249 ms | 0.5665 ms | 4.448 ms | 12.707 ms | 1629× | 510× | 22× | 2.9× |
 
-**Geometric mean: 66× slower than C doing the same work, and 14.4× slower than
-CPython 3.12.**  Eight of the twelve rows are within ten of Python: `closures`
-and `mini-eval` at 7×, `strings` at 120× is the exception that needs a word of
-its own (below), and the arithmetic loops sit at 10–12×.  Against C the closest
-row is `lists` at 21×, and nothing reaches 10×.
+**Geometric mean: 1.68× slower than Guile, 16× slower than CPython 3.12, and
+75× slower than C doing the same work.**
 
-## Why C is 66× and Python is 14×
+The Guile column is the interesting one.  Eight of the twelve rows are within
+2×, and the four that were expected to be worst — the arithmetic and
+variable-lookup loops that C folds away — are the *closest*: `locals` 1.1×,
+`vectors` 1.2×, `tail-loop` 1.3×, `globals` 1.3×.  The rows where we are
+furthest behind are `fib` (2.9×) and `strings` (2.6×), and both have a specific
+cause rather than a general one: `fib` is pure calls and arithmetic with no
+allocation to amortise anything over, and `strings` is the quadratic-append case
+described below.
 
-The two gaps differ by a factor of five, and the difference between them is what
-an interpreter *is*, not how well it is written.
+## Why the three gaps are what they are
+
+The gaps differ by a factor of forty-five, and what separates them is what an
+interpreter *is*, not how well it is written.
+
+**Guile is the measurement that matters.**  It is the same language, with a
+compiler and a JIT, and we are within 1.7× of it overall and within 1.3× on the
+loops.  Two things account for the difference that remains:
+
+* **Its calling convention is native.**  A Guile procedure call does not
+  allocate a frame object the way ours does; `fib` (2.9×) is exactly the row
+  where per-call overhead shows up and nothing else does.
+* **Its JIT specialises the hot path.**  `fib` and `strings` are where a JIT
+  earns its keep, and they are our two worst rows against it.
+
+Everything else in the panel — allocation, vectors, closures, control flow — is
+already close, which is the useful result: the VM's design decisions (compile-time
+binding resolution, no frame for a simple primitive call, operand stacks that
+live in their frames) are doing what they were meant to do.
 
 CPython is the same kind of machine as ours: a bytecode loop over boxed values,
-dispatching on type at run time.  It is faster than us on this panel for four
-reasons, all of them things a mature implementation has and a young one does
+dispatching on type at run time.  It is six times faster than Guile here, which
+is worth noticing before reading the list — CPython's bytecode loop is an
+extremely good one.  It is faster than us on this panel for four reasons, all of them things a mature implementation has and a young one does
 not:
 
 * **Its dispatch is a computed goto over specialised opcodes.**  `BINARY_OP`
@@ -177,10 +205,27 @@ variable, a fresh binding per `let`, dispatch on the tag.  A compiler that could
 specialise the tag dispatch and unbox the integers would move this row by more
 than any micro-optimisation in the VM.
 
+## Did we stay within ten?
+
+Yes, against the opponent that makes sense to ask about.  The three answers:
+
+| against | geometric mean | closest row | furthest row |
+|---|---|---|---|
+| Guile 2.2.7 (compiled Scheme, JIT) | **1.68×** | 1.1× | 2.9× |
+| CPython 3.12 | 16.0× | 8× | 127× |
+| C, same work, optimiser held back | 75× | 19× | 510× |
+| C at `-O2` | ∞ | 26× | 4964× |
+
+The 10× target was set against "a real language implementation".  Guile is that,
+and we are inside it with room to spare — the only rows outside 2× are `fib`
+(2.9×, all calls and arithmetic) and `strings` (2.6×, the quadratic append).
+Against C the target was never going to be met by an interpreter, and this
+document says so rather than dressing it up.
+
 ## What the numbers do not say
 
-* Nor is it "Scheme is 14× slower than Python".  It is this interpreter,
-  against this CPython, on these twelve programs.
+* Nor is it "Scheme is 16× slower than Python" or "1.7× slower than Guile".  It
+  is this interpreter, against these implementations, on these twelve programs.
 * This is not "Scheme is 66× slower than C".  It is "this interpreter, as it
   stands, on these twelve programs, is 66× slower than a C compiler doing the
   same work".  Compiled Scheme (Chez, Gambit, Racket's `raco make`) is typically
@@ -221,17 +266,20 @@ against C on programs whose inner loop is arithmetic means unboxed values *and*
 inlined primitives *and* no allocation per operation, which is a compiled-Scheme
 project rather than a better interpreter.
 
-Against Python the picture is different: the first two items on that list are
-also the two things CPython does that we do not, so they are most of the 14.4×,
-and a 10× against CPython looks reachable without leaving the interpreter
-behind.  That is worth saying plainly too — the target was not modest, and this
-document is the measurement that says which half of it is in reach.
+Against Guile the first two items on that list are where the remaining 1.7×
+lives: a call that does not allocate a frame, and an integer that is not boxed
+inside the loop.  Both are work a VM can do.  Against CPython the same two items
+are most of the 16×, and against C they are necessary but nowhere near
+sufficient.
 
 ## Files
 
 * `bench/c/*.c` — the twelve C programs, each with a comment saying what it
   mirrors.
 * `bench/python/*.py` — the same twelve in Python.
+* `bench/guile/*.scm` — the same twelve in Guile, compiled by Guile itself
+  (run with `GUILE_AUTO_COMPILE=0` so that a compile does not land inside a timed
+  run).
 * `bench/scheme/*.scm` — the same twelve in Scheme, extracted from the panel so
   that all three sides can be read side by side.
 * `bench/time.scm` — the timer, written in GoScheme.

@@ -15,7 +15,7 @@ bench/run.sh 5        # best of five, prints the table
 clock has a 10 ms resolution and most of these programs finish sooner than that,
 so timing has to come from inside something with a nanosecond clock.
 
-Read [docs/performance-vs-c.md](../docs/performance-vs-c.md) for the numbers and
+Read [docs/performance.md](../docs/performance.md) for the numbers and
 what they mean.  The short version: **66× slower than C doing the same work**,
 and **14.4× slower than CPython 3.12**, with eight of the twelve rows within ten
 of Python.  The target was 10×.
