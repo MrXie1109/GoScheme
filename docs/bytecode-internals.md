@@ -21,7 +21,8 @@ GSCM | version u8 | chunk count uvarint | chunk ...
 ```
 
 * the magic is four bytes, `G S C M`;
-* the version is **2** (version 1, which had no steps chunk, is still read; a
+* the version is **3** (version 2 added the steps chunk, version 1 had neither
+  that nor the primitive reference; every older file is still read, and a
   version from the future is refused rather than misread);
 * then one chunk per top-level part of the program, in source order.
 
@@ -113,11 +114,19 @@ told which one.
 | 14 | bytevector | `uvarint` length, that many raw bytes |
 | 15 | compiled body | `code` |
 | 16 | end-of-file object | — |
+| 17 | a runtime helper | `str` its name, resolved in the interpreter's own table |
 
 Integers are decimal text rather than binary because they are the only value
 that can be arbitrarily large, and `big.Int` already speaks decimal; a symbol is
 stored by name and **interned on load**, because symbols are compared by
 pointer everywhere else in the interpreter.
+
+Tag 17 is how a compiled program refers to one of the interpreter's own
+runtime helpers — the guard helper, for one — by name.  Only the helpers in
+`internalPrimitives` can be written, and a program can neither see them nor
+rebind them, which is the point: a compiled `guard` must reach the same helper
+whatever the program has done to its own names.  Nothing else may put a
+primitive in a constant pool.
 
 Cyclic data is refused, with an error rather than a wrong file: a literal that
 refers to itself cannot come from the reader, but a hand-written file could try.
@@ -127,7 +136,9 @@ refers to itself cannot come from the reader, but a hand-written file could try.
 A file is rejected, not guessed at, when the magic is wrong, when the version
 is one this interpreter does not speak, when it is truncated, when a chunk tag
 is not 0, 1 or 2, when a steps run has fewer than two steps or nests inside
-another run, when a datum tag is unknown, or when data is cyclic.  A `.scmc`
+another run, when an opcode is one this interpreter does not have (the
+instruction loop's switch has no default case, so an unknown one would be a
+silent no-op), when a datum tag is unknown, or when data is cyclic.  A `.scmc`
 whose header cannot be read is never treated as source.
 
 ## The instruction set

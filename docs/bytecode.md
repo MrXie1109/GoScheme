@@ -28,16 +28,23 @@ goscheme script.scmc                # run bytecode without reading source
 `internal/scheme/compile.go` compiles one **body** at a time: a top-level form,
 or a lambda body.  Inside a body it handles
 
-* `quote`, `if`, `begin`, `lambda`, `set!`, `define` (top-level and internal),
+* `quote`, `quasiquote` (expanded into the constructors the interpreter's own
+  expander produces), `if`, `begin`, `lambda`, `set!`, `define` (top-level and
+  internal),
 * `let`, `let*`, `letrec`, `letrec*`, named `let`,
 * `and`, `or`, `when`, `unless`, `cond`, `case` (including `=>`),
+* `guard`, whose clauses compile to a procedure of the condition and whose body
+  to a thunk, both handed to a runtime helper that installs the handler the
+  interpreter installs, and
 * applications, tail calls, and every self-evaluating literal.
 
 plus anything a macro expands into, because **macros are expanded at compile
-time** with the same expander the interpreter uses.  Everything else — `do`,
-`guard`, `parameterize`, `dynamic-wind`, `define-record-type`, `match`,
-`define-values`, `let-values`, `quasiquote`, `case-lambda`, `delay`, `include`,
-`import` — makes the compiler decline that body, so it runs interpreted.
+time** with the same expander the interpreter uses — which is also why `match`
+compiles now: its expansion is written with `guard`.
+
+Everything else — `do`, `parameterize`, `dynamic-wind`, `define-record-type`,
+`define-values`, `let-values`, `case-lambda`, `delay` — makes the compiler
+decline that body, so it runs interpreted.
 
 The compiler's table is a list of what it *does* handle rather than what it does
 not, so adding a form is a local change to `special` in `compile.go`.
@@ -138,7 +145,7 @@ misread.
 
 The two paths are held together by tests, not by hope:
 
-* `internal/scheme/vm_test.go` runs a corpus of 48 programs — arithmetic,
+* `internal/scheme/vm_test.go` runs a corpus of 50 programs — arithmetic,
   closures and `set!`, internal definitions, every compiled derived form, tail
   calls, a 200 000-deep non-tail recursion, `call/cc` escapes and re-entries,
   `dynamic-wind`, macro definitions, records, `parameterize`, `match`, strings,
@@ -245,7 +252,6 @@ behind the tests.
   machine cannot compile it — a script that imports a library only present
   beside the executable at run time — and says so; the bundle format carries
   which of the two it holds.
-* The compiler declines a whole *body*, so a lambda whose body uses a `do` or
-  `guard` runs interpreted all the way through, and so do the lambdas inside
-  it.  At the top level that is per form, not per file (see the steps chunk
+* The compiler declines a whole *body*, so a lambda whose body uses a `do` runs
+  interpreted all the way through, and so do the lambdas inside it.  At the top level that is per form, not per file (see the steps chunk
   above), which is what keeps a mixed program mostly compiled.

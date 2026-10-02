@@ -49,7 +49,9 @@ const (
 	bytecodeMagic = "GSCM"
 	// bytecodeVersion 2 added the Steps chunk.  Version 1 files are still read:
 	// nothing else about the format changed.
-	bytecodeVersion = 2
+	// 3 added the primitive reference in a constant pool.  Older files are
+	// still read; a file from a newer version is refused rather than misread.
+	bytecodeVersion = 3
 )
 
 // Compiled reports how many of the program's top-level forms are bytecode, and
@@ -358,7 +360,7 @@ func ReadBytecode(r io.Reader) (*Program, error) {
 	if string(magic) != bytecodeMagic {
 		return nil, fmt.Errorf("bytecode: not a .scmc file")
 	}
-	if v := br.u8(); v != 1 && v != bytecodeVersion {
+	if v := br.u8(); v < 1 || v > bytecodeVersion {
 		return nil, fmt.Errorf("bytecode: version %d, but this interpreter speaks %d", v, bytecodeVersion)
 	}
 	n := br.uvarint()
@@ -529,7 +531,22 @@ const (
 	tBytevector = 14
 	tCode       = 15
 	tEof        = 16
+	// tPrimitive is a reference to one of the interpreter's own runtime
+	// helpers, by name.  A compiled program needs a few of them — the guard
+	// helper, for one — and they are values the compiler puts in a constant
+	// pool, so the file has to be able to name them.  Only the helpers in
+	// internalPrimitives can be written: nothing else may put a primitive in
+	// a constant pool, and nothing a program can write can name one.
+	tPrimitive = 17
 )
+
+// internalPrimitives are the runtime helpers a compiled file may refer to by
+// name.  They are looked up here rather than in an environment, so a program
+// can neither see them nor rebind them, and the reader needs no machine.
+var internalPrimitives = map[string]*Primitive{
+	"guard-helper":   guardHelper,
+	"guard-re-raise": guardReRaise,
+}
 
 func (b *byteWriter) datum(v Value, seen map[interface{}]bool) {
 	if b.err != nil {
@@ -599,6 +616,13 @@ func (b *byteWriter) datum(v Value, seen map[interface{}]bool) {
 	case *Code:
 		b.u8(tCode)
 		b.code(x)
+	case *Primitive:
+		if _, ok := internalPrimitives[x.Name]; !ok {
+			b.err = fmt.Errorf("bytecode: cannot store the primitive %s", x.Name)
+			return
+		}
+		b.u8(tPrimitive)
+		b.str(x.Name)
 	case EOF:
 		b.u8(tEof)
 	case nil:
@@ -741,6 +765,10 @@ func (b *byteReader) code() *Code {
 		op := b.u8()
 		a1 := b.svarint()
 		a2 := b.svarint()
+		if int(op) >= opcodeCount {
+			b.err = fmt.Errorf("bytecode: unknown opcode %d", op)
+			return c
+		}
 		c.Instrs[i] = instr{op: opcode(op), arg1: int32(a1), arg2: int32(a2)}
 	}
 	nc := b.uvarint()
@@ -828,6 +856,14 @@ func (b *byteReader) datum() Value {
 		return b.code()
 	case tEof:
 		return EOFObject
+	case tPrimitive:
+		name := b.str()
+		p, ok := internalPrimitives[name]
+		if !ok {
+			b.err = fmt.Errorf("bytecode: no runtime helper called %s", name)
+			return nil
+		}
+		return p
 	}
 	b.err = fmt.Errorf("bytecode: bad datum tag")
 	return nil

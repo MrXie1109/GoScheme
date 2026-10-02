@@ -272,6 +272,45 @@ func (c *comp) special(name string, x *Pair, tail bool) bool {
 		c.emit(opConst, c.konst(args[0]), 0)
 		return true
 
+	case "guard":
+		if len(args) < 1 {
+			c.fail("guard: missing clause list")
+			return true
+		}
+		spec, ok := args[0].(*Pair)
+		if !ok {
+			c.fail("guard: malformed clause list")
+			return true
+		}
+		varSym, ok := spec.Car.(*Symbol)
+		if !ok {
+			c.fail("guard: condition variable is not an identifier")
+			return true
+		}
+		clauses := mustSlice(spec.Cdr)
+		// (guard-helper <clauses> <body>): the clauses are a procedure of the
+		// condition and the body a thunk, both compiled, and the helper
+		// installs the handler around the call the same way the interpreter
+		// installs it around its own evaluation.
+		clauseCode := c.bodyWithFormals(List(varSym), clauses, "guard", func(sub *comp) {
+			sub.guardClauses(varSym, clauses, true)
+		})
+		bodyCode := c.bodyWithFormals(Empty{}, args[1:], "guard body", func(sub *comp) {
+			sub.body(args[1:], true)
+		})
+		if clauseCode == nil || bodyCode == nil {
+			return true
+		}
+		c.emit(opConst, c.konst(guardHelper), 0)
+		c.emit(opClosure, c.konst(clauseCode), 0)
+		c.emit(opClosure, c.konst(bodyCode), 0)
+		if tail {
+			c.emit(opTailCall, 2, 0)
+		} else {
+			c.emit(opCall, 2, 0)
+		}
+		return true
+
 	case "quasiquote":
 		// `x is not a special form to compile: it is syntax sugar, and the
 		// expander the interpreter uses turns it into cons/append/list->vector
@@ -427,8 +466,12 @@ func (c *comp) special(name string, x *Pair, tail bool) bool {
 		c.letStar(args, tail)
 		return true
 
-	case "letrec", "letrec*":
-		c.letrec(args, tail)
+	case "letrec":
+		c.letrec(args, tail, false)
+		return true
+
+	case "letrec*":
+		c.letrec(args, tail, true)
 		return true
 
 	case "cond":
@@ -509,6 +552,7 @@ func (c *comp) letForm(args []Value, tail bool) {
 			return
 		}
 		var params, inits []Value
+		var paramSyms []*Symbol
 		for _, b := range bindings {
 			p, ok := b.(*Pair)
 			if !ok {
@@ -520,12 +564,18 @@ func (c *comp) letForm(args []Value, tail bool) {
 				c.fail("let: malformed binding")
 				return
 			}
+			if sym, ok := items[0].(*Symbol); ok {
+				paramSyms = append(paramSyms, sym)
+			}
 			params = append(params, items[0])
 			if len(items) > 1 {
 				inits = append(inits, items[1])
 			} else {
 				inits = append(inits, UnspecifiedValue)
 			}
+		}
+		if !c.checkDuplicates("let", paramSyms) {
+			return
 		}
 		// The loop variable is a letrec binding: allocate it, make it visible
 		// to the lambda (which recurses through it), then fill it in.
@@ -562,6 +612,7 @@ func (c *comp) letForm(args []Value, tail bool) {
 	saved := len(c.block.names)
 	var slots []int
 	var boxed []bool
+	var syms []*Symbol
 	for _, b := range bindings {
 		p, ok := b.(*Pair)
 		if !ok {
@@ -578,6 +629,10 @@ func (c *comp) letForm(args []Value, tail bool) {
 			c.fail("let: binding name is not an identifier")
 			return
 		}
+		if !c.checkDuplicates("let", append(syms, sym)) {
+			return
+		}
+		syms = append(syms, sym)
 		init := Value(UnspecifiedValue)
 		if len(items) > 1 {
 			init = items[1]
@@ -596,7 +651,7 @@ func (c *comp) letForm(args []Value, tail bool) {
 		c.block.slots = append(c.block.slots, slots[i])
 		c.frame.boxed[slots[i]] = boxed[i]
 	}
-	c.body(args[1:], tail)
+	c.bodyWithLocals(args[1:], tail)
 	c.block.names = c.block.names[:saved]
 	c.block.slots = c.block.slots[:saved]
 }
@@ -639,16 +694,18 @@ func (c *comp) letStar(args []Value, tail bool) {
 		c.block.names = append(c.block.names, sym)
 		c.block.slots = append(c.block.slots, slot)
 	}
-	c.body(args[1:], tail)
+	c.bodyWithLocals(args[1:], tail)
 	c.block.names = c.block.names[:saved]
 	c.block.slots = c.block.slots[:saved]
 }
 
-// letrec compiles letrec and letrec*, which differ only in the order the
-// initializers see each other; both allocate every variable first, and reading
-// one before its initializer has run is an error, which the Checked flag
-// makes the VM report.
-func (c *comp) letrec(args []Value, tail bool) {
+// letrec compiles letrec and letrec*, which differ in one thing: letrec
+// evaluates *every* initializer before assigning any of them, so an
+// initializer that reads a sibling sees it unassigned, while letrec* assigns
+// each one as it goes, so the ones after it see it.  Both allocate every
+// variable first, and reading one before its initializer has run is an error,
+// which the Checked flag makes the VM report.
+func (c *comp) letrec(args []Value, tail bool, sequential bool) {
 	if len(args) < 1 {
 		c.fail("letrec: missing bindings")
 		return
@@ -661,6 +718,7 @@ func (c *comp) letrec(args []Value, tail bool) {
 	saved := len(c.block.names)
 	var slots []int
 	var boxed []bool
+	var syms []*Symbol
 	for _, b := range bindings {
 		p, ok := b.(*Pair)
 		if !ok {
@@ -677,6 +735,10 @@ func (c *comp) letrec(args []Value, tail bool) {
 			c.fail("letrec: binding name is not an identifier")
 			return
 		}
+		if !c.checkDuplicates("letrec", append(syms, sym)) {
+			return
+		}
+		syms = append(syms, sym)
 		slot, bx := c.reserve(sym)
 		c.frame.checked[slot] = true
 		if bx {
@@ -691,16 +753,34 @@ func (c *comp) letrec(args []Value, tail bool) {
 		slots = append(slots, slot)
 		boxed = append(boxed, bx)
 	}
-	for i, b := range bindings {
-		items, _ := ListToSlice(b.(*Pair))
-		if len(items) < 2 {
-			c.emit(opConst, c.konst(UnspecifiedValue), 0)
-		} else {
-			c.expr(items[1], false)
+	if sequential {
+		for i, b := range bindings {
+			items, _ := ListToSlice(b.(*Pair))
+			if len(items) < 2 {
+				c.emit(opConst, c.konst(UnspecifiedValue), 0)
+			} else {
+				c.expr(items[1], false)
+			}
+			c.storeLocal(slots[i], boxed[i])
 		}
-		c.storeLocal(slots[i], boxed[i])
+	} else {
+		// Every initializer first, then the assignments: the values are on the
+		// operand stack, one per variable, and are stored from the top down.
+		// Nothing is assigned until all of them have been evaluated, so an
+		// initializer that reads a sibling reads it unassigned.
+		for _, b := range bindings {
+			items, _ := ListToSlice(b.(*Pair))
+			if len(items) < 2 {
+				c.emit(opConst, c.konst(UnspecifiedValue), 0)
+			} else {
+				c.expr(items[1], false)
+			}
+		}
+		for i := len(bindings) - 1; i >= 0; i-- {
+			c.storeLocal(slots[i], boxed[i])
+		}
 	}
-	c.body(args[1:], tail)
+	c.bodyWithLocals(args[1:], tail)
 	c.block.names = c.block.names[:saved]
 	c.block.slots = c.block.slots[:saved]
 }
@@ -793,6 +873,82 @@ func (c *comp) auxSyntax(s *Symbol) bool {
 func (c *comp) isArrow(v Value) bool {
 	s, ok := v.(*Symbol)
 	return ok && s.Name == "=>" && c.auxSyntax(s)
+}
+
+// guardClauses compiles the clauses of a guard.  They are cond clauses with one
+// difference: when none of them matches, the condition is raised again.  The
+// condition variable is the parameter of the body these are compiled in, and
+// the re-raise goes to the guard's own primitive rather than to whatever
+// `raise` is bound to, which a program is free to rebind — the interpreter
+// makes the same choice.
+func (c *comp) guardClauses(varSym *Symbol, clauses []Value, tail bool) {
+	var ends []int
+	for i, cl := range clauses {
+		p, ok := cl.(*Pair)
+		if !ok {
+			c.fail("guard: malformed clause")
+			return
+		}
+		items, _ := ListToSlice(p)
+		if len(items) == 0 {
+			c.fail("guard: malformed clause")
+			return
+		}
+		isElse := false
+		if s, ok := items[0].(*Symbol); ok && s.Name == "else" && c.auxSyntax(s) {
+			if i != len(clauses)-1 {
+				c.fail("guard: else is not the last clause")
+				return
+			}
+			isElse = true
+		}
+		next := -1
+		if !isElse {
+			c.expr(items[0], false)
+			next = c.emit(opJumpFalseKeep, 0, 0)
+		}
+		switch {
+		case isElse:
+			c.body(items[1:], tail)
+		case len(items) >= 2 && c.isArrow(items[1]):
+			if len(items) != 3 {
+				c.fail("guard: malformed => clause")
+				return
+			}
+			slot := c.tempSlot()
+			c.emit(opSetLocal, 0, int32(slot))
+			c.expr(items[2], false)
+			c.loadLocal(slot, false, false)
+			if tail {
+				c.emit(opTailCall, 1, 0)
+			} else {
+				c.emit(opCall, 1, 0)
+			}
+		case len(items) >= 2:
+			c.emit(opPop, 0, 0)
+			c.body(items[1:], tail)
+		default:
+			// A clause with only a test is worth its value.
+		}
+		ends = append(ends, c.emit(opJump, 0, 0))
+		if next >= 0 {
+			c.patch(next, c.here())
+			c.emit(opPop, 0, 0)
+		}
+	}
+	// Nothing matched: raise the condition again.  This never returns, so the
+	// clauses that did match jump straight past it.
+	c.emit(opConst, c.konst(guardReRaise), 0)
+	c.expr(varSym, false)
+	if tail {
+		c.emit(opTailCall, 1, 0)
+	} else {
+		c.emit(opCall, 1, 0)
+	}
+	c.emit(opConst, c.konst(UnspecifiedValue), 0)
+	for _, at := range ends {
+		c.patch(at, c.here())
+	}
 }
 
 // caseForm compiles case, which compares the key with eqv?, as the
@@ -938,9 +1094,31 @@ func (c *comp) loadLocal(slot int, boxed, checked bool) {
 
 // lambda compiles a lambda body into a Code of its own.
 func (c *comp) lambda(formals Value, body []Value, name string) *Code {
+	return c.bodyWithFormals(formals, body, name, func(sub *comp) {
+		sub.body(body, true)
+	})
+}
+
+// bodyWithFormals compiles a body of its own with the given formals: the
+// parameters are bound, the internal definitions are reserved, and emit
+// compiles the body itself.  A lambda's body is a sequence of expressions and
+// a guard's clause handler is a list of clauses, so the two share all of this
+// and differ only in what they emit.
+func (c *comp) bodyWithFormals(formals Value, body []Value, name string, emit func(*comp)) *Code {
+	sub := c.beginBody(formals, body, name)
+	if sub == nil {
+		return nil
+	}
+	emit(sub)
+	return c.finishBody(sub)
+}
+
+// beginBody starts a body of its own, with its formals bound and its internal
+// definitions reserved, and returns the sub-compiler that emits it.  It
+// reports a malformed formals list itself and returns nil.
+func (c *comp) beginBody(formals Value, body []Value, name string) *comp {
 	saved := c.frame
 	savedBlock := c.block
-	savedAssigned := c.assigned
 	frame := &cframe{parent: saved}
 	sub := &comp{
 		m:        c.m,
@@ -994,22 +1172,46 @@ func (c *comp) lambda(formals Value, body []Value, name string) *Code {
 		c.fail("lambda: malformed formals")
 		return nil
 	}
-	// Internal definitions are bound before the body runs, which is what gives
-	// it letrec* semantics; the interpreter does the same with the same scan.
+	sub.reserveBodyNames(body)
+	return sub
+}
+
+// reserveBodyNames gives the names an internal definition introduces a slot in
+// this frame before the body is compiled, which is what makes them visible to
+// the whole body and to each other with letrec* semantics, and marks them
+// checked so that reading one before its definition has run is an error.  The
+// interpreter does the same in prepBody, including the "not if the frame
+// already has it" rule: a parameter or a let binding of the same name is
+// reused rather than shadowed.
+func (c *comp) reserveBodyNames(body []Value) {
 	for _, s := range scanBodyNames(body) {
-		slot, boxed := sub.reserve(s)
-		sub.frame.checked[slot] = true
-		if boxed {
-			sub.emit(opConst, sub.konst(Unassigned), 0)
-			sub.emit(opNewCell, 0, int32(slot))
-		} else {
-			sub.emit(opConst, sub.konst(Unassigned), 0)
-			sub.emit(opSetLocal, 0, int32(slot))
+		if _, _, _, ok := c.lookup(s); ok {
+			continue
 		}
-		sub.block.names = append(sub.block.names, s)
-		sub.block.slots = append(sub.block.slots, slot)
+		slot, boxed := c.reserve(s)
+		c.frame.checked[slot] = true
+		if boxed {
+			c.emit(opConst, c.konst(Unassigned), 0)
+			c.emit(opNewCell, 0, int32(slot))
+		} else {
+			c.emit(opConst, c.konst(Unassigned), 0)
+			c.emit(opSetLocal, 0, int32(slot))
+		}
+		c.block.names = append(c.block.names, s)
+		c.block.slots = append(c.block.slots, slot)
 	}
-	sub.body(body, true)
+}
+
+// bodyWithLocals compiles the body of a binding form, whose internal
+// definitions are local to it rather than global.
+func (c *comp) bodyWithLocals(body []Value, tail bool) {
+	c.reserveBodyNames(body)
+	c.body(body, tail)
+}
+
+// finishBody emits the return of a body and turns the sub-compiler's state
+// into the Code the machine runs.
+func (c *comp) finishBody(sub *comp) *Code {
 	sub.emit(opReturn, 0, 0)
 	if sub.err != nil {
 		c.fail("lambda: %v", sub.err)
@@ -1024,10 +1226,23 @@ func (c *comp) lambda(formals Value, body []Value, name string) *Code {
 	code.HasRest = sub.code.HasRest
 	code.RestSlot = sub.code.RestSlot
 	code.Checked = append([]bool(nil), sub.frame.checked...)
-	c.frame = saved
-	c.block = savedBlock
-	c.assigned = savedAssigned
 	return code
+}
+
+// checkDuplicates reports a binding form that names the same variable twice,
+// which R7RS makes an error rather than a silent last-one-wins.  The
+// interpreter checks the same forms (let and letrec, not let*), with the same
+// message, and a compiled body has to agree about what is an error.
+func (c *comp) checkDuplicates(what string, syms []*Symbol) bool {
+	seen := map[*Symbol]bool{}
+	for _, s := range syms {
+		if seen[s] {
+			c.fail("%s: duplicate variable in the same binding form", what)
+			return false
+		}
+		seen[s] = true
+	}
+	return true
 }
 
 // assignedNames collects the identifiers a body assigns with set!, descending

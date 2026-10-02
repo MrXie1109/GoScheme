@@ -115,6 +115,24 @@ var vmPrograms = []struct {
 	                      (if (< n 3) (k (+ v 1)) (begin (display v) (newline)))`},
 	{"guard-raise", `(display (guard (e (#t (list 'caught (error-object-message e))))
 	                           (error "boom"))) (newline)`},
+	// guard is compiled now, so its clauses, its `=>`, the shadowing of the
+	// condition variable and a guard nested inside a primitive's callback all
+	// have to agree with the tree-walker.
+	{"guard-clauses", `(define (try thunk)
+	                     (guard (e ((symbol? e) (list 'sym e))
+	                               ((string? e) (list 'str e))
+	                               ((and (pair? e) (assv 'b e)) => cdr)
+	                               (else (list 'other e)))
+	                       (thunk)))
+	                   (display (list (try (lambda () (raise 'x)))
+	                                  (try (lambda () (raise "s")))
+	                                  (try (lambda () (raise '((a . 1) (b . 2)))))
+	                                  (try (lambda () (raise 7)))
+	                                  (try (lambda () 'quiet)))) (newline)
+	                   (display (let ((x 'outer)) (try (lambda () (raise x))))) (newline)
+	                   (display (map (lambda (v) (try (lambda () (raise v)))) '(a b))) (newline)`},
+	{"guard-match", `(display (list (match (list 1 2 3) ((a b c) (+ a b c)) ((_ ... rest) 'longer))
+	                                (match 'z ((a b) 'pair) (else 'other)))) (newline)`},
 	{"primitive-raises", `(define (boom) (+ 1 'a))
 	                      (define (run) (boom))
 	                      (display (guard (e (#t 'caught)) (run))) (newline)`},

@@ -53,6 +53,57 @@ const (
 	opReturn
 )
 
+// opcodeCount is how many opcodes this interpreter knows.  The reader uses it:
+// an instruction from a newer file would otherwise be a silent no-op, because
+// the instruction loop's switch has no default case.
+const opcodeCount = int(opReturn) + 1
+
+// guardReRaise is what a compiled guard does when none of its clauses matched:
+// it raises the condition again.  It is a value of its own rather than a lookup
+// of `raise`, which a program may rebind, and it is what the interpreter's
+// evalGuardClauses does too.
+var guardReRaise = &Primitive{Name: "guard-re-raise", MinArgs: 1, MaxArgs: 1,
+	Fn: func(m *Machine, a []Value) { m.Raise(a[0]) }}
+
+// guardHelper is what a compiled guard calls: (guard-helper clause-handler
+// body), where the first is a procedure of one argument — the condition — and
+// the second a thunk.  It does what the interpreter's evalGuard does, in the
+// same order: take the continuation the guard will return to, install a
+// handler that escapes back to it, run the body, and take the handler away
+// again if the body returns.
+//
+// The guard is a call rather than an inline sequence because the escape has to
+// come *back*: a raise unwinds to this frame, and the value the clauses
+// produce has to reach whatever was waiting for the guard's value.  A call is
+// what puts that waiter on the continuation stack.
+var guardHelper = &Primitive{Name: "guard-helper", MinArgs: 2, MaxArgs: 2,
+	Fn: func(m *Machine, a []Value) {
+		clauses, body := a[0], a[1]
+		stack := append([]frame(nil), m.stack...)
+		winds := append([]*windFrame(nil), m.winds...)
+		hands := append([]*handlerFrame(nil), m.hands...)
+		m.framesCopied = true
+		escape := &Primitive{Name: "guard-escape", MinArgs: 1, MaxArgs: 1,
+			Fn: func(mm *Machine, hargs []Value) {
+				// Escaping from the body must run the after thunks of every
+				// wind frame that is being left, and then the clauses.
+				target := &Continuation{
+					stack: stack, winds: winds, hands: hands, owner: mm,
+				}
+				mm.transferToWith(target, func(mm *Machine) {
+					mm.apply(clauses, hargs)
+				})
+			}}
+		m.hands = append(m.hands, &handlerFrame{proc: escape})
+		savedLen := len(m.hands)
+		m.ApplyWith(body, nil, func(mm *Machine, v Value) {
+			if len(mm.hands) >= savedLen {
+				mm.hands = mm.hands[:savedLen-1]
+			}
+			mm.Return(v)
+		})
+	}}
+
 // instr is one instruction.  The two operands are interpreted according to the
 // opcode: a constant index, a lexical depth and slot, or a jump target.
 type instr struct {
@@ -545,6 +596,7 @@ func vmRun(m *Machine, code *Code, ip int, env *vmEnv, globals *Env, vals []Valu
 			v, vals = popValue(vals)
 			m.Return(v)
 			return
+
 		}
 	}
 }
