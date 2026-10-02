@@ -220,7 +220,7 @@ The honest caveats:
 Where the remaining cost is, in the order it should be attacked:
 
 1. a continuation frame is still allocated per non-tail call to a compiled
-   procedure — 88 bytes — although nothing else about the call is;
+   procedure — 120 bytes — although nothing else about the call is;
 2. global references look a symbol up in the environment each time, where a
    cached slot with a generation check would do (`mapaccess2_fast64` is the
    last non-GC symbol left in the profile);
