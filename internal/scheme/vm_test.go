@@ -75,6 +75,26 @@ var vmPrograms = []struct {
 	                            (set! n (+ n 1)))
 	                          n))
 	               (newline)`},
+	// A parameter's converter runs once on the way in and must not run again on
+	// the way out, delay's thunk runs once however often it is forced, and a
+	// case-lambda picks its clause by arity.
+	{"parameterize", `(define p2 (make-parameter 1))
+	                   (display (list (p2) (parameterize ((p2 2)) (p2)) (p2))) (newline)
+	                   (define c (make-parameter 10 (lambda (x) (* x 2))))
+	                   (display (list (c) (parameterize ((c 3)) (c)) (c))) (newline)
+	                   (display (parameterize ((p2 5))
+	                              (dynamic-wind (lambda () (display "in "))
+	                                            (lambda () (p2))
+	                                            (lambda () (display "out "))))) (newline)`},
+	{"delay", `(define pr (delay (begin (display "once ") 7)))
+	             (display (list (force pr) (force pr))) (newline)
+	             (display (force (delay-force (delay 9)))) (newline)`},
+	{"case-lambda", `(define f (case-lambda (() 'zero)
+	                                       ((x) (list 'one x))
+	                                       ((x y . z) (list 'many x y z))))
+	                 (display (list (f) (f 1) (f 1 2) (f 1 2 3))) (newline)`},
+	{"assert", `(display (assert (+ 1 1))) (newline)
+	            (display (guard (e (#t (error-object-message e))) (assert #f))) (newline)`},
 	{"do-continue", `(define kept '())
 	                 (do ((i 0 (+ i 1))) ((= i 6) (display (reverse kept)))
 	                   (if (odd? i) (continue))
@@ -314,13 +334,23 @@ func TestVMReallyCompiles(t *testing.T) {
 		`(do ((i 0 (+ i 1))) ((= i 1) i))`,
 		`(guard (e (#t e)) (error "x"))`,
 		"`(a ,(+ 1 2))",
+		`(assert #t)`,
+		`(delay 1)`,
+		`(case-lambda (() 1) ((x) x))`,
+		`(parameterize ((p 1)) p)`,
 	} {
 		if _, err := compileTop(m, mustRead(t, src), m.Global); err != nil {
 			t.Errorf("%s should compile now: %v", src, err)
 		}
 	}
-	if _, err := compileTop(m, mustRead(t, `(case-lambda (() 1) ((x) x))`), m.Global); err == nil {
-		t.Errorf("case-lambda is still left to the interpreter")
+	// What is still left to the interpreter, until it is not.
+	for _, src := range []string{
+		`(define-record-type p (make-p x) p? (x p-x))`,
+		`(let-values (((a b) (values 1 2))) a)`,
+	} {
+		if _, err := compileTop(m, mustRead(t, src), m.Global); err == nil {
+			t.Errorf("%s is still left to the interpreter", src)
+		}
 	}
 	// A file is compiled a group at a time, and a group is all or nothing —
 	// so one form the compiler declines used to send every form around it

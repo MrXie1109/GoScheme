@@ -65,6 +65,42 @@ const opcodeCount = int(opReturn) + 1
 var guardReRaise = &Primitive{Name: "guard-re-raise", MinArgs: 1, MaxArgs: 1,
 	Fn: func(m *Machine, a []Value) { m.Raise(a[0]) }}
 
+// promiseHelper makes the promise (delay e) and (delay-force e) stand for,
+// with the thunk the compiler built rather than one the interpreter would walk.
+var promiseHelper = &Primitive{Name: "delay", MinArgs: 2, MaxArgs: 2, Sync: true,
+	Fn: func(m *Machine, a []Value) {
+		isForce, _ := a[1].(Boolean)
+		m.Return(&Promise{Thunk: a[0], IsDelayForce: bool(isForce)})
+	}}
+
+// caseLambdaHelper assembles a case-lambda from the closures the compiler made
+// for its clauses.  Each carries one compiled clause, and the result is one
+// procedure with all of them, so picking a clause by arity is the same whether
+// the clauses were compiled or not.
+var caseLambdaHelper = &Primitive{Name: "case-lambda", MinArgs: 1, MaxArgs: -1, Sync: true,
+	Fn: func(m *Machine, a []Value) {
+		out := &Closure{}
+		for _, v := range a {
+			c, ok := v.(*Closure)
+			if !ok || len(c.Clauses) != 1 {
+				m.Raise(NewError("case-lambda: bad clause"))
+				return
+			}
+			if out.Env == nil {
+				out.Env, out.Vm, out.Name = c.Env, c.Vm, c.Name
+			}
+			out.Clauses = append(out.Clauses, c.Clauses[0])
+		}
+		m.Return(out)
+	}}
+
+// assertFailed raises what (assert e) raises when e is false, with the form as
+// the irritant, exactly as the interpreter's evalAssert does.
+var assertFailed = &Primitive{Name: "assert", MinArgs: 1, MaxArgs: 1, Sync: true,
+	Fn: func(m *Machine, a []Value) {
+		m.Raise(NewError("assertion failed", a[0]))
+	}}
+
 // guardHelper is what a compiled guard calls: (guard-helper clause-handler
 // body), where the first is a procedure of one argument — the condition — and
 // the second a thunk.  It does what the interpreter's evalGuard does, in the

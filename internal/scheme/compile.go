@@ -272,6 +272,88 @@ func (c *comp) special(name string, x *Pair, tail bool) bool {
 		c.emit(opConst, c.konst(args[0]), 0)
 		return true
 
+	case "assert":
+		if len(args) != 1 {
+			c.fail("assert: expected one expression")
+			return true
+		}
+		c.expr(args[0], false)
+		ok := c.emit(opJumpTrueKeep, 0, 0)
+		c.emit(opPop, 0, 0)
+		c.emit(opConst, c.konst(assertFailed), 0)
+		c.emit(opConst, c.konst(args[0]), 0)
+		c.emit(opCall, 1, 0)
+		// The raise never returns, but every path through the code needs one
+		// value, and this is the one the false path would have left.
+		c.emit(opConst, c.konst(UnspecifiedValue), 0)
+		c.patch(ok, c.here())
+		return true
+
+	case "delay", "delay-force":
+		if len(args) != 1 {
+			c.fail("%s: expected one expression", name)
+			return true
+		}
+		// The promise is a thunk, and the thunk should be compiled: leaving it
+		// to the interpreter would make every force() of a compiled delay walk
+		// the tree.
+		thunk := c.bodyWithFormals(Empty{}, args, name, func(sub *comp) {
+			sub.body(args, true)
+		})
+		if thunk == nil {
+			return true
+		}
+		c.emit(opConst, c.konst(promiseHelper), 0)
+		c.emit(opClosure, c.konst(thunk), 0)
+		c.emit(opConst, c.konst(BooleanOf(name == "delay-force")), 0)
+		if tail {
+			c.emit(opTailCall, 2, 0)
+		} else {
+			c.emit(opCall, 2, 0)
+		}
+		return true
+
+	case "case-lambda":
+		// Every clause is a lambda of its own; the helper collects them into
+		// one procedure, which is what the interpreter's evalCaseLambda builds.
+		if len(args) == 0 {
+			c.fail("case-lambda: no clauses")
+			return true
+		}
+		var codes []*Code
+		for _, cl := range args {
+			p, ok := cl.(*Pair)
+			if !ok {
+				c.fail("case-lambda: bad clause")
+				return true
+			}
+			body, _ := ListToSlice(p.Cdr)
+			code := c.lambda(p.Car, body, "")
+			if code == nil {
+				return true
+			}
+			codes = append(codes, code)
+		}
+		c.emit(opConst, c.konst(caseLambdaHelper), 0)
+		for _, code := range codes {
+			c.emit(opClosure, c.konst(code), 0)
+		}
+		if tail {
+			c.emit(opTailCall, int32(len(codes)), 0)
+		} else {
+			c.emit(opCall, int32(len(codes)), 0)
+		}
+		return true
+
+	case "parameterize":
+		expanded, err := parameterizeExpansion(args)
+		if err != nil {
+			c.fail("%v", err)
+			return true
+		}
+		c.expr(expanded, tail)
+		return true
+
 	case "do":
 		// A do loop is an expansion in the interpreter too, into a letrec
 		// whose body is guarded — the guard is what gives (continue) its

@@ -1231,15 +1231,27 @@ func evalDelayForce(m *Machine, form Value, env *Env) {
 // ---------------------------------------------------------------------------
 
 func evalParameterize(m *Machine, form Value, env *Env) {
-	args := formArgs(form)
-	if len(args) < 1 {
-		m.Raise(NewError("parameterize: missing bindings", form))
+	expanded, err := parameterizeExpansion(formArgs(form))
+	if err != nil {
+		m.Raise(err)
 		return
+	}
+	m.Eval(expanded, env)
+}
+
+// parameterizeExpansion builds the form parameterize means: the parameter and
+// the value are evaluated once, the old value is read once, and a dynamic-wind
+// sets the new value for the body and puts the old one back afterwards — as it
+// was, without running it through the converter a second time, which would
+// compound a non-idempotent one.  The compiler shares this, because every form
+// in it compiles.
+func parameterizeExpansion(args []Value) (Value, error) {
+	if len(args) < 1 {
+		return nil, NewError("parameterize: missing bindings")
 	}
 	bindings, ok := ListToSlice(args[0])
 	if !ok {
-		m.Raise(NewError("parameterize: malformed bindings", args[0]))
-		return
+		return nil, NewError("parameterize: malformed bindings", args[0])
 	}
 	body := args[1:]
 	// (let ((p pe) (v ve) ...) (let ((old (p))) (dynamic-wind (lambda () (p v) ...) (lambda () body) (lambda () (p old) ...))))
@@ -1249,8 +1261,7 @@ func evalParameterize(m *Machine, form Value, env *Env) {
 	for _, b := range bindings {
 		p, ok := b.(*Pair)
 		if !ok {
-			m.Raise(NewError("parameterize: malformed binding", b))
-			return
+			return nil, NewError("parameterize: malformed binding", b)
 		}
 		ps := FreshSymbol("param")
 		vs := FreshSymbol("val")
@@ -1283,8 +1294,7 @@ func evalParameterize(m *Machine, form Value, env *Env) {
 	afterLam := Cons(Intern("lambda"), Cons(Nil, listFromSlice(setOld)))
 	dw := List(Intern("dynamic-wind"), beforeLam, thunkLam, afterLam)
 	inner := List(Intern("let"), listFromSlice(oldBindings), dw)
-	outer := List(Intern("let"), listFromSlice(outerBindings), inner)
-	m.Eval(outer, env)
+	return List(Intern("let"), listFromSlice(outerBindings), inner), nil
 }
 
 // ---------------------------------------------------------------------------
