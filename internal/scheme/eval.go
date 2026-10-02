@@ -1292,6 +1292,7 @@ func evalGuard(m *Machine, form Value, env *Env) {
 	clauses := mustSlice(spec.Cdr)
 	body := args[1:]
 
+	m.framesCopied = true
 	guardStack := append([]frame(nil), m.stack...)
 	guardWinds := append([]*windFrame(nil), m.winds...)
 	guardHands := append([]*handlerFrame(nil), m.hands...)

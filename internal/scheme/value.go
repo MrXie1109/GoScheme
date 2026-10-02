@@ -339,6 +339,13 @@ type Primitive struct {
 	// MinArgs / MaxArgs document the arity; MaxArgs < 0 means unbounded.
 	MinArgs int
 	MaxArgs int
+	// Sync marks a primitive that always finishes within the call: it either
+	// returns a value or raises, and never pushes a continuation frame,
+	// invokes a continuation or suspends on a call back into Scheme.  That is
+	// what lets the VM run it without having built a continuation frame for
+	// the caller first.  defSimple's wrapper has exactly this shape — it has
+	// no machine to do anything else with — so defSimple sets it.
+	Sync bool
 }
 
 // Continuation is a first class continuation captured by call/cc.

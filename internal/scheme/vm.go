@@ -92,11 +92,29 @@ type cell struct {
 	v Value
 }
 
+// vmInlineSlots is how many slots a frame keeps inside itself.  A frame whose
+// slots are a separate slice is two allocations — the env and the array — and
+// this makes the common small frame one: a parameter or two and an internal
+// definition.  A bigger frame still falls back to a slice.
+const vmInlineSlots = 4
+
 // vmEnv is one activation frame: its slots and the frame the closure that
 // created it was running in.
 type vmEnv struct {
 	parent *vmEnv
 	slots  []Value
+	buf    [vmInlineSlots]Value
+}
+
+// newVMEnv makes a frame of n slots.  The slots are zeroed either way, which
+// is what the checked slots (letrec, internal definitions) rely on.
+func newVMEnv(parent *vmEnv, n int) *vmEnv {
+	if n <= vmInlineSlots {
+		e := &vmEnv{parent: parent}
+		e.slots = e.buf[:n]
+		return e
+	}
+	return &vmEnv{parent: parent, slots: make([]Value, n)}
 }
 
 func (e *vmEnv) up(n int) *vmEnv {
@@ -105,6 +123,11 @@ func (e *vmEnv) up(n int) *vmEnv {
 	}
 	return e
 }
+
+// vmInlineVals is how much of a suspended activation's operand stack its
+// continuation frame keeps inside itself.  With vmInlineSlots this makes the
+// common call allocate one object: the frame.
+const vmInlineVals = 4
 
 // fVM is the continuation of a compiled activation that is waiting for the
 // value of a call.  Resuming it never writes to it: the instruction pointer,
@@ -117,12 +140,35 @@ type fVM struct {
 	env     *vmEnv
 	globals *Env
 	vals    []Value
+	buf     [vmInlineVals]Value
+}
+
+// save keeps the operand stack the activation is leaving behind.  It is a copy
+// rather than a slice of the caller's array: that array belongs to the
+// activation again the moment the call returns, and the short case — by far
+// the common one — needs no allocation at all.
+func (f *fVM) save(vals []Value) {
+	if len(vals) <= vmInlineVals {
+		f.vals = f.buf[:copy(f.buf[:], vals)]
+		return
+	}
+	f.vals = append([]Value(nil), vals...)
 }
 
 func (f *fVM) resume(m *Machine, v Value) {
-	vals := make([]Value, len(f.vals), len(f.vals)+1)
-	copy(vals, f.vals)
-	vals = append(vals, v)
+	var vals []Value
+	if m.framesCopied {
+		// A continuation was captured at some point, so this frame may be
+		// reachable from more than one stack: its buffer is not ours to write.
+		vals = make([]Value, len(f.vals), len(f.vals)+1)
+		copy(vals, f.vals)
+		vals = append(vals, v)
+	} else {
+		// This frame has just been popped from the only stack that holds it,
+		// so the value can go into its own buffer.  The slice moves to a fresh
+		// array once the buffer is full.
+		vals = append(f.vals, v)
+	}
 	vmRun(m, f.code, f.ip, f.env, f.globals, vals)
 }
 
@@ -136,7 +182,8 @@ func (m *Machine) startVM(code *Code, env *vmEnv, globals *Env) {
 // a frame of its own, because a let or a named let at the top level allocates
 // slots there.
 func (m *Machine) runCompiledTop(code *Code, env *Env) {
-	slots := make([]Value, code.NSlots)
+	e := newVMEnv(nil, code.NSlots)
+	slots := e.slots
 	for i := range code.Checked {
 		if !code.Checked[i] {
 			continue
@@ -147,7 +194,7 @@ func (m *Machine) runCompiledTop(code *Code, env *Env) {
 			slots[i] = Unassigned
 		}
 	}
-	vmRun(m, code, 0, &vmEnv{slots: slots}, env, nil)
+	vmRun(m, code, 0, e, env, nil)
 }
 
 // compile compiles a top-level form unless the machine was asked to interpret
@@ -168,10 +215,17 @@ var errNotCompiled = fmt.Errorf("not compiled")
 // applyCompiled applies a compiled clause: the arguments are bound into a
 // frame, with a cell for every parameter that set! can change.
 func (m *Machine) applyCompiled(c *Closure, clause *ClosureClause, args []Value) {
+	vmRun(m, clause.Code, 0, frameFor(c, clause, args), c.Env, nil)
+}
+
+// frameFor binds the arguments of a chosen compiled clause into a fresh frame.
+// The values are copied out of args, so the caller's operand stack is free
+// again the moment this returns.
+func frameFor(c *Closure, clause *ClosureClause, args []Value) *vmEnv {
 	code := clause.Code
 	params := clause.Params
-	hasRest := clause.HasRest
-	slots := make([]Value, code.NSlots)
+	env := newVMEnv(c.Vm, code.NSlots)
+	slots := env.slots
 	for i := range params {
 		if code.Boxed[i] {
 			slots[i] = &cell{v: args[i]}
@@ -179,7 +233,7 @@ func (m *Machine) applyCompiled(c *Closure, clause *ClosureClause, args []Value)
 			slots[i] = args[i]
 		}
 	}
-	if hasRest {
+	if clause.HasRest {
 		rest := List(args[len(params):]...)
 		if code.Boxed[code.RestSlot] {
 			slots[code.RestSlot] = &cell{v: rest}
@@ -197,7 +251,7 @@ func (m *Machine) applyCompiled(c *Closure, clause *ClosureClause, args []Value)
 			slots[i] = Unassigned
 		}
 	}
-	vmRun(m, code, 0, &vmEnv{parent: c.Vm, slots: slots}, c.Env, nil)
+	return env
 }
 
 // makeCompiledClosure builds the procedure value for a compiled Code.  The
@@ -232,14 +286,78 @@ func popValue(vals []Value) (Value, []Value) {
 	return vals[len(vals)-1], vals[:len(vals)-1]
 }
 
-// vmRun is the instruction loop.  It runs until the activation returns a value
-// (m.Return) or suspends on a call (by pushing an fVM and applying), and it
-// never mutates anything it was given: the operand stack it was handed is
-// copied into a fresh slice before it is extended.
+// vmCallee is a compiled procedure whose body the VM can enter directly: the
+// code, the frame its closure was defined in, and that frame's globals.
+type vmCallee struct {
+	code    *Code
+	env     *vmEnv
+	globals *Env
+}
+
+// compiledClause picks the clause of a procedure when there is nothing to
+// decide: one clause, compiled, and the arity fits.  Everything else — clause
+// selection, an interpreted body, an arity error — goes the long way round
+// through apply.
+func compiledClause(proc Value, args []Value) (vmCallee, bool) {
+	c, ok := proc.(*Closure)
+	if !ok || len(c.Clauses) != 1 {
+		return vmCallee{}, false
+	}
+	cl := &c.Clauses[0]
+	if cl.Code == nil || !arityMatches(cl, len(args)) {
+		return vmCallee{}, false
+	}
+	return vmCallee{code: cl.Code, env: frameFor(c, cl, args), globals: c.Env}, true
+}
+
+// syncCall is how a call to a simple primitive (one whose Sync is set) ended.
+type syncCall int
+
+const (
+	// syncNone: not a simple primitive, so the caller takes the ordinary path.
+	syncNone syncCall = iota
+	// syncValue: the primitive returned a value.
+	syncValue
+	// syncRaise: the primitive raised.  A simple primitive pushes no frames,
+	// so the caller can still build the continuation frame it would have
+	// built before the call and get the same stack.
+	syncRaise
+)
+
+// callSyncPrimitive runs a primitive that always finishes within the call, so
+// that no continuation frame is needed to hold the caller while it runs.  In a
+// loop of arithmetic and list access — which is most of what a compiled
+// program does — this is the difference between one allocation per call and
+// none.
+func (m *Machine) callSyncPrimitive(proc Value, args []Value) (Value, syncCall) {
+	p, ok := proc.(*Primitive)
+	if !ok || !p.Sync {
+		return nil, syncNone
+	}
+	n := len(args)
+	if n < p.MinArgs || (p.MaxArgs >= 0 && n > p.MaxArgs) {
+		return nil, syncNone // let the general path report the arity error
+	}
+	m.returning = false
+	p.Fn(m, args)
+	if !m.returning {
+		if m.pending == nil {
+			m.Raise(NewError("primitive did not return a value: " + p.Name))
+		}
+		return nil, syncRaise
+	}
+	v := m.retVal
+	m.retVal, m.returning = nil, false
+	return v, syncValue
+}
+
+// vmRun is the instruction loop.  It runs the current activation until it
+// returns a value (m.Return) or hands control back to the machine (m.apply),
+// and it owns the operand stack it was handed: a call to a compiled procedure
+// leaves its array to the callee, and a suspension copies what it needs.
 func vmRun(m *Machine, code *Code, ip int, env *vmEnv, globals *Env, vals []Value) {
-	// The operand stack handed in is private to this run (it is either nil or
-	// the fresh copy a resumption made), so appending to it cannot disturb a
-	// captured continuation.
+	// The operand stack handed in is private to this activation: nothing that
+	// can outlive the call holds it, so appending to it disturbs nothing.
 	instrs := code.Instrs
 	for {
 		in := instrs[ip]
@@ -357,32 +475,68 @@ func vmRun(m *Machine, code *Code, ip int, env *vmEnv, globals *Env, vals []Valu
 
 		case opCall:
 			n := int(in.arg1)
-			// The arguments are passed as a view of the operand stack.  That
-			// is safe because the continuation below gets its own copy, so
-			// this array is not written to again.
+			// The arguments are a view of the operand stack, and the frame
+			// that suspends this activation keeps its own copy of what is
+			// below them, so this array is the activation's again the moment
+			// the call returns — which is what lets the simple-primitive path
+			// below write the result straight over the arguments.
 			args := vals[len(vals)-n:]
-			vals = vals[:len(vals)-n]
-			var proc Value
-			proc, vals = popValue(vals)
-			// Snapshot the state for the resumption; the machine pops this
-			// frame before resuming it, and it is never written to.
-			var rest []Value
-			if len(vals) > 0 {
-				rest = make([]Value, len(vals))
-				copy(rest, vals)
+			proc := vals[len(vals)-n-1]
+			vals = vals[:len(vals)-n-1]
+			if v, res := m.callSyncPrimitive(proc, args); res != syncNone {
+				if res == syncValue {
+					vals = append(vals, v)
+					continue
+				}
+				// The call raised.  A simple primitive pushes no frames, so
+				// the frame the caller would have built before the call can
+				// be built now: the stack above the raise point is the same.
+				f := &fVM{code: code, ip: ip, env: env, globals: globals}
+				f.save(vals)
+				m.stack = append(m.stack, f)
+				return
 			}
-			m.stack = append(m.stack, &fVM{
-				code: code, ip: ip, env: env, globals: globals, vals: rest,
-			})
+			f := &fVM{code: code, ip: ip, env: env, globals: globals}
+			f.save(vals)
+			m.stack = append(m.stack, f)
+			if cl, ok := compiledClause(proc, args); ok {
+				// Run the callee in this Go frame rather than calling vmRun
+				// again: the caller's state is in the frame just pushed, so
+				// there is nothing to come back to here.  A loop that calls
+				// itself without being in tail position therefore costs a
+				// frame on the Scheme stack and nothing on the Go one.
+				// The array the caller was using is free: everything that
+				// mattered went into the frame just pushed and into the
+				// callee's slots, so the callee's operand stack starts in it
+				// instead of growing one of its own.
+				code, ip, env, globals = cl.code, 0, cl.env, cl.globals
+				vals = vals[:0]
+				instrs = code.Instrs
+				continue
+			}
 			m.apply(proc, args)
 			return
 
 		case opTailCall:
 			n := int(in.arg1)
 			args := vals[len(vals)-n:]
-			vals = vals[:len(vals)-n]
-			var proc Value
-			proc, vals = popValue(vals)
+			proc := vals[len(vals)-n-1]
+			if v, res := m.callSyncPrimitive(proc, args); res != syncNone {
+				if res == syncValue {
+					m.Return(v)
+				}
+				return
+			}
+			if cl, ok := compiledClause(proc, args); ok {
+				// A tail call replaces this activation: nothing is pushed, so
+				// a loop in tail position runs in constant stack.  The
+				// operand array is the discarded activation's, which is
+				// exactly what the callee wants to start on.
+				code, ip, env, globals = cl.code, 0, cl.env, cl.globals
+				vals = vals[:0]
+				instrs = code.Instrs
+				continue
+			}
 			m.apply(proc, args)
 			return
 

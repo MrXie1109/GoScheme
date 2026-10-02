@@ -60,6 +60,12 @@ type Machine struct {
 	// tree-walker exactly as it did before compile.go existed.  It is how the
 	// two execution paths are compared, and it is what `-interp` sets.
 	Interpret bool
+
+	// framesCopied records that some continuation has been captured, which
+	// copies the frame stack.  From then on a compiled frame may be reachable
+	// from two stacks, so the VM stops resuming frames in place and copies
+	// their operand stacks instead.  Nothing sets it but a capture.
+	framesCopied bool
 }
 
 type frame interface {

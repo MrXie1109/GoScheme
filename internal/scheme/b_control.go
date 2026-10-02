@@ -45,6 +45,7 @@ func installControl(m *Machine) {
 	// ------------------------------------------------------- continuations
 	m.def("call-with-current-continuation", 1, 1, func(m *Machine, a []Value) {
 		proc := wantProcedure("call-with-current-continuation", a[0])
+		m.framesCopied = true
 		k := &Continuation{
 			stack: append([]frame(nil), m.stack...),
 			winds: append([]*windFrame(nil), m.winds...),
@@ -55,6 +56,7 @@ func installControl(m *Machine) {
 	}, libBase, libR5RS)
 	m.def("call/cc", 1, 1, func(m *Machine, a []Value) {
 		proc := wantProcedure("call/cc", a[0])
+		m.framesCopied = true
 		k := &Continuation{
 			stack: append([]frame(nil), m.stack...),
 			winds: append([]*windFrame(nil), m.winds...),

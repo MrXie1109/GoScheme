@@ -57,39 +57,30 @@ func (m *Machine) def(name string, min, max int, fn func(*Machine, []Value), lib
 }
 
 // defSimple registers a primitive implemented as a plain Go function.  The
-// function may panic with *ErrorObject to signal a Scheme error; the wrapper
+// function may panic with *ErrorObject to signal a Scheme error; def's wrapper
 // turns that into a raised condition.
+//
+// fn is called directly rather than through a recovery of its own: it has no
+// machine, so it cannot do anything but return a value or panic or return an
+// error, and the wrapper already recovers.  For a procedure as hot as `+` or
+// `car` a second deferred closure per call is worth not paying.
 func (m *Machine) defSimple(name string, min, max int, fn func([]Value) (Value, error), libs ...string) *Primitive {
-	return m.def(name, min, max, func(m *Machine, args []Value) {
-		v, err := callSimple(name, fn, args)
+	p := m.def(name, min, max, func(m *Machine, args []Value) {
+		v, err := fn(args)
 		if err != nil {
 			m.RaiseError(err)
 			return
 		}
+		if v == nil {
+			v = UnspecifiedValue
+		}
 		m.Return(v)
 	}, libs...)
-}
-
-func callSimple(name string, fn func([]Value) (Value, error), args []Value) (v Value, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			switch e := r.(type) {
-			case *ErrorObject:
-				v, err = nil, e
-			case *SchemeError:
-				v, err = nil, e
-			case *PortError:
-				v, err = nil, NewFileError(e.Msg)
-			default:
-				panic(r)
-			}
-		}
-	}()
-	v, err = fn(args)
-	if v == nil {
-		v = UnspecifiedValue
-	}
-	return v, err
+	// fn has no machine to call back into Scheme with, so this wrapper always
+	// returns a value or raises — see Primitive.Sync, which lets the VM run it
+	// without a continuation frame.
+	p.Sync = true
+	return p
 }
 
 // installerHooks holds the installers that the extension files register in
