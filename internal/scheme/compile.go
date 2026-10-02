@@ -928,6 +928,12 @@ func (c *comp) lambda(formals Value, body []Value, name string) *Code {
 		sub.code.HasRest = true
 		slot := sub.frame.slot(f, sub.assigned[f], false)
 		sub.code.RestSlot = slot
+		// The name has to be visible to the body as a local.  Without this
+		// the body's reference to it is compiled as a global one and the
+		// procedure fails with "unbound variable" the first time it is
+		// called — (lambda args args) is the whole of the bug's surface.
+		sub.block.names = append(sub.block.names, f)
+		sub.block.slots = append(sub.block.slots, slot)
 	case Empty:
 		// no parameters
 	case *Pair:

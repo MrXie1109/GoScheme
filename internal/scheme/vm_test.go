@@ -82,6 +82,15 @@ var vmPrograms = []struct {
 	                      (if (< n 3) (k (+ v 1)) (begin (display v) (newline)))`},
 	{"guard-raise", `(display (guard (e (#t (list 'caught (error-object-message e))))
 	                           (error "boom"))) (newline)`},
+	{"primitive-raises", `(define (boom) (+ 1 'a))
+	                      (define (run) (boom))
+	                      (display (guard (e (#t 'caught)) (run))) (newline)`},
+	{"primitive-raises-toplevel", `(define (boom2) (car 5))
+	                               (display (guard (e (#t 'caught)) (boom2) 'no)) (newline)`},
+	{"deep-non-tail", `(define (sum n) (if (= n 0) 0 (+ n (sum (- n 1)))))
+	                   (display (sum 200000)) (newline)`},
+	{"values-many", `(display (call-with-values (lambda () (values 1 2 3 4 5 6))
+	                                         (lambda args args))) (newline)`},
 	{"dynamic-wind", `(define log '())
 	                  (define (note x) (set! log (cons x log)))
 	                  (dynamic-wind (lambda () (note 'in))
