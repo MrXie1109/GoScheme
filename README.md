@@ -344,6 +344,11 @@ The reader accepts the complete R7RS lexical syntax: block comments `#|…|#`
 with intraline line continuation, and the full numeric grammar with any
 combination of `#b #o #d #x` and `#e #i` prefixes.
 
+String escapes are the report's — `\a \b \t \n \r \f \v \" \\ \|`,
+`\xHH;` with any number of hex digits, and backslash-newline continuation —
+plus three that make terminal code writable: `\e` for ESC, `\xHH` without the
+semicolon, and C-style octal `\NNN`, so `"\033[31m"` is what it looks like.
+
 ### Libraries
 
 `(scheme base)` `(scheme case-lambda)` `(scheme char)` `(scheme complex)`

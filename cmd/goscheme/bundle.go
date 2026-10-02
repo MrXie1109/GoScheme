@@ -256,7 +256,12 @@ func runBuild(args []string) int {
 		fmt.Fprintf(os.Stderr, "goscheme build: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(os.Stderr, "%s: %s\n", out, note)
+	// Silent when the program compiled, because that is the expected case;
+	// loud when it did not, because then the executable starts by reading
+	// source and the user should know why.
+	if note != "" {
+		fmt.Fprintf(os.Stderr, "%s: %s\n", out, note)
+	}
 	// A Mach-O binary carries a code signature that appending to it
 	// invalidates, so re-sign it ad hoc when we can.
 	resignIfNeeded(out)
@@ -270,14 +275,16 @@ func runBuild(args []string) int {
 // expanded at build time, and a script may import one that is only there when
 // the program runs (beside the executable, say).  That is the one case where
 // this falls back, and the note says so: the bundle then starts by reading
-// source, which is slower and never wrong.
+// source, which is slower and never wrong.  The note is empty when the program
+// compiled, which is the usual case.
 func payloadFor(scriptPath string, script []byte) (payload []byte, kind byte, note string) {
 	abs, err := filepath.Abs(scriptPath)
 	if err != nil {
 		abs = scriptPath
 	}
 	source := func(why error) ([]byte, byte, string) {
-		return script, kindSource, fmt.Sprintf("embedding source: %v", why)
+		return script, kindSource,
+			fmt.Sprintf("compiling here failed (%v), so the script is bound as source", why)
 	}
 	r := scheme.NewStringReader(string(script))
 	r.Source = abs
@@ -296,9 +303,7 @@ func payloadFor(scriptPath string, script []byte) (payload []byte, kind byte, no
 	if err := scheme.WriteBytecode(&buf, prog); err != nil {
 		return source(err)
 	}
-	compiled, total := prog.Compiled()
-	return buf.Bytes(), kindBytecode,
-		fmt.Sprintf("%d of %d top-level forms compiled to bytecode", compiled, total)
+	return buf.Bytes(), kindBytecode, ""
 }
 
 // defaultOutput is the name used when -o is omitted: a.out, or a.exe when

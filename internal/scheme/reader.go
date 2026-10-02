@@ -444,8 +444,29 @@ func (r *Reader) readString() (Value, error) {
 			sb = append(sb, '\f')
 		case 'v':
 			sb = append(sb, '\v')
-		case '0':
-			sb = append(sb, 0)
+		case 'e':
+			// ESC.  Not in R7RS, but it is how a terminal escape is written
+			// nearly everywhere else, and a language used to write command
+			// line programs should be able to spell it.
+			sb = append(sb, 0x1b)
+		case '0', '1', '2', '3', '4', '5', '6', '7':
+			// C-style octal, up to three digits, so "\033" is ESC and "\0" is
+			// still NUL.  R7RS spells this \x1b;, which still works; this one
+			// is here because "\033[31m" is what every other language puts in
+			// a string.  It used to come out as NUL followed by "33".
+			n := int(e - '0')
+			for i := 0; i < 2; i++ {
+				c, ok := r.peekRune()
+				if !ok || c < '0' || c > '7' {
+					break
+				}
+				r.readRune()
+				n = n*8 + int(c-'0')
+			}
+			if n > 255 {
+				return nil, r.errf("octal escape \\%o is out of range", n)
+			}
+			sb = append(sb, rune(n))
 		case '"':
 			sb = append(sb, '"')
 		case '\\':
@@ -453,16 +474,27 @@ func (r *Reader) readString() (Value, error) {
 		case '|':
 			sb = append(sb, '|')
 		case 'x', 'X':
+			// R7RS ends the escape with a semicolon; the digits alone are
+			// accepted too, because "\x1b[31m" is the other way everyone
+			// writes it.
 			var hex []rune
 			for {
-				c, ok := r.readRune()
+				c, ok := r.peekRune()
 				if !ok {
-					return nil, r.errf("bad \\x escape")
-				}
-				if c == ';' {
 					break
 				}
+				if c == ';' {
+					r.readRune()
+					break
+				}
+				if !isHexDigit(c) {
+					break
+				}
+				r.readRune()
 				hex = append(hex, c)
+			}
+			if len(hex) == 0 {
+				return nil, r.errf("bad \\x escape")
 			}
 			n, err := parseHex(string(hex))
 			if err != nil {
@@ -497,6 +529,11 @@ func (r *Reader) readString() (Value, error) {
 			return nil, r.errf("unknown escape \\%c", e)
 		}
 	}
+}
+
+// isHexDigit reports whether c is a hexadecimal digit.
+func isHexDigit(c rune) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 }
 
 func parseHex(s string) (int64, error) {
@@ -801,14 +838,41 @@ func (r *Reader) readBarSymbol() (Value, error) {
 				sb = append(sb, '|')
 			case '\\':
 				sb = append(sb, '\\')
+			case 'e':
+				sb = append(sb, 0x1b)
+			case '0', '1', '2', '3', '4', '5', '6', '7':
+				n := int(e - '0')
+				for i := 0; i < 2; i++ {
+					c, ok := r.peekRune()
+					if !ok || c < '0' || c > '7' {
+						break
+					}
+					r.readRune()
+					n = n*8 + int(c-'0')
+				}
+				if n > 255 {
+					return nil, r.errf("octal escape \\%o is out of range", n)
+				}
+				sb = append(sb, rune(n))
 			case 'x', 'X':
 				var hex []rune
 				for {
-					c, ok := r.readRune()
-					if !ok || c == ';' {
+					c, ok := r.peekRune()
+					if !ok {
 						break
 					}
+					if c == ';' {
+						r.readRune()
+						break
+					}
+					if !isHexDigit(c) {
+						break
+					}
+					r.readRune()
 					hex = append(hex, c)
+				}
+				if len(hex) == 0 {
+					return nil, r.errf("bad \\x escape in symbol")
 				}
 				n, err := parseHex(string(hex))
 				if err != nil {

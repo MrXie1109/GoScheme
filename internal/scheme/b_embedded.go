@@ -19,7 +19,9 @@ func (m *Machine) runEmbedded(name, source string) *Env {
 		// so it is loud and immediate rather than a Scheme condition.
 		panic("goscheme: bad embedded source in " + name + ": " + err.Error())
 	}
-	if _, err := m.RunForms(forms, m.Builtin); err != nil {
+	// Compiled like any other source: these are procedure definitions as well
+	// as macros, and an interpreted library body is a slow library.
+	if _, err := m.RunFormsCompiled(forms, m.Builtin); err != nil {
 		panic("goscheme: " + name + " failed to load: " + err.Error())
 	}
 	return m.Builtin

@@ -250,7 +250,12 @@ func installSystem(m *Machine) {
 			mm.PopLoadPath()
 			mm.Return(v)
 		}})
-		m.EvalSeq(forms, env)
+		// Compiled where possible, like a script run from the command line:
+		// load is how a program reads another file, and interpreting it made
+		// every loaded file the tree-walker's business.
+		if err := m.startForms(forms, env); err != nil {
+			m.RaiseError(err)
+		}
 	}, libBase, libLoad)
 	m.defSimple("environment-variables", 0, 0, func(a []Value) (Value, error) {
 		var items []Value

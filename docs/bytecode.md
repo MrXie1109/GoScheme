@@ -38,6 +38,19 @@ time** with the same expander the interpreter uses.  Everything else — `do`,
 The compiler's table is a list of what it *does* handle rather than what it does
 not, so adding a form is a local change to `special` in `compile.go`.
 
+A file is compiled when it is **run**, not only by `goscheme compile`.  The
+command line, `load`, a library file and an embedded extension all go through
+the same two calls, so "compiled where possible" describes the default
+execution path rather than something a program has to opt into.  It did not
+always: running a script went through `RunForms`, which makes the whole file a
+single body, and a body is all or nothing — so one `import` at the top of a
+file sent every form in it to the tree-walker.  Since every test suite starts
+with an import, the suites were being interpreted in *both* modes, and so was
+most of what anyone runs.  The first time the suites were actually compiled
+they found three compiler bugs (a `case` `(else => proc)`, a macro that defines
+a macro, and `=>` shadowed by a local binding), which is the argument for
+compiling the tests rather than only the benchmarks.
+
 ### Frames, variables and continuations
 
 * An activation's variables live in a **frame** (`vmEnv`): a slice of slots
@@ -121,7 +134,7 @@ misread.
 
 The two paths are held together by tests, not by hope:
 
-* `internal/scheme/vm_test.go` runs a corpus of 46 programs — arithmetic,
+* `internal/scheme/vm_test.go` runs a corpus of 48 programs — arithmetic,
   closures and `set!`, internal definitions, every compiled derived form, tail
   calls, a 200 000-deep non-tail recursion, `call/cc` escapes and re-entries,
   `dynamic-wind`, macro definitions, records, `parameterize`, `match`, strings,
@@ -131,7 +144,9 @@ The two paths are held together by tests, not by hope:
   All three have to print the same thing.
 * The whole existing test suite (2611 assertions: the R7RS reference suite and
   every extension suite) is run **twice**, once per execution path, by
-  `TestR7RSReferenceSuite` and `TestExtensionSuites`.
+  `TestR7RSReferenceSuite` and `TestExtensionSuites`.  "Compiled" there means
+  compiled: the suites are loaded through the same call the command line makes,
+  so they exercise the compiler rather than the tree-walker twice.
 * `cmd/goscheme/compiler_test.go` compiles a script, runs the `.scmc` file, and
   compares it with running the script; it also checks that a bytecode file with
   a mangled header is refused rather than read as Scheme.

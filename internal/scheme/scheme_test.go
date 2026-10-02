@@ -17,7 +17,7 @@ func runFile(m *Machine, path string) error {
 		return err
 	}
 	m.AddLoadPath(filepath.Dir(path))
-	_, err = m.RunForms(forms, m.Global)
+	_, err = m.RunFormsCompiled(forms, m.Global)
 	return err
 }
 

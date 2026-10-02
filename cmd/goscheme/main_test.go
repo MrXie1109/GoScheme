@@ -223,6 +223,48 @@ func TestLineEditorHistory(t *testing.T) {
 	}
 }
 
+// Ctrl-C abandons a half-written expression instead of looking like an empty
+// line: the continuation prompt went away and the next form still evaluates,
+// where before the only way out of "..." was to close the input.
+func TestREPLCtrlCAbandonsTheExpression(t *testing.T) {
+	t.Setenv("GOSCHEME_HISTORY", "off")
+	m := scheme.NewMachine()
+	var out, errOut bytes.Buffer
+	tracker := newLineTracker(&out)
+	m.SetStandardOutput(scheme.NewPortFromFile("stdout", tracker, false, true))
+	// "(do" then Enter leaves the reader waiting for more; Ctrl-C gives up on
+	// it; then a complete form, then end of input.
+	ed := newLineEditor(strings.NewReader("(do\n\x03(+ 1 2)\n\x04"), tracker)
+	replEdited(m, ed, tracker, &errOut, nil)
+
+	got := out.String()
+	if !strings.Contains(got, "3") {
+		t.Errorf("the form after Ctrl-C did not run:\n%s", got)
+	}
+	if strings.Contains(errOut.String(), "unexpected end of input") {
+		t.Errorf("Ctrl-C left the unfinished expression behind: %q", errOut.String())
+	}
+	if n := strings.Count(got, primaryPrompt); n < 2 {
+		t.Errorf("Ctrl-C did not return to the primary prompt (%d of them):\n%s", n, got)
+	}
+}
+
+// ReadLine says which of the two things happened, rather than returning an
+// empty line for both.
+func TestReadLineReportsCtrlC(t *testing.T) {
+	e := newLineEditor(strings.NewReader("abc\x03xy\r"), newLineTracker(io.Discard))
+	if _, err := e.ReadLine("> "); !errors.Is(err, errInterrupted) {
+		t.Errorf("first line: err = %v, want errInterrupted", err)
+	}
+	line, err := e.ReadLine("> ")
+	if err != nil {
+		t.Fatalf("second line: %v", err)
+	}
+	if line != "xy" {
+		t.Errorf("second line = %q, want %q", line, "xy")
+	}
+}
+
 // A bracketed paste reaching the REPL is evaluated as one block: one prompt,
 // every form run, no continuation prompt in between.
 func TestREPLBracketedPasteBlock(t *testing.T) {
@@ -611,6 +653,57 @@ func runPayloadOnStringPort(t *testing.T, info *bundleInfo) string {
 		t.Fatalf("runPayload returned %d", code)
 	}
 	return out.OutputString()
+}
+
+// A paste is inserted at the cursor, not at the end of the line, and an
+// escape sequence in a string literal is the character it names.
+func TestPasteGoesToTheCursor(t *testing.T) {
+	// Type "ac", put the cursor before "c", paste "b".
+	input := "ac" + "\x1b[D" + pasteStart + "b" + pasteEnd + "\r"
+	e := newLineEditor(strings.NewReader(input), newLineTracker(io.Discard))
+	got, err := e.ReadLine("> ")
+	if err != nil {
+		t.Fatalf("ReadLine: %v", err)
+	}
+	if got != "abc" {
+		t.Errorf("pasted line is %q, want %q", got, "abc")
+	}
+
+	// A paste in the middle of a long line pushes the tail along rather than
+	// replacing it, and a paste containing a newline keeps it.
+	input = "xy" + pasteStart + "1\n2" + pasteEnd + "z" + "\r"
+	e = newLineEditor(strings.NewReader(input), newLineTracker(io.Discard))
+	got, err = e.ReadLine("> ")
+	if err != nil {
+		t.Fatalf("ReadLine: %v", err)
+	}
+	if got != "xy1\n2z" {
+		t.Errorf("pasted line is %q, want %q", got, "xy1\n2z")
+	}
+}
+
+func TestStringEscapes(t *testing.T) {
+	cases := map[string]string{
+		`"\033[31m"`: "\x1b[31m", // C-style octal
+		`"\e[0m"`:    "\x1b[0m",  // ESC by name
+		`"\x1b[1m"`:  "\x1b[1m",  // hex without the R7RS semicolon
+		`"\x41;"`:    "A",        // and with it
+		`"\0"`:       "\x00",     // still NUL on its own
+		`"\101"`:     "A",        // three octal digits
+		`"a\tb\n"`:   "a\tb\n",   // the escapes that were always there
+	}
+	for src, want := range cases {
+		m := scheme.NewMachine()
+		out := scheme.NewOutputStringPort()
+		m.SetStandardOutput(out)
+		if code := evalString(m, "(display "+src+")", "test"); code != 0 {
+			t.Errorf("%s: evalString returned %d", src, code)
+			continue
+		}
+		if out.OutputString() != want {
+			t.Errorf("%s printed %q, want %q", src, out.OutputString(), want)
+		}
+	}
 }
 
 func TestBundleDefaultOutputName(t *testing.T) {

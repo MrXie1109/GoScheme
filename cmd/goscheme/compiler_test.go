@@ -70,8 +70,8 @@ func TestCompileAndRunBytecode(t *testing.T) {
 			t.Errorf("compile returned %d", code)
 		}
 	})
-	if report == "" {
-		t.Errorf("compile printed no report")
+	if report != "" {
+		t.Errorf("compile printed %q; a successful compile says nothing", report)
 	}
 	if _, err := os.Stat(out); err != nil {
 		t.Fatalf("no bytecode file: %v", err)

@@ -710,7 +710,7 @@ func (c *comp) condForm(clauses []Value, tail bool) {
 			return
 		}
 		isElse := false
-		if s, ok := items[0].(*Symbol); ok && s.Name == "else" && isAuxSyntax(s, c.globals) {
+		if s, ok := items[0].(*Symbol); ok && s.Name == "else" && c.auxSyntax(s) {
 			if i != len(clauses)-1 {
 				c.fail("cond: else is not the last clause")
 				return
@@ -729,7 +729,7 @@ func (c *comp) condForm(clauses []Value, tail bool) {
 		case isElse:
 			// No test was evaluated, so there is nothing to discard.
 			c.body(items[1:], tail)
-		case len(items) >= 2 && isArrow(items[1], c.globals):
+		case len(items) >= 2 && c.isArrow(items[1]):
 			if len(items) != 3 {
 				c.fail("cond: malformed => clause")
 				return
@@ -765,10 +765,22 @@ func (c *comp) condForm(clauses []Value, tail bool) {
 	}
 }
 
+// auxSyntax reports whether the symbol is the auxiliary keyword it looks like.
+// A lexical binding shadows it: (let ((=> #f)) (cond (#t => 'ok))) is a clause
+// with two expressions, not an arrow clause, and the interpreter asks its
+// environment the same question.  A compiled body keeps its lexicals in slots,
+// so the block has to be asked as well as the globals.
+func (c *comp) auxSyntax(s *Symbol) bool {
+	if _, _, _, ok := c.lookup(s); ok {
+		return false
+	}
+	return isAuxSyntax(s, c.globals)
+}
+
 // isArrow reports whether v is the auxiliary keyword => in scope.
-func isArrow(v Value, env *Env) bool {
+func (c *comp) isArrow(v Value) bool {
 	s, ok := v.(*Symbol)
-	return ok && s.Name == "=>" && isAuxSyntax(s, env)
+	return ok && s.Name == "=>" && c.auxSyntax(s)
 }
 
 // caseForm compiles case, which compares the key with eqv?, as the
@@ -799,7 +811,7 @@ func (c *comp) caseForm(args []Value, tail bool) {
 		}
 		last := i == len(clauses)-1
 		isElse := false
-		if s, ok := items[0].(*Symbol); ok && s.Name == "else" && isAuxSyntax(s, c.globals) {
+		if s, ok := items[0].(*Symbol); ok && s.Name == "else" && c.auxSyntax(s) {
 			if !last {
 				c.fail("case: else is not the last clause")
 				return
@@ -849,7 +861,11 @@ func (c *comp) caseForm(args []Value, tail bool) {
 // any other, but it can never be a => recipient: the else is not a test.
 func (c *comp) clauseBody(items []Value, tail bool, isElse bool) {
 	if len(items) >= 2 {
-		if s, ok := items[1].(*Symbol); ok && !isElse && s.Name == "=>" && isAuxSyntax(s, c.globals) {
+		// (else => proc) is a case clause like any other: the interpreter's
+		// evalCaseBody hands `=>` to the else clause too, and the R7RS test
+		// suite uses it.  cond is the one that does not: its else clause is a
+		// sequence of expressions.
+		if s, ok := items[1].(*Symbol); ok && s.Name == "=>" && c.auxSyntax(s) {
 			if len(items) != 3 {
 				c.fail("case: malformed => clause")
 				return

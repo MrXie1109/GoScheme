@@ -5,11 +5,17 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
 	"unicode/utf8"
 )
+
+// errInterrupted is returned by ReadLine when the user pressed Ctrl-C.  It is
+// not a failure: it means "forget this line", which the REPL has to tell apart
+// from an empty line so that an unfinished expression can be abandoned.
+var errInterrupted = errors.New("interrupted")
 
 // The escape sequences that bracket a paste when the terminal is asked for
 // bracketed paste mode with ESC [ ? 2004 h.
@@ -229,11 +235,13 @@ func (e *lineEditor) ReadLine(prompt string) (string, error) {
 			fmt.Fprint(e.out, "\x1b[H\x1b[2J")
 
 		case keyCtrlC:
-			// Abandon the line, like a shell does.
+			// Abandon the line, like a shell does.  The caller is told, so
+			// that a half-written expression can be abandoned too instead of
+			// looking like an empty line of input.
 			fmt.Fprint(e.out, "^C")
 			e.out.atLineStart = false
 			e.out.newLine()
-			return "", nil
+			return "", errInterrupted
 
 		case keyCtrlD:
 			if len(e.line) == 0 {
@@ -458,14 +466,20 @@ func (e *lineEditor) appendPaste(b []byte) {
 	e.emitPaste(norm)
 }
 
-// emitPaste appends normalised bytes to the line and echoes them.
+// emitPaste inserts normalised bytes at the cursor.  A paste goes where the
+// cursor is, as it does in a shell; this used to append it to the end of the
+// line and leave the cursor there, whatever the cursor had been.  The line is
+// redrawn by the key loop once the paste has been read.
 func (e *lineEditor) emitPaste(b []byte) {
 	if len(b) == 0 {
 		return
 	}
-	e.line = append(e.line, []rune(string(b))...)
-	e.pos = len(e.line)
-	_, _ = e.out.Write(b)
+	rs := []rune(string(b))
+	tail := len(e.line) - e.pos
+	e.line = append(e.line, rs...)
+	copy(e.line[e.pos+len(rs):], e.line[e.pos:e.pos+tail])
+	copy(e.line[e.pos:], rs)
+	e.pos += len(rs)
 }
 
 // flushPaste emits a carriage return that was held back at the very end of a

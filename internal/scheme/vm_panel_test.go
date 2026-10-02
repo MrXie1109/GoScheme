@@ -113,7 +113,9 @@ func benchPanel(b *testing.B, src string, interpret bool) {
 	for i := 0; i < b.N; i++ {
 		m := NewMachine()
 		m.Interpret = interpret
-		if _, err := m.RunForms(forms, m.Global); err != nil {
+		// The call the command line makes, so that the compiled column is the
+		// path a program actually takes.
+		if _, err := m.RunFormsCompiled(forms, m.Global); err != nil {
 			b.Fatal(err)
 		}
 	}

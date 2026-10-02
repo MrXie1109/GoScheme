@@ -83,7 +83,8 @@ func runCompile(args []string) int {
 		fmt.Fprintf(os.Stderr, "goscheme compile: %v\n", err)
 		return 1
 	}
-	compiled, total := prog.Compiled()
-	fmt.Printf("%s: %d of %d top-level forms compiled to bytecode\n", out, compiled, total)
+	// Nothing is printed on success: no news is the good news, and the file
+	// that was written is the evidence.  A form the compiler declined is not
+	// news either — it is in the file as source and runs interpreted.
 	return 0
 }

@@ -20,6 +20,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -204,7 +205,7 @@ func runPayload(m *scheme.Machine, info *bundleInfo) int {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", info.Name, err)
 		return 1
 	}
-	if _, err := m.RunForms(forms, m.Global); err != nil {
+	if _, err := m.RunFormsCompiled(forms, m.Global); err != nil {
 		return reportError(err)
 	}
 	return 0
@@ -218,7 +219,7 @@ func evalString(m *scheme.Machine, src, name string) int {
 		fmt.Fprintf(os.Stderr, "goscheme: %v\n", err)
 		return 1
 	}
-	if _, err := m.RunForms(forms, m.Global); err != nil {
+	if _, err := m.RunFormsCompiled(forms, m.Global); err != nil {
 		return reportError(err)
 	}
 	return 0
@@ -261,7 +262,10 @@ func loadFile(m *scheme.Machine, path string) int {
 		return 1
 	}
 	m.AddLoadPath(filepath.Dir(abs))
-	if _, err := m.RunForms(forms, m.Global); err != nil {
+	// Compiled where possible, exactly as a .scmc file holding the same
+	// program would be: this is what "the VM is the default" has to mean for
+	// the most ordinary thing anyone does, which is run a script.
+	if _, err := m.RunFormsCompiled(forms, m.Global); err != nil {
 		return reportError(err)
 	}
 	return 0
@@ -368,6 +372,16 @@ func replEdited(m *scheme.Machine, ed *lineEditor, stdout, stderr io.Writer, sig
 	for {
 		line, err := ed.ReadLine(prompt)
 		if err != nil {
+			if errors.Is(err, errInterrupted) {
+				// Ctrl-C abandons what has been typed and goes back to the
+				// primary prompt, as it does in a shell.  Treating it as an
+				// empty line left a half-written expression in the buffer
+				// that could only be got rid of by closing the input, which
+				// then reported "unexpected end of input".
+				buf.Reset()
+				prompt = primaryPrompt
+				continue
+			}
 			if buf.Len() > 0 {
 				fmt.Fprintln(stderr, "Error: unexpected end of input")
 			}

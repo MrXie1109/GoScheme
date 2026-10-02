@@ -4,6 +4,8 @@ package scheme
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -75,6 +77,22 @@ var vmPrograms = []struct {
 	                      (define b (make))
 	                      (a) (a)
 	                      (display (list (a) (b))) (newline)`},
+	// A macro that defines a macro: the form after it can only be compiled
+	// once the macro it defines exists, so the compiler has to notice that it
+	// is a form that teaches it something.
+	{"macro-defining-macro", `(define-syntax be-like-begin
+	                           (syntax-rules ()
+	                             ((_ name)
+	                              (define-syntax name
+	                                (syntax-rules ()
+	                                  ((name expr (... ...))
+	                                   (begin expr (... ...))))))))
+	                         (be-like-begin sequence)
+	                         (display (sequence 0 1 2 3)) (newline)`},
+	// => bound as a variable is not the auxiliary keyword: this is a cond
+	// clause with two expressions, and the compiled path used to apply 'ok.
+	{"aux-shadowed", `(display (let ((=> #f)) (cond (#t => 'ok)))) (newline)
+	                  (display (case 1 ((1) => (lambda (x) (+ x 1))) (else 'no))) (newline)`},
 	{"callcc-across-steps", `(define k #f)
 	                        (define n 0)
 	                        (define v (call/cc (lambda (c) (set! k c) 1)))
@@ -148,14 +166,13 @@ func runProgramText(t *testing.T, src string, interpret bool) string {
 	m.Interpret = interpret
 	m.CurOut = out
 	m.OutParam.values[0] = out
-	// RunForms rather than EvalString: a file's forms are one program, and a
-	// continuation captured in one of them has to span the rest, which is what
-	// the command line does.
+	// The same call the command line makes: compiled where possible, with a
+	// group the compiler cannot take whole compiled form by form.
 	forms, err := NewStringReader(src).ReadAll()
 	if err != nil {
 		t.Fatalf("reading: %v", err)
 	}
-	if _, err := m.RunForms(forms, m.Global); err != nil {
+	if _, err := m.RunFormsCompiled(forms, m.Global); err != nil {
 		t.Fatalf("evaluating: %v", err)
 	}
 	return out.OutputString()
@@ -290,6 +307,37 @@ func m2MustProgram(t *testing.T, src string) *Program {
 		t.Fatalf("compiling: %v", err)
 	}
 	return prog
+}
+
+// A file loaded at run time whose top-level forms come out as a mixed group
+// used to run nothing at all: the run of steps was taken for a form, and its
+// form was nil.  The whole program was silently skipped, in both directions.
+func TestLoadRunsMixedGroup(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mixed.scm")
+	src := "(define x 1)\n" +
+		"(do ((i 0 (+ i 1))) ((= i 2)) (display \"d\"))\n" +
+		"(display (+ x 1)) (newline)\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, interpret := range []bool{false, true} {
+		out := NewOutputStringPort()
+		m := NewMachine()
+		m.Interpret = interpret
+		m.CurOut = out
+		m.OutParam.values[0] = out
+		m.AddLoadPath(dir)
+		// ToSlash: a Windows path in a Scheme string literal would read its
+		// backslashes as escapes.
+		form := mustRead(t, `(load "`+filepath.ToSlash(path)+`")`)
+		if _, err := m.RunFormsCompiled([]Value{form}, m.Global); err != nil {
+			t.Fatalf("interpret=%v: %v", interpret, err)
+		}
+		if got := out.OutputString(); got != "dd2\n" {
+			t.Errorf("interpret=%v: loaded file printed %q, want %q", interpret, got, "dd2\n")
+		}
+	}
 }
 
 func mustRead(t *testing.T, src string) Value {

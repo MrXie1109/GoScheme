@@ -202,7 +202,7 @@ func (m *Machine) loadLibrary(name string, spec Value) error {
 	// nested imports resolve relative to it.
 	sub := m.Child()
 	sub.AddLoadPath(dirOf(path))
-	if _, err := sub.RunForms(forms, sub.Global); err != nil {
+	if _, err := sub.RunFormsCompiled(forms, sub.Global); err != nil {
 		return err
 	}
 	if _, ok := m.lookupLibrary(name); !ok {

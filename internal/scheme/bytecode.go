@@ -36,6 +36,13 @@ type Chunk struct {
 	Code  *Code
 	Form  Value
 	Steps []Chunk
+	// ran marks a chunk that was already run while the program was compiled,
+	// in the machine that compiled it: a form that teaches the compiler
+	// something has to be evaluated for the rest of the file to compile, and
+	// running it a second time at load would repeat its side effects — an
+	// `include` would print twice.  It is never written to a file, because a
+	// file is read by a machine that has run nothing.
+	ran bool
 }
 
 const (
@@ -117,12 +124,12 @@ func CompileProgram(m *Machine, forms []Value, env *Env) (*Program, error) {
 		group = nil
 	}
 	for _, form := range forms {
-		if teachingForm(form) {
+		if teachingForm(form, m, env) {
 			flush()
 			if _, err := m.Run(form, env); err != nil {
 				return nil, err
 			}
-			prog.Chunks = append(prog.Chunks, Chunk{Form: form})
+			prog.Chunks = append(prog.Chunks, Chunk{Form: form, ran: true})
 			continue
 		}
 		group = append(group, form)
@@ -132,8 +139,46 @@ func CompileProgram(m *Machine, forms []Value, env *Env) (*Program, error) {
 }
 
 // teachingForm reports whether a top-level form changes what the compiler
-// knows, and so has to be run while compiling.
-func teachingForm(form Value) bool {
+// knows, and so has to be run while compiling: an import, a macro definition,
+// an include — or a macro call that expands into one of those.  The R7RS
+// suite's
+//
+//	(define-syntax be-like-begin1
+//	  (syntax-rules () ((_ name) (define-syntax name ...))))
+//	(be-like-begin1 sequence1)
+//
+// is the second kind: the forms after it can only be compiled once sequence1
+// is a macro, and compiling them first turned (sequence1 0 1 2 3) into a call
+// to a binding that turned out to be syntax.
+func teachingForm(form Value, m *Machine, env *Env) bool {
+	if syntacticTeachingForm(form) {
+		return true
+	}
+	p, ok := form.(*Pair)
+	if !ok {
+		return false
+	}
+	sym, ok := p.Car.(*Symbol)
+	if !ok {
+		return false
+	}
+	v, ok := env.Lookup(sym)
+	if !ok {
+		return false
+	}
+	mac, ok := v.(*Macro)
+	if !ok {
+		return false
+	}
+	expanded, err := mac.Expand(form, env)
+	if err != nil {
+		return false // the compiler will report it when it compiles the form
+	}
+	return syntacticTeachingForm(expanded)
+}
+
+// syntacticTeachingForm is the check that needs no expansion.
+func syntacticTeachingForm(form Value) bool {
 	p, ok := form.(*Pair)
 	if !ok {
 		return false
@@ -150,7 +195,7 @@ func teachingForm(form Value) bool {
 		// run for the rest to compile.
 		items, _ := ListToSlice(p.Cdr)
 		for _, it := range items {
-			if teachingForm(it) {
+			if syntacticTeachingForm(it) {
 				return true
 			}
 		}
@@ -185,19 +230,37 @@ type fSteps struct {
 
 func (f *fSteps) resume(m *Machine, v Value) { m.startSteps(f.steps, f.env) }
 
-// startSteps begins the first of steps and leaves the rest to follow it.
+// startSteps begins the first of steps and leaves the rest to follow it.  A
+// step that was already run while the program was compiled — a form that taught
+// the compiler something — is passed over.
 func (m *Machine) startSteps(steps []Chunk, env *Env) {
+	for len(steps) > 0 && steps[0].ran {
+		steps = steps[1:]
+	}
 	if len(steps) == 0 {
 		m.Return(UnspecifiedValue)
+		return
+	}
+	first := steps[0]
+	if len(first.Steps) > 0 {
+		// A step that is itself a run of steps — a group the compiler took
+		// form by form.  It belongs to this extent too, so its steps simply
+		// join the queue; running them as a chunk of their own would end the
+		// extent, and mistaking the chunk for a form (its Form is nil) ran
+		// nothing at all.
+		joined := make([]Chunk, 0, len(first.Steps)+len(steps)-1)
+		joined = append(joined, first.Steps...)
+		joined = append(joined, steps[1:]...)
+		m.startSteps(joined, env)
 		return
 	}
 	if len(steps) > 1 {
 		m.stack = append(m.stack, &fSteps{steps: steps[1:], env: env})
 	}
-	if c := steps[0]; c.Code != nil {
-		m.runCompiledTop(c.Code, env)
+	if first.Code != nil {
+		m.runCompiledTop(first.Code, env)
 	} else {
-		m.Eval(c.Form, env)
+		m.Eval(first.Form, env)
 	}
 }
 
@@ -205,6 +268,9 @@ func (m *Machine) startSteps(steps []Chunk, env *Env) {
 func (m *Machine) RunProgram(p *Program, env *Env) (Value, error) {
 	result := Value(UnspecifiedValue)
 	for _, c := range p.Chunks {
+		if c.ran {
+			continue // already run, while this machine compiled the program
+		}
 		v, err := m.RunChunk(c, env)
 		if err != nil {
 			return nil, err
@@ -212,6 +278,51 @@ func (m *Machine) RunProgram(p *Program, env *Env) (Value, error) {
 		result = v
 	}
 	return result, nil
+}
+
+// RunFormsCompiled runs the forms of a file the way `goscheme compile` writes
+// them: a form that teaches the compiler something is evaluated and becomes a
+// chunk of its own, the ordinary forms are compiled in groups, and a group the
+// compiler cannot take whole is compiled form by form.  It is what running a
+// script does, and it is the program a .scmc file holds.
+//
+// Running a file used to go through RunForms, which makes the whole file one
+// body — and since a body is all or nothing, one `import` sent every form in
+// the file to the tree-walker.  Every suite file starts with an import, so the
+// suites were being interpreted in both modes, and so was most of what anyone
+// runs.
+//
+// A machine that has been asked to interpret everything has nothing to compile
+// and keeps the tree-walker's semantics exactly: the whole file as one body.
+func (m *Machine) RunFormsCompiled(forms []Value, env *Env) (Value, error) {
+	if m.Interpret || compileDisabled {
+		return m.RunForms(forms, env)
+	}
+	return m.guardedRun(func() (Value, error) {
+		baseStack, baseWinds, baseHands := len(m.stack), len(m.winds), len(m.hands)
+		if err := m.startForms(forms, env); err != nil {
+			return nil, err
+		}
+		return m.runLoop(baseStack, baseWinds, baseHands)
+	})
+}
+
+// startForms begins the forms of a file in the *current* evaluation, compiling
+// them the way RunFormsCompiled does.  The machine's own loop drives them, so
+// this is what a primitive that loads a file uses: `load` cannot call
+// RunFormsCompiled, because that would start a second evaluation inside the one
+// that called it.
+func (m *Machine) startForms(forms []Value, env *Env) error {
+	if m.Interpret || compileDisabled {
+		m.EvalSeq(forms, env)
+		return nil
+	}
+	prog, err := CompileProgram(m, forms, env)
+	if err != nil {
+		return err
+	}
+	m.startSteps(prog.Chunks, env)
+	return nil
 }
 
 // ---------------------------------------------------------------------------
