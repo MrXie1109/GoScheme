@@ -37,7 +37,11 @@ or a lambda body.  Inside a body it handles
   to a thunk, both handed to a runtime helper that installs the handler the
   interpreter installs,
 * the concurrency forms `go` and `select`, whose bodies and clause expressions
-  compile to thunks that a helper spawns or chooses between, and
+  compile to thunks that a helper spawns or chooses between,
+* `cond-expand`, which chooses its clause while compiling, and
+* `define-syntax`, `let-syntax` and `letrec-syntax` in a body, whose macros the
+  compiler expands where the interpreter would have put them in an environment,
+  and
 * applications, tail calls, and every self-evaluating literal.
 
 plus anything a macro expands into, because **macros are expanded at compile
@@ -56,6 +60,16 @@ work.  The matching in `match`, the selection in `select` and the handler in
 `guard` are the interpreter's own code: only the pieces around them became
 bytecode, so the two paths cannot disagree about what a pattern matches or
 which clause wins.
+
+A macro defined in a body is the one place where compiling needs something the
+compiler does not have: the interpreter evaluates a transformer in the
+environment where it is written, and a compiled body's variables are slots, not
+an environment.  The compiler therefore keeps a **shadow environment** beside
+every scope — a real `Env` with the same names and no values — purely so that
+the marks a template's identifiers carry name a scope, that scope names a
+block, and that block names the slot the variable lives in.  Hygiene comes out
+the same as the interpreter's for every macro whose definition scope encloses
+its use, which is every macro that does not escape its scope.
 
 The compiler's table is a list of what it *does* handle rather than what it does
 not, so adding a form is a local change to `special` in `compile.go`.
@@ -156,7 +170,7 @@ misread.
 
 The two paths are held together by tests, not by hope:
 
-* `internal/scheme/vm_test.go` runs a corpus of 63 programs — arithmetic,
+* `internal/scheme/vm_test.go` runs a corpus of 64 programs — arithmetic,
   closures and `set!`, internal definitions, every compiled derived form, tail
   calls, a 200 000-deep non-tail recursion, `call/cc` escapes and re-entries,
   `dynamic-wind`, macro definitions, records, `parameterize`, `match`, strings,

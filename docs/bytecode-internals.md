@@ -277,6 +277,19 @@ the caller's array belongs to the caller again.  What is *shared* between
 continuations is exactly what Scheme says is shared: the cells of variables
 that `set!` can change.
 
+### Macros in a body, and the shadow environment
+
+A macro defined at the top level is expanded with the global environment, which
+the compiler has.  One defined in a *body* — an internal `define-syntax`, a
+`let-syntax` — is expanded with the environment of that body, which a compiled
+body does not have: its variables are slots.  The compiler therefore keeps a
+shadow environment beside every scope: a real `Env`, with the same names, whose
+values are never read.  It exists so that a mark on a template's identifier
+names a scope, the block for that scope holds the same names, and the slot for
+one of them is what the reference compiles to.  Nothing is in an environment at
+run time, and hygiene is the interpreter's for every macro whose definition
+scope encloses its use.
+
 ### The boundary with the interpreter
 
 The VM is not a separate interpreter: it is the same machine with a second way
