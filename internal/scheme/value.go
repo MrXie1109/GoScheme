@@ -311,6 +311,9 @@ type Closure struct {
 	Clauses []ClosureClause
 	Name    string
 	Env     *Env
+	// Vm is the frame this closure was created in when its body is compiled
+	// (see vm.go); it is the lexical environment the bytecode reads.
+	Vm *vmEnv
 }
 
 // ClosureClause is one arity case of a procedure.
@@ -322,6 +325,9 @@ type ClosureClause struct {
 	// BodyNames lists the identifiers introduced by internal definitions so
 	// that they can be pre-bound (letrec* semantics).
 	BodyNames []*Symbol
+	// Code, when not nil, is the compiled body: applying this clause runs it
+	// on the bytecode VM instead of walking Body.
+	Code *Code
 }
 
 // Primitive is a procedure implemented in Go.

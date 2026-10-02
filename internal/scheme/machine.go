@@ -55,6 +55,11 @@ type Machine struct {
 
 	// wg tracks the interpreter threads started by (go ...).
 	wg *sync.WaitGroup
+
+	// Interpret turns the bytecode VM off, so that a program runs in the
+	// tree-walker exactly as it did before compile.go existed.  It is how the
+	// two execution paths are compared, and it is what `-interp` sets.
+	Interpret bool
 }
 
 type frame interface {
@@ -262,7 +267,12 @@ func (m *Machine) Run(expr Value, env *Env) (Value, error) {
 		// library is loaded, say); the frames below base belong to the outer
 		// evaluation and must survive.
 		baseStack, baseWinds, baseHands := len(m.stack), len(m.winds), len(m.hands)
-		m.Eval(expr, env)
+		if code, err := m.compile(expr, env); code != nil {
+			m.runCompiledTop(code, env)
+		} else {
+			_ = err
+			m.Eval(expr, env)
+		}
 		return m.runLoop(baseStack, baseWinds, baseHands)
 	})
 }
@@ -448,6 +458,10 @@ func (m *Machine) applyClosure(c *Closure, args []Value) {
 		} else {
 			m.raiseErrorf("%s: no matching clause for %d arguments", procName(c), len(args))
 		}
+		return
+	}
+	if clause.Code != nil {
+		m.applyCompiled(c, clause, args)
 		return
 	}
 	env := NewEnv(c.Env)
