@@ -28,17 +28,45 @@ type Program struct {
 	Chunks []Chunk
 }
 
-// Chunk is one top-level form: compiled when Code is not nil, and source to
-// evaluate otherwise.
+// Chunk is one piece of a program: compiled when Code is not nil, and source
+// to evaluate otherwise.  Steps, when non-empty, is a run of chunks that must
+// share one continuation extent — the ordinary top-level forms of a file, some
+// of which the compiler took and some of which it declined.
 type Chunk struct {
-	Code *Code
-	Form Value
+	Code  *Code
+	Form  Value
+	Steps []Chunk
 }
 
 const (
-	bytecodeMagic   = "GSCM"
-	bytecodeVersion = 1
+	bytecodeMagic = "GSCM"
+	// bytecodeVersion 2 added the Steps chunk.  Version 1 files are still read:
+	// nothing else about the format changed.
+	bytecodeVersion = 2
 )
+
+// Compiled reports how many of the program's top-level forms are bytecode, and
+// how many there are, counting the steps of a mixed chunk.
+func (p *Program) Compiled() (compiled, total int) {
+	var count func(c Chunk)
+	count = func(c Chunk) {
+		switch {
+		case len(c.Steps) > 0:
+			for _, s := range c.Steps {
+				count(s)
+			}
+		case c.Code != nil:
+			compiled++
+			total++
+		default:
+			total++
+		}
+	}
+	for _, c := range p.Chunks {
+		count(c)
+	}
+	return compiled, total
+}
 
 // CompileProgram compiles the forms of a program.  Forms that affect the
 // compile-time environment — import, define-syntax, include — are evaluated as
@@ -64,8 +92,27 @@ func CompileProgram(m *Machine, forms []Value, env *Env) (*Program, error) {
 		}
 		if code, err := compileTop(m, form, env); err == nil {
 			prog.Chunks = append(prog.Chunks, Chunk{Code: code})
+			group = nil
+			return
+		}
+		// The group as a whole did not compile, because a body is all or
+		// nothing and one form in it uses something the compiler declines.
+		// The forms can still be compiled one at a time — the compiler taking
+		// what it can — as long as they run in one extent, which is what a
+		// Steps chunk does.  Without this a single `do` or `guard` anywhere in
+		// a file would send the whole file down the source path.
+		steps := make([]Chunk, 0, len(group))
+		for _, f := range group {
+			if code, err := compileTop(m, f, env); err == nil {
+				steps = append(steps, Chunk{Code: code})
+			} else {
+				steps = append(steps, Chunk{Form: f})
+			}
+		}
+		if len(steps) == 1 {
+			prog.Chunks = append(prog.Chunks, steps[0])
 		} else {
-			prog.Chunks = append(prog.Chunks, Chunk{Form: form})
+			prog.Chunks = append(prog.Chunks, Chunk{Steps: steps})
 		}
 		group = nil
 	}
@@ -115,13 +162,43 @@ func teachingForm(form Value) bool {
 func (m *Machine) RunChunk(c Chunk, env *Env) (Value, error) {
 	return m.guardedRun(func() (Value, error) {
 		baseStack, baseWinds, baseHands := len(m.stack), len(m.winds), len(m.hands)
-		if c.Code != nil {
+		switch {
+		case len(c.Steps) > 0:
+			m.startSteps(c.Steps, env)
+		case c.Code != nil:
 			m.runCompiledTop(c.Code, env)
-		} else {
+		default:
 			m.Eval(c.Form, env)
 		}
 		return m.runLoop(baseStack, baseWinds, baseHands)
 	})
+}
+
+// fSteps runs the chunks of a mixed group in order and in one extent: each
+// step's value is discarded except the last one's, exactly as the forms of a
+// begin are.  A continuation captured in one step therefore covers the rest of
+// the group, which is the whole reason the steps are not chunks of their own.
+type fSteps struct {
+	steps []Chunk
+	env   *Env
+}
+
+func (f *fSteps) resume(m *Machine, v Value) { m.startSteps(f.steps, f.env) }
+
+// startSteps begins the first of steps and leaves the rest to follow it.
+func (m *Machine) startSteps(steps []Chunk, env *Env) {
+	if len(steps) == 0 {
+		m.Return(UnspecifiedValue)
+		return
+	}
+	if len(steps) > 1 {
+		m.stack = append(m.stack, &fSteps{steps: steps[1:], env: env})
+	}
+	if c := steps[0]; c.Code != nil {
+		m.runCompiledTop(c.Code, env)
+	} else {
+		m.Eval(c.Form, env)
+	}
 }
 
 // RunProgram runs every chunk of a program, in order.
@@ -148,14 +225,7 @@ func WriteBytecode(w io.Writer, p *Program) error {
 	bw.u8(bytecodeVersion)
 	bw.uvarint(uint64(len(p.Chunks)))
 	for _, c := range p.Chunks {
-		switch {
-		case c.Code != nil:
-			bw.u8(1)
-			bw.code(c.Code)
-		default:
-			bw.u8(0)
-			bw.datum(c.Form, map[interface{}]bool{})
-		}
+		bw.chunk(c)
 	}
 	if bw.err != nil {
 		return bw.err
@@ -177,7 +247,7 @@ func ReadBytecode(r io.Reader) (*Program, error) {
 	if string(magic) != bytecodeMagic {
 		return nil, fmt.Errorf("bytecode: not a .scmc file")
 	}
-	if v := br.u8(); v != bytecodeVersion {
+	if v := br.u8(); v != 1 && v != bytecodeVersion {
 		return nil, fmt.Errorf("bytecode: version %d, but this interpreter speaks %d", v, bytecodeVersion)
 	}
 	n := br.uvarint()
@@ -186,17 +256,11 @@ func ReadBytecode(r io.Reader) (*Program, error) {
 	}
 	prog := &Program{Chunks: make([]Chunk, 0, n)}
 	for i := uint64(0); i < n; i++ {
-		switch br.u8() {
-		case 0:
-			prog.Chunks = append(prog.Chunks, Chunk{Form: br.datum()})
-		case 1:
-			prog.Chunks = append(prog.Chunks, Chunk{Code: br.code()})
-		default:
-			return nil, fmt.Errorf("bytecode: bad chunk tag")
+		c, err := br.chunk()
+		if err != nil {
+			return nil, err
 		}
-		if br.err != nil {
-			return nil, br.err
-		}
+		prog.Chunks = append(prog.Chunks, c)
 	}
 	return prog, nil
 }
@@ -264,6 +328,24 @@ func (b *byteWriter) u64(v uint64) {
 	var tmp [8]byte
 	binary.LittleEndian.PutUint64(tmp[:], v)
 	b.raw(tmp[:])
+}
+
+// chunk writes one chunk: its tag and its contents.
+func (b *byteWriter) chunk(c Chunk) {
+	switch {
+	case len(c.Steps) > 0:
+		b.u8(2)
+		b.uvarint(uint64(len(c.Steps)))
+		for _, s := range c.Steps {
+			b.chunk(s)
+		}
+	case c.Code != nil:
+		b.u8(1)
+		b.code(c.Code)
+	default:
+		b.u8(0)
+		b.datum(c.Form, map[interface{}]bool{})
+	}
 }
 
 func (b *byteWriter) code(c *Code) {
@@ -502,6 +584,41 @@ func (b *byteReader) bits(n int) []bool {
 		out[i] = cur&(1<<uint(i%8)) != 0
 	}
 	return out
+}
+
+// chunk reads one chunk, which is a form, compiled code, or a run of chunks
+// that share an extent.
+func (b *byteReader) chunk() (Chunk, error) {
+	switch b.u8() {
+	case 0:
+		return Chunk{Form: b.datum()}, b.err
+	case 1:
+		return Chunk{Code: b.code()}, b.err
+	case 2:
+		n := b.uvarint()
+		if b.err != nil {
+			return Chunk{}, b.err
+		}
+		// A nested run must be long enough to be worth the frame, and cannot
+		// itself be nested: nothing writes one that way.
+		if n < 2 {
+			return Chunk{}, fmt.Errorf("bytecode: a chunk run of %d", n)
+		}
+		steps := make([]Chunk, 0, n)
+		for i := uint64(0); i < n; i++ {
+			c, err := b.chunk()
+			if err != nil {
+				return Chunk{}, err
+			}
+			if len(c.Steps) > 0 {
+				return Chunk{}, fmt.Errorf("bytecode: nested chunk run")
+			}
+			steps = append(steps, c)
+		}
+		return Chunk{Steps: steps}, nil
+	default:
+		return Chunk{}, fmt.Errorf("bytecode: bad chunk tag")
+	}
 }
 
 func (b *byteReader) code() *Code {

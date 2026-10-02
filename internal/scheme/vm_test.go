@@ -75,6 +75,12 @@ var vmPrograms = []struct {
 	                      (define b (make))
 	                      (a) (a)
 	                      (display (list (a) (b))) (newline)`},
+	{"callcc-across-steps", `(define k #f)
+	                        (define n 0)
+	                        (define v (call/cc (lambda (c) (set! k c) 1)))
+	                        (do ((i 0 (+ i 1))) ((= i 0)))
+	                        (set! n (+ n 1))
+	                        (if (< n 3) (k (+ v 1)) (begin (display v) (newline)))`},
 	{"callcc-multishot", `(define k #f)
 	                      (define n 0)
 	                      (define v (call/cc (lambda (c) (set! k c) 1)))
@@ -240,12 +246,50 @@ func TestVMReallyCompiles(t *testing.T) {
 	if _, err := compileTop(m, mustRead(t, `(do ((i 0 (+ i 1))) ((= i 1) i))`), m.Global); err == nil {
 		t.Errorf("do should be left to the interpreter")
 	}
+	// A file is compiled a group at a time, and a group is all or nothing —
+	// so one form the compiler declines used to send every form around it
+	// down the source path.  The forms are compiled one at a time instead,
+	// as steps of one chunk, and they still run in a single extent.
+	mixed := m2MustProgram(t, `(define (f x) (* x x))
+	                            (display (f 3))
+	                            (do ((i 0 (+ i 1))) ((= i 0)))
+	                            (define (g y) (+ y 1))
+	                            (display (g 1))`)
+	compiledN, total := mixed.Compiled()
+	if compiledN < 3 || total != 5 {
+		t.Errorf("mixed program compiled %d of %d forms, want at least 3 of 5", compiledN, total)
+	}
+	steps := 0
+	for _, c := range mixed.Chunks {
+		if len(c.Steps) > 0 {
+			steps++
+		}
+	}
+	if steps != 1 {
+		t.Errorf("the program should be one run of steps, got %d", steps)
+	}
+
 	// Compiled code must not be produced when the machine is asked to
 	// interpret everything.
 	m.Interpret = true
 	if code, _ := m.compile(mustRead(t, `(+ 1 2)`), m.Global); code != nil {
 		t.Errorf("Interpret should turn compilation off")
 	}
+}
+
+// m2MustProgram compiles a whole program text, the way a file is compiled.
+func m2MustProgram(t *testing.T, src string) *Program {
+	t.Helper()
+	m := NewMachine()
+	forms, err := NewStringReader(src).ReadAll()
+	if err != nil {
+		t.Fatalf("reading: %v", err)
+	}
+	prog, err := CompileProgram(m, forms, m.Global)
+	if err != nil {
+		t.Fatalf("compiling: %v", err)
+	}
+	return prog
 }
 
 func mustRead(t *testing.T, src string) Value {

@@ -83,13 +83,7 @@ func runCompile(args []string) int {
 		fmt.Fprintf(os.Stderr, "goscheme compile: %v\n", err)
 		return 1
 	}
-	compiled := 0
-	for _, c := range prog.Chunks {
-		if c.Code != nil {
-			compiled++
-		}
-	}
-	fmt.Printf("%s: %d of %d top-level forms compiled to bytecode\n",
-		out, compiled, len(prog.Chunks))
+	compiled, total := prog.Compiled()
+	fmt.Printf("%s: %d of %d top-level forms compiled to bytecode\n", out, compiled, total)
 	return 0
 }
