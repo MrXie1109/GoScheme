@@ -57,6 +57,24 @@ var vmPrograms = []struct {
 	                   (set! kept (cons i kept)))
 	                 (newline)`},
 	{"callcc-escape", `(display (call/cc (lambda (k) (+ 1 (k 42))))) (newline)`},
+	{"cond-plain", `(display (cond ((= 1 2) 'a) ((= 1 1) 'b) (else 'c))) (newline)`},
+	{"cond-no-else", `(display (cond ((= 1 2) 'a) ((= 1 3) 'b))) (newline)`},
+	{"cond-test-only", `(display (cond ((assv 2 '((1 . a))) => cdr) ((+ 1 1)) (else 'no))) (newline)`},
+	{"case-multi", `(display (list (case 'b ((a b) 'yes) (else 'no))
+	                                (case 'z ((a b) 'yes) (else 'no)))) (newline)`},
+	{"and-or-values", `(display (list (and 1 2 3) (and 1 #f 3) (and) (or #f #f 5) (or #f) (or))) (newline)`},
+	{"nested-binding", `(display (let ((x 1))
+	                            (let ((y 2))
+	                              (let* ((x 10) (z (+ x y)))
+	                                (letrec ((f (lambda () (list x y z))))
+	                                  (f)))))) (newline)`},
+	{"shadowing", `(define x 'global)
+	               (display (list x (let ((x 'outer)) (let ((x 'inner)) x)) x)) (newline)`},
+	{"set-from-closure", `(define (make) (let ((n 0)) (lambda () (set! n (+ n 1)) n)))
+	                      (define a (make))
+	                      (define b (make))
+	                      (a) (a)
+	                      (display (list (a) (b))) (newline)`},
 	{"callcc-multishot", `(define k #f)
 	                      (define n 0)
 	                      (define v (call/cc (lambda (c) (set! k c) 1)))

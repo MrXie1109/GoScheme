@@ -693,7 +693,9 @@ func (c *comp) letrec(args []Value, tail bool) {
 	c.block.slots = c.block.slots[:saved]
 }
 
-// condForm compiles cond, including the => clauses.
+// condForm compiles cond, including the => clauses.  Every clause ends by
+// jumping over the fallthrough value, so that the value of a matched clause and
+// the unspecified value of no match are never both left behind.
 func (c *comp) condForm(clauses []Value, tail bool) {
 	var ends []int
 	for i, cl := range clauses {
@@ -707,60 +709,66 @@ func (c *comp) condForm(clauses []Value, tail bool) {
 			c.fail("cond: malformed clause")
 			return
 		}
+		isElse := false
 		if s, ok := items[0].(*Symbol); ok && s.Name == "else" && isAuxSyntax(s, c.globals) {
 			if i != len(clauses)-1 {
 				c.fail("cond: else is not the last clause")
 				return
 			}
-			c.body(items[1:], tail)
-			continue
+			isElse = true
 		}
-		c.expr(items[0], false)
-		arrow := false
-		if len(items) >= 2 {
-			if s, ok := items[1].(*Symbol); ok && s.Name == "=>" && isAuxSyntax(s, c.globals) {
-				arrow = true
-			}
-		}
-		var next int
-		if arrow {
+		next := -1
+		if !isElse {
+			// The test value is kept: a => clause needs it, a clause with a
+			// body discards it explicitly, and a clause with only a test is
+			// worth it.
+			c.expr(items[0], false)
 			next = c.emit(opJumpFalseKeep, 0, 0)
-		} else {
-			next = c.emit(opJumpFalse, 0, 0)
 		}
-		if len(items) >= 2 {
-			if s, ok := items[1].(*Symbol); ok && s.Name == "=>" && isAuxSyntax(s, c.globals) {
-				if len(items) != 3 {
-					c.fail("cond: malformed => clause")
-					return
-				}
-				slot := c.tempSlot()
-				c.emit(opSetLocal, 0, int32(slot))
-				c.expr(items[2], false)
-				c.loadLocal(slot, false, false)
-				if tail {
-					c.emit(opTailCall, 1, 0)
-				} else {
-					c.emit(opCall, 1, 0)
-				}
-			} else {
-				c.emit(opPop, 0, 0)
-				c.body(items[1:], tail)
+		switch {
+		case isElse:
+			// No test was evaluated, so there is nothing to discard.
+			c.body(items[1:], tail)
+		case len(items) >= 2 && isArrow(items[1], c.globals):
+			if len(items) != 3 {
+				c.fail("cond: malformed => clause")
+				return
 			}
-		} else {
+			slot := c.tempSlot()
+			c.emit(opSetLocal, 0, int32(slot))
+			c.expr(items[2], false)
+			c.loadLocal(slot, false, false)
+			if tail {
+				c.emit(opTailCall, 1, 0)
+			} else {
+				c.emit(opCall, 1, 0)
+			}
+		case len(items) >= 2:
+			c.emit(opPop, 0, 0)
+			c.body(items[1:], tail)
+		default:
 			// A clause with only a test is worth its value.
 		}
-		if i != len(clauses)-1 {
-			ends = append(ends, c.emit(opJump, 0, 0))
+		ends = append(ends, c.emit(opJump, 0, 0))
+		if next >= 0 {
+			// The miss path still holds this clause's test value, which the
+			// keeping jump left behind: it has to go before the next clause
+			// runs, or the clauses pile up on the stack.
+			c.patch(next, c.here())
+			c.emit(opPop, 0, 0)
 		}
-		c.patch(next, c.here())
 	}
+	// Nothing matched: the report leaves the value unspecified.
+	c.emit(opConst, c.konst(UnspecifiedValue), 0)
 	for _, at := range ends {
 		c.patch(at, c.here())
 	}
-	if len(clauses) == 0 {
-		c.emit(opConst, c.konst(UnspecifiedValue), 0)
-	}
+}
+
+// isArrow reports whether v is the auxiliary keyword => in scope.
+func isArrow(v Value, env *Env) bool {
+	s, ok := v.(*Symbol)
+	return ok && s.Name == "=>" && isAuxSyntax(s, env)
 }
 
 // caseForm compiles case, which compares the key with eqv?, as the
@@ -818,7 +826,7 @@ func (c *comp) caseForm(args []Value, tail bool) {
 				c.patch(at, c.here())
 			}
 		}
-		c.clauseBody(items, tail)
+		c.clauseBody(items, tail, isElse)
 		// Every clause leaves its value behind and then skips the fallthrough
 		// value below, so that a matched clause and the no-match path each
 		// leave exactly one.
@@ -837,10 +845,11 @@ func (c *comp) caseForm(args []Value, tail bool) {
 }
 
 // clauseBody compiles the body of a case clause, which is either a sequence of
-// expressions or a => recipient.
-func (c *comp) clauseBody(items []Value, tail bool) {
+// expressions or a => recipient.  An else clause's body starts at items[1] like
+// any other, but it can never be a => recipient: the else is not a test.
+func (c *comp) clauseBody(items []Value, tail bool, isElse bool) {
 	if len(items) >= 2 {
-		if s, ok := items[1].(*Symbol); ok && s.Name == "=>" && isAuxSyntax(s, c.globals) {
+		if s, ok := items[1].(*Symbol); ok && !isElse && s.Name == "=>" && isAuxSyntax(s, c.globals) {
 			if len(items) != 3 {
 				c.fail("case: malformed => clause")
 				return
