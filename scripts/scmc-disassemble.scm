@@ -258,13 +258,22 @@
 (define (spaces n)
   (if (zero? n) "" (string-append " " (spaces (- n 1)))))
 
+;; Indentation: two spaces per level.  A nested body — one that lives in
+;; another body's constant pool — is printed at the *same* level as the
+;; constant it belongs to rather than one deeper, because it is already inside
+;; a list and a reader can see the nesting; giving it a level of its own made a
+;; deep program's output walk off the right of the screen for no gain.
+(define indent-step 2)
+
 ;; print-nested prints a literal that may itself be a compiled body, which is
 ;; printed as a body rather than as one very long line.
 (define (print-nested port v indent)
   (if (compiled-body? v)
-      (print-body port v indent)
+      ;; A body inside a constant pool: its own line, at the same indent as
+      ;; the constant that holds it (it is a value of this body, not a child
+      ;; scope), so it does not walk off the right of the screen.
+      (print-body port v indent #f)
       (begin
-        (display (spaces indent) port)
         (print-constant port v)
         (newline port))))
 
@@ -281,14 +290,17 @@
        (display-line port "; --- a run of chunks that share one continuation extent")
        (for-each (lambda (c) (print-chunk port c indent)) (cdr chunk)))
       (else
-       (print-body port (cdr chunk) indent)))))
+       (print-body port (cdr chunk) indent #t)))))
 
 (define (record-ref code key)
   (let ((entry (assq key code)))
     (if entry (cdr entry) #f)))
 
-(define (print-body port code indent)
-  (let ((pad (spaces indent))
+;; pad? says whether this body should print its own leading indentation.
+;; Top-level chunks pass #t; nested bodies (already indented by their
+;; constant-pool printer) pass #f so indentation is not applied twice.
+(define (print-body port code indent pad?)
+  (let ((pad (if pad? (spaces indent) ""))
         (name (record-ref code 'name))
         (instrs (record-ref code 'instructions))
         (consts (record-ref code 'constants))
@@ -304,51 +316,66 @@
                   ", parameters " n-params
                   (if has-rest ", rest" "")
                   ")")
-    (if (pair? names)
-        (begin
-          (display pad port)
-          (display-line port ";     slot names: " (datum->source names))))
-    (if (pair? boxed)
-        (begin
-          (display pad port)
-          (display-line port ";     set! slots: " (datum->source boxed))))
-    (if (pair? checked)
-        (begin
-          (display pad port)
-          (display-line port ";     checked slots: " (datum->source checked))))
-    (if (pair? consts)
-        (begin
-          (display pad port)
-          (display-line port ";     constants:")
-          (print-constants port consts indent)))
+    (let ((field (string-append pad ";   ")))
+      (if (pair? names)
+          (display-line port field "slot names: " (datum->source names)))
+      (if (pair? boxed)
+          (display-line port field "set! slots: " (datum->source boxed)))
+      (if (pair? checked)
+          (display-line port field "checked slots: " (datum->source checked)))
+      (if (pair? consts)
+          (begin
+            (display-line port field "constants:")
+            (print-constants port consts (+ indent indent-step)))))
     (display pad port)
     (display-line port "(instructions")
     (print-instructions port instrs indent)
     (display pad port)
     (display-line port ")")))
 
+;; print-instructions puts one instruction per line, indented one step past the
+;; "(instructions" it belongs to.
+
 (define (print-constants port consts indent)
   (let loop ((i 0) (rest consts))
     (if (pair? rest)
         (begin
           (display (spaces indent) port)
-          (display "        " port)
           (display i port)
-          (display ": " port)
-          (print-nested port (car rest) (+ indent 8))
+          (display ":" port)
+          (if (compiled-body? (car rest))
+              (begin
+                (newline port)          ; the label goes on its own line
+                (print-body port (car rest) indent #t))
+              (begin
+                (display " " port)
+                (print-constant port (car rest))
+                (newline port)))
           (loop (+ i 1) (cdr rest))))))
 
+;; A one-line description of a body, for the comment above a nested one.
+(define (body-summary code)
+  (let ((name (record-ref code 'name))
+        (n-slots (record-ref code 'slots))
+        (n-params (record-ref code 'parameters))
+        (has-rest (record-ref code 'rest)))
+    (string-append "; --- compiled body: " name
+                   "  (slots " (number->string n-slots)
+                   ", parameters " (number->string n-params)
+                   (if has-rest ", rest" "")
+                   ")")))
+
 (define (print-instructions port instrs indent)
-  (for-each (lambda (in)
-              (display (spaces indent) port)
-              (display "  " port)
+  (let ((pad (spaces (+ indent indent-step))))
+    (for-each (lambda (in)
+              (display pad port)
               (display (opcode-name (car in)) port)
               (display " " port)
               (display (cadr in) port)
               (display " " port)
               (display (caddr in) port)
               (newline port))
-            instrs))
+              instrs)))
 
 ;;; The opcode names, in the order vm.go declares them.  A file written by a
 ;;; newer interpreter is refused rather than printed with the wrong names.

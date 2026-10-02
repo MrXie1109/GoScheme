@@ -25,17 +25,28 @@ $ goscheme scripts/scmc-disassemble.scm hello.scmc
 ;;; Disassembled from hello.scmc (bytecode version 3)
 ...
 ; --- compiled body: <top level>  (slots 0, parameters 0)
-;     constants:
-        0:         ; --- compiled body:   (slots 1, parameters 1)
-        ...
-        (instructions
-          global 0 0
-          local 0 0
-          const 1 0
-          call 2 0
-          ...
-        )
+;   constants:
+  0:
+  ; --- compiled body: <top level>  (slots 1, parameters 1)
+  ;   slot names: (name)
+  ;   constants:
+    0: =
+    1: 0
+    2: 1
+  (instructions
+    global 0 0
+    local 0 0
+    const 1 0
+    call 2 0
+    ...
+  )
 ```
+
+Indentation is two spaces per level, and a nested body — one that lives in
+another body's constant pool — is printed at the same level as the constant
+holding it, because it is a value of that body rather than a scope inside it.
+That keeps a deep program's output narrow: the reference suite disassembles
+with a maximum indentation of ten spaces.
 
 * `-o FILE` writes it to a file instead of the terminal.
 * `--check FILE` prints a one-line summary and exit status instead of the
