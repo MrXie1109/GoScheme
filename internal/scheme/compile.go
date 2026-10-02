@@ -272,6 +272,44 @@ func (c *comp) special(name string, x *Pair, tail bool) bool {
 		c.emit(opConst, c.konst(args[0]), 0)
 		return true
 
+	case "define-values":
+		if len(args) != 2 {
+			c.fail("define-values: expected (define-values formals expr)")
+			return true
+		}
+		names, err := flatFormals(args[0])
+		if err != nil {
+			c.fail("define-values: %v", err)
+			return true
+		}
+		producer := c.bodyWithFormals(Empty{}, []Value{args[1]}, "define-values", func(sub *comp) {
+			sub.body([]Value{args[1]}, true)
+		})
+		if producer == nil {
+			return true
+		}
+		c.bindValuesFrom(names, args[0], producer, tail)
+		return true
+
+	case "define-record-type":
+		names, _, err := recordType(args)
+		if err != nil {
+			c.fail("%v", err)
+			return true
+		}
+		// The helper builds the type and its procedures; the compiler knows
+		// their names, so it can store each where a binding of that name
+		// lives — a slot in this body, or a global at the top level.
+		call := List(recordTypeHelper, List(Intern("quote"), listFromSlice(args)))
+		producer := c.bodyWithFormals(Empty{}, []Value{call}, "define-record-type", func(sub *comp) {
+			sub.body([]Value{call}, true)
+		})
+		if producer == nil {
+			return true
+		}
+		c.bindValuesFrom(names, Empty{}, producer, false)
+		return true
+
 	case "let-values", "let*-values":
 		// Both are call-with-values built at compile time.  The expansion is
 		// the interpreter's own (letValuesForm), so the two paths cannot
@@ -1350,6 +1388,100 @@ func (c *comp) inScope(sym *Symbol, from int) bool {
 		}
 	}
 	return false
+}
+
+// flatFormals lists the variables of a formals list in order, whether it is a
+// proper list, a dotted one or a single rest name.
+func flatFormals(formals Value) ([]*Symbol, error) {
+	var out []*Symbol
+	for f := formals; ; {
+		switch v := f.(type) {
+		case *Symbol:
+			return append(out, v), nil
+		case Empty:
+			return out, nil
+		case *Pair:
+			sym, ok := v.Car.(*Symbol)
+			if !ok {
+				return nil, NewError("binding name is not an identifier", v.Car)
+			}
+			out = append(out, sym)
+			f = v.Cdr
+		default:
+			return nil, NewError("malformed formals", formals)
+		}
+	}
+}
+
+// bindValuesFrom compiles the shape define-values and define-record-type share:
+// a producer of values, and a consumer that stores each value in the binding it
+// belongs to.  The names are the compiler's, so a binding this body declared
+// has a slot already and a top-level one becomes a global — which is what the
+// interpreter does when it defines them in the environment it is evaluating in.
+func (c *comp) bindValuesFrom(names []*Symbol, formals Value, producer *Code, tail bool) {
+	if formals == nil || formals == Value(Empty{}) {
+		// define-record-type has no formals of its own: the consumer takes one
+		// parameter per name.
+		parts := make([]Value, len(names))
+		for i, n := range names {
+			parts[i] = n
+		}
+		formals = listFromSlice(parts)
+	}
+	fresh, err := freshFormals(formals)
+	if err != nil {
+		c.fail("%v", err)
+		return
+	}
+	temps, err := flatFormals(fresh)
+	if err != nil {
+		c.fail("%v", err)
+		return
+	}
+	if len(temps) != len(names) {
+		c.fail("the values and the names do not line up")
+		return
+	}
+	sub := c.beginBody(fresh, nil, "define")
+	if sub == nil {
+		return
+	}
+	for i, name := range names {
+		depth, slot, frame, local := c.lookup(name)
+		sub.loadLocal(slotOf(sub, temps[i]), false, false)
+		if local {
+			if frame.boxed[slot] {
+				sub.emit(opSetCell, int32(depth+1), int32(slot))
+			} else {
+				sub.emit(opSetLocal, int32(depth+1), int32(slot))
+			}
+		} else {
+			sub.emit(opDefineGlobal, sub.konst(name), 0)
+		}
+	}
+	// The form's own value is the unspecified one, like a define.
+	sub.emit(opConst, sub.konst(UnspecifiedValue), 0)
+	consumer := c.finishBody(sub)
+	if consumer == nil {
+		return
+	}
+	c.emit(opConst, c.konst(bindValues), 0)
+	c.emit(opClosure, c.konst(producer), 0)
+	c.emit(opClosure, c.konst(consumer), 0)
+	if tail {
+		c.emit(opTailCall, 2, 0)
+	} else {
+		c.emit(opCall, 2, 0)
+	}
+}
+
+// slotOf is the slot a name has in the sub-compiler's own frame.
+func slotOf(sub *comp, sym *Symbol) int {
+	_, slot, _, ok := sub.lookup(sym)
+	if !ok {
+		sub.fail("internal: no slot for the bound name")
+	}
+	return slot
 }
 
 // bodyWithLocals compiles the body of a binding form, whose internal

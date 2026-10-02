@@ -367,11 +367,19 @@ func scanBodyNames(body []Value) []*Symbol {
 					}
 					break collectValues
 				}
-			case "define-syntax", "define-record-type":
+			case "define-syntax":
 				if len(args) > 0 {
 					if sym, ok := args[0].(*Symbol); ok {
 						out = append(out, sym)
 					}
+				}
+			case "define-record-type":
+				// Every name it defines, not just the type: they are all bound
+				// by the same form, and a reference to the constructor or an
+				// accessor elsewhere in the body has to see a binding of its
+				// own rather than a global.
+				if names, _, err := recordType(args); err == nil {
+					out = append(out, names...)
 				}
 			default:
 				return
@@ -824,7 +832,7 @@ func letValuesForm(name string, args []Value) (Value, error) {
 				producer = cadr(p)
 			}
 			consumer := List(Intern("lambda"), p.Car, expr)
-			expr = List(Intern("call-with-values"),
+			expr = List(bindValues,
 				List(Intern("lambda"), Nil, producer), consumer)
 		}
 		return expr, nil
@@ -854,7 +862,7 @@ func letValuesForm(name string, args []Value) (Value, error) {
 	var expr Value = Cons(Intern("let"), Cons(listFromSlice(pairs), listFromSlice(body)))
 	for i := len(bindings) - 1; i >= 0; i-- {
 		consumer := List(Intern("lambda"), temps[i], expr)
-		expr = List(Intern("call-with-values"),
+		expr = List(bindValues,
 			List(Intern("lambda"), Nil, producers[i]), consumer)
 	}
 	return expr, nil
@@ -1446,68 +1454,76 @@ func (m *Machine) evalGuardClauses(clauses []Value, env *Env, cond Value) {
 // ---------------------------------------------------------------------------
 
 func evalDefineRecordType(m *Machine, form Value, env *Env) {
-	args := formArgs(form)
-	if len(args) < 3 {
-		m.Raise(NewError("define-record-type: malformed", form))
+	names, values, err := recordType(formArgs(form))
+	if err != nil {
+		m.RaiseError(err)
 		return
+	}
+	for i, name := range names {
+		env.Define(name, values[i])
+	}
+	m.Return(UnspecifiedValue)
+}
+
+// recordType builds what a define-record-type defines: the identifiers it binds
+// and the values they take, in the same order — the type, the constructor, the
+// predicate, then each field's accessor and modifier.  It defines nothing, so
+// that the interpreter can define them in the environment it is evaluating in
+// and a compiled body can store them in the slots it reserved, from one
+// implementation of what the form means.
+func recordType(args []Value) ([]*Symbol, []Value, error) {
+	if len(args) < 3 {
+		return nil, nil, NewError("define-record-type: malformed")
 	}
 	typeName, ok := args[0].(*Symbol)
 	if !ok {
-		m.Raise(NewError("define-record-type: type name is not an identifier", args[0]))
-		return
+		return nil, nil, NewError("define-record-type: type name is not an identifier", args[0])
 	}
 	ctorSpec, ok := args[1].(*Pair)
 	if !ok {
-		m.Raise(NewError("define-record-type: malformed constructor spec", args[1]))
-		return
+		return nil, nil, NewError("define-record-type: malformed constructor spec", args[1])
 	}
 	ctorName, ok := ctorSpec.Car.(*Symbol)
 	if !ok {
-		m.Raise(NewError("define-record-type: constructor name is not an identifier", ctorSpec.Car))
-		return
+		return nil, nil, NewError("define-record-type: constructor name is not an identifier", ctorSpec.Car)
 	}
 	ctorFields := mustSlice(ctorSpec.Cdr)
 	for _, f := range ctorFields {
 		if _, ok := f.(*Symbol); !ok {
-			m.Raise(NewError("define-record-type: constructor field is not an identifier", f))
-			return
+			return nil, nil, NewError("define-record-type: constructor field is not an identifier", f)
 		}
 	}
 	predName, ok := args[2].(*Symbol)
 	if !ok {
-		m.Raise(NewError("define-record-type: predicate name is not an identifier", args[2]))
-		return
+		return nil, nil, NewError("define-record-type: predicate name is not an identifier", args[2])
 	}
 	rt := &RecordType{Name: typeName.Name}
 	fieldIndex := map[string]int{}
+	names := []*Symbol{typeName, ctorName, predName}
+	var fields []Value
 	for _, spec := range args[3:] {
 		p, ok := spec.(*Pair)
 		if !ok {
-			m.Raise(NewError("define-record-type: malformed field spec", spec))
-			return
+			return nil, nil, NewError("define-record-type: malformed field spec", spec)
 		}
 		fname, ok := p.Car.(*Symbol)
 		if !ok {
-			m.Raise(NewError("define-record-type: field name is not an identifier", p.Car))
-			return
+			return nil, nil, NewError("define-record-type: field name is not an identifier", p.Car)
 		}
 		items := mustSlice(p.Cdr)
 		if len(items) < 1 {
-			m.Raise(NewError("define-record-type: missing accessor", spec))
-			return
+			return nil, nil, NewError("define-record-type: missing accessor", spec)
 		}
 		accName, ok := items[0].(*Symbol)
 		if !ok {
-			m.Raise(NewError("define-record-type: accessor is not an identifier", items[0]))
-			return
+			return nil, nil, NewError("define-record-type: accessor is not an identifier", items[0])
 		}
 		mutable := false
 		var modName *Symbol
 		if len(items) > 1 {
 			modName, ok = items[1].(*Symbol)
 			if !ok {
-				m.Raise(NewError("define-record-type: modifier is not an identifier", items[1]))
-				return
+				return nil, nil, NewError("define-record-type: modifier is not an identifier", items[1])
 			}
 			mutable = true
 		}
@@ -1515,7 +1531,9 @@ func evalDefineRecordType(m *Machine, form Value, env *Env) {
 		rt.Fields = append(rt.Fields, fname)
 		rt.Mutable = append(rt.Mutable, mutable)
 		idx := len(rt.Fields) - 1
-		env.Define(accName, &Primitive{Name: accName.Name, MinArgs: 1, MaxArgs: 1,
+		fields = append(fields, nil) // the type and procedures are built below
+		names = append(names, accName)
+		accessor := &Primitive{Name: accName.Name, MinArgs: 1, MaxArgs: 1,
 			Fn: func(m *Machine, a []Value) {
 				r, ok := a[0].(*Record)
 				if !ok || r.Type != rt {
@@ -1523,9 +1541,11 @@ func evalDefineRecordType(m *Machine, form Value, env *Env) {
 					return
 				}
 				m.Return(r.Fields[idx])
-			}})
+			}}
+		fields[len(fields)-1] = accessor
 		if modName != nil {
-			env.Define(modName, &Primitive{Name: modName.Name, MinArgs: 2, MaxArgs: 2,
+			names = append(names, modName)
+			fields = append(fields, &Primitive{Name: modName.Name, MinArgs: 2, MaxArgs: 2,
 				Fn: func(m *Machine, a []Value) {
 					r, ok := a[0].(*Record)
 					if !ok || r.Type != rt {
@@ -1539,32 +1559,34 @@ func evalDefineRecordType(m *Machine, form Value, env *Env) {
 	}
 	for _, f := range ctorFields {
 		if _, ok := fieldIndex[f.(*Symbol).Name]; !ok {
-			m.Raise(NewError("define-record-type: constructor field is not a record field", f))
-			return
+			return nil, nil, NewError("define-record-type: constructor field is not a record field", f)
 		}
 	}
 	ctorIdx := make([]int, len(ctorFields))
 	for i, f := range ctorFields {
 		ctorIdx[i] = fieldIndex[f.(*Symbol).Name]
 	}
-	env.Define(typeName, &RecordTypeDescriptor{Type: rt})
-	env.Define(ctorName, &Primitive{Name: ctorName.Name, MinArgs: len(ctorFields), MaxArgs: len(ctorFields),
-		Fn: func(m *Machine, a []Value) {
-			r := &Record{Type: rt, Fields: make([]Value, len(rt.Fields))}
-			for i := range r.Fields {
-				r.Fields[i] = UnspecifiedValue
-			}
-			for i, idx := range ctorIdx {
-				r.Fields[idx] = a[i]
-			}
-			m.Return(r)
-		}})
-	env.Define(predName, &Primitive{Name: predName.Name, MinArgs: 1, MaxArgs: 1,
-		Fn: func(m *Machine, a []Value) {
-			r, ok := a[0].(*Record)
-			m.Return(BooleanOf(ok && r.Type == rt))
-		}})
-	m.Return(UnspecifiedValue)
+	values := []Value{
+		&RecordTypeDescriptor{Type: rt},
+		&Primitive{Name: ctorName.Name, MinArgs: len(ctorFields), MaxArgs: len(ctorFields),
+			Fn: func(m *Machine, a []Value) {
+				r := &Record{Type: rt, Fields: make([]Value, len(rt.Fields))}
+				for i := range r.Fields {
+					r.Fields[i] = UnspecifiedValue
+				}
+				for i, idx := range ctorIdx {
+					r.Fields[idx] = a[i]
+				}
+				m.Return(r)
+			}},
+		&Primitive{Name: predName.Name, MinArgs: 1, MaxArgs: 1,
+			Fn: func(m *Machine, a []Value) {
+				r, ok := a[0].(*Record)
+				m.Return(BooleanOf(ok && r.Type == rt))
+			}},
+	}
+	values = append(values, fields...)
+	return names, values, nil
 }
 
 // ---------------------------------------------------------------------------

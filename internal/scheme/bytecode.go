@@ -544,13 +544,15 @@ const (
 // name.  They are looked up here rather than in an environment, so a program
 // can neither see them nor rebind them, and the reader needs no machine.
 var internalPrimitives = map[string]*Primitive{
-	"guard-helper":   guardHelper,
-	"guard-re-raise": guardReRaise,
-	"do-continue":    doContinue,
-	"delay":          promiseHelper,
-	"case-lambda":    caseLambdaHelper,
-	"assert":         assertFailed,
-	"go":             goHelper,
+	"guard-helper":       guardHelper,
+	"guard-re-raise":     guardReRaise,
+	"do-continue":        doContinue,
+	"delay":              promiseHelper,
+	"case-lambda":        caseLambdaHelper,
+	"assert":             assertFailed,
+	"go":                 goHelper,
+	"bind-values":        bindValues,
+	"define-record-type": recordTypeHelper,
 }
 
 func (b *byteWriter) datum(v Value, seen map[interface{}]bool) {

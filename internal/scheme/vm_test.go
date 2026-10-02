@@ -126,6 +126,30 @@ var vmPrograms = []struct {
 	                (display (let-values (((a b . r) (values 1 2 3 4))) (list a b r))) (newline)
 	                (display (guard (e (#t 'few)) (let-values (((a b) (values 1))) a))) (newline)
 	                (display (guard (e (#t 'many)) (let-values (((a) (values 1 2))) a))) (newline)`},
+	// define-values binds every value of an expression, at the top level or in
+	// a body (where a closure must see the same binding), and
+	// define-record-type builds a type whose procedures are ordinary
+	// procedures however they were created.
+	{"define-values", `(define-values (a b) (values 1 2))
+	                    (display (list a b)) (newline)
+	                    (define-values (x . rest) (values 1 2 3))
+	                    (display (list x rest)) (newline)
+	                    (define-values all (values 1 2 3))
+	                    (display all) (newline)
+	                    (display (guard (e (#t 'err)) (define-values (p q) (values 1)) 'no)) (newline)
+	                    (define (counter) (define-values (n) (values 0)) (lambda () (set! n (+ n 1)) n))
+	                    (define c1 (counter)) (define c2 (counter))
+	                    (c1) (c1)
+	                    (display (list (c1) (c2))) (newline)`},
+	{"define-record-type", `(define-record-type point (make-point x y) point?
+	                                              (x point-x set-point-x!) (y point-y))
+	                       (define p (make-point 3 4))
+	                       (display (list (point? p) (point-x p) (point-y p) (point? 5))) (newline)
+	                       (set-point-x! p 9)
+	                       (display (point-x p)) (newline)
+	                       (display (let ()
+	                                  (define-record-type box (mk-box v) box? (v unbox))
+	                                  (unbox (mk-box 7)))) (newline)`},
 	{"assert", `(display (assert (+ 1 1))) (newline)
 	            (display (guard (e (#t (error-object-message e))) (assert #f))) (newline)`},
 	{"do-continue", `(define kept '())
@@ -374,6 +398,8 @@ func TestVMReallyCompiles(t *testing.T) {
 		`(let-values (((a b) (values 1 2))) a)`,
 		`(let*-values (((a) (values 1))) a)`,
 		`(go 1)`,
+		`(define-values (a b) (values 1 2))`,
+		`(define-record-type p (make-p x) p? (x p-x))`,
 	} {
 		if _, err := compileTop(m, mustRead(t, src), m.Global); err != nil {
 			t.Errorf("%s should compile now: %v", src, err)
@@ -381,8 +407,8 @@ func TestVMReallyCompiles(t *testing.T) {
 	}
 	// What is still left to the interpreter, until it is not.
 	for _, src := range []string{
-		`(define-record-type p (make-p x) p? (x p-x))`,
-		`(define-values (a b) (values 1 2))`,
+		`(match 1 (1 'one))`,
+		`(select (else => 'x))`,
 	} {
 		if _, err := compileTop(m, mustRead(t, src), m.Global); err == nil {
 			t.Errorf("%s is still left to the interpreter", src)
@@ -394,7 +420,7 @@ func TestVMReallyCompiles(t *testing.T) {
 	// as steps of one chunk, and they still run in a single extent.
 	mixed := m2MustProgram(t, `(define (f x) (* x x))
 	                            (display (f 3))
-	                            (define-record-type p (make-p x) p? (x p-x))
+	                            (match 1 (1 'one))
 	                            (define (g y) (+ y 1))
 	                            (display (g 1))`)
 	compiledN, total := mixed.Compiled()

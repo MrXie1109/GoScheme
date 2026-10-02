@@ -68,6 +68,35 @@ const opcodeCount = int(opReturn) + 1
 var guardReRaise = &Primitive{Name: "guard-re-raise", MinArgs: 1, MaxArgs: 1,
 	Fn: func(m *Machine, a []Value) { m.Raise(a[0]) }}
 
+// bindValues applies a producer and hands every value it returns to a
+// consumer, which is what call-with-values does.  It is a value of the
+// compiler's own rather than that procedure, because a compiled binding form
+// must reach it however the program has rebound the name.
+var bindValues = &Primitive{Name: "bind-values", MinArgs: 2, MaxArgs: 2,
+	Fn: func(m *Machine, a []Value) {
+		m.ApplyWithMulti(a[0], nil, func(mm *Machine, vs []Value) {
+			mm.apply(a[1], vs)
+		})
+	}}
+
+// recordTypeHelper builds what a define-record-type defines and returns the
+// values in the order its names appear, for the compiler to store: the work
+// itself is recordType, which the interpreter also uses, so both paths make
+// the same objects.
+var recordTypeHelper = &Primitive{Name: "define-record-type", MinArgs: 1, MaxArgs: 1, Sync: true,
+	Fn: func(m *Machine, a []Value) {
+		_, values, err := recordType(mustSlice(a[0]))
+		if err != nil {
+			m.RaiseError(err)
+			return
+		}
+		if len(values) == 1 {
+			m.Return(values[0])
+			return
+		}
+		m.Return(&MultipleValues{Values: values})
+	}}
+
 // goHelper is what a compiled (go body ...) calls: it spawns a thread running
 // the compiled thunk and returns, as evalGo does with the thunk the
 // interpreter would have made.
