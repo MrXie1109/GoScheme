@@ -174,7 +174,7 @@ misread.
 
 The two paths are held together by tests, not by hope:
 
-* `internal/scheme/vm_test.go` runs a corpus of 64 programs — arithmetic,
+* `internal/scheme/vm_test.go` runs a corpus of 65 programs — arithmetic,
   closures and `set!`, internal definitions, every compiled derived form, tail
   calls, a 200 000-deep non-tail recursion, `call/cc` escapes and re-entries,
   `dynamic-wind`, macro definitions, records, `parameterize`, `match`, strings,

@@ -208,6 +208,19 @@ var vmPrograms = []struct {
 	                              (let* ((x 10) (z (+ x y)))
 	                                (letrec ((f (lambda () (list x y z))))
 	                                  (f)))))) (newline)`},
+	// A name bound where an enclosing scope already binds it: the initializer
+	// refers to the outer binding, a body's internal definition shadows the
+	// outer one for the whole body, and a definition that reads another
+	// definition before it has run is an error rather than a stale value.
+	{"shadowing-initializer", `(display (let ((x 'outer)) (let ((x x)) x))) (newline)
+	                           (display (let ((x 1)) (let ((x (+ x 1)) (y x)) (list x y)))) (newline)
+	                           (display (let ((x 'a)) (let* ((x x) (y x)) (list x y)))) (newline)
+	                           (define (keep name) (let ((name name)) name))
+	                           (display (keep 'same)) (newline)
+	                           (display (let ((x 'outer)) (let () (define x 'inner) x))) (newline)
+	                           (display (let ((x 'a)) (let* ((x 'b)) (let () (define z x) z)))) (newline)
+	                           (display (guard (e (#t 'uninitialised))
+	                                      (let ((x 1)) (let () (define y x) (define x 2) (list x y))))) (newline)`},
 	{"shadowing", `(define x 'global)
 	               (display (list x (let ((x 'outer)) (let ((x 'inner)) x)) x)) (newline)`},
 	{"set-from-closure", `(define (make) (let ((n 0)) (lambda () (set! n (+ n 1)) n)))
