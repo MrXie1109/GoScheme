@@ -20,7 +20,7 @@ DYNAMIC_PLATFORMS ?= linux/amd64 linux/arm64 windows/amd64
 LDFLAGS := -s -w -X main.version=$(VERSION)
 GOFLAGS := -trimpath
 
-.PHONY: all build test test-short fmt vet clean dist list-dist repl examples
+.PHONY: all build test test-short check-disasm fmt vet clean dist list-dist repl examples
 
 all: build
 
@@ -35,6 +35,16 @@ test:
 ## test-short: skip the reference R7RS suite
 test-short:
 	$(GO) test -short ./...
+
+## check-disasm: compile a program with the freshly built interpreter and read
+## the bytecode back with scripts/scmc-disassemble.scm, asserting that what it
+## printed is readable Scheme.  It is the one test of the disassembler, and of
+## the bytecode format as an outside reader sees it.
+check-disasm: build
+	@$(BUILD)/$(BIN) compile test/scheme/r7rs-tests.scm -o $(BUILD)/check.scmc
+	@$(BUILD)/$(BIN) scripts/scmc-disassemble.scm --check $(BUILD)/check.scmc
+	@$(BUILD)/$(BIN) compile test/scheme/goscheme-tests.scm -o $(BUILD)/check-ext.scmc
+	@$(BUILD)/$(BIN) scripts/scmc-disassemble.scm --check $(BUILD)/check-ext.scmc
 
 ## fmt: format the Go sources
 fmt:
