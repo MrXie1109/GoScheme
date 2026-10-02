@@ -546,6 +546,7 @@ const (
 var internalPrimitives = map[string]*Primitive{
 	"guard-helper":   guardHelper,
 	"guard-re-raise": guardReRaise,
+	"do-continue":    doContinue,
 }
 
 func (b *byteWriter) datum(v Value, seen map[interface{}]bool) {

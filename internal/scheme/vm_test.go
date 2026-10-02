@@ -53,6 +53,28 @@ var vmPrograms = []struct {
 	{"case-arrow", `(display (case 3 ((1 2) 'low) ((3 4) => (lambda (k) (list 'high k))) (else 'other))) (newline)`},
 	{"and-or", `(display (list (and 1 2) (and) (or #f 3) (or) (and 1 #f))) (newline)`},
 	{"when-unless", `(display (list (when #t 'yes) (when #f 'no) (unless #f 'ok))) (newline)`},
+	// do compiles now: it is an expansion into letrec and guard, and (continue)
+	// keeps its dynamic meaning because the guard recognises the same private
+	// condition, even when it is raised from a procedure the body called.
+	{"do-continue-from-procedure", `(define (skip? i) (if (odd? i) (continue) #f))
+	                                 (define kept '())
+	                                 (do ((i 0 (+ i 1))) ((= i 6) (display (reverse kept)))
+	                                   (skip? i)
+	                                   (set! kept (cons i kept)))
+	                                 (newline)`},
+	{"do-shapes", `(display (do ((i 0 (+ i 1)) (acc '() (cons i acc))) ((= i 4) (reverse acc))))
+	               (newline)
+	               (display (do ((x 0 (+ x 1))) ((= x 0) 'done)))
+	               (newline)
+	               (display (do ((v (make-vector 3 0)) (i 0 (+ i 1)))
+	                            ((= i 3) (vector->list v))
+	                          (vector-set! v i (* i i))))
+	               (newline)
+	               (display (let ((n 0))
+	                          (do ((i 0 (+ i 1))) ((= i 3) n)
+	                            (set! n (+ n 1)))
+	                          n))
+	               (newline)`},
 	{"do-continue", `(define kept '())
 	                 (do ((i 0 (+ i 1))) ((= i 6) (display (reverse kept)))
 	                   (if (odd? i) (continue))
@@ -285,10 +307,20 @@ func TestVMReallyCompiles(t *testing.T) {
 	if len(body.Instrs) < 8 {
 		t.Fatalf("the compiled body is suspiciously small: %d instructions", len(body.Instrs))
 	}
-	// do is not in the compiler's table (the interpreter's continue guard is
-	// what gives it its semantics), so a body that uses it is interpreted.
-	if _, err := compileTop(m, mustRead(t, `(do ((i 0 (+ i 1))) ((= i 1) i))`), m.Global); err == nil {
-		t.Errorf("do should be left to the interpreter")
+	// do compiles: it is an expansion into a letrec whose body is guarded,
+	// and both of those compile.  What is left to the interpreter is the
+	// handful of forms below.
+	for _, src := range []string{
+		`(do ((i 0 (+ i 1))) ((= i 1) i))`,
+		`(guard (e (#t e)) (error "x"))`,
+		"`(a ,(+ 1 2))",
+	} {
+		if _, err := compileTop(m, mustRead(t, src), m.Global); err != nil {
+			t.Errorf("%s should compile now: %v", src, err)
+		}
+	}
+	if _, err := compileTop(m, mustRead(t, `(case-lambda (() 1) ((x) x))`), m.Global); err == nil {
+		t.Errorf("case-lambda is still left to the interpreter")
 	}
 	// A file is compiled a group at a time, and a group is all or nothing —
 	// so one form the compiler declines used to send every form around it
@@ -296,7 +328,7 @@ func TestVMReallyCompiles(t *testing.T) {
 	// as steps of one chunk, and they still run in a single extent.
 	mixed := m2MustProgram(t, `(define (f x) (* x x))
 	                            (display (f 3))
-	                            (do ((i 0 (+ i 1))) ((= i 0)))
+	                            (let-values (((i) (values 0))) i)
 	                            (define (g y) (+ y 1))
 	                            (display (g 1))`)
 	compiledN, total := mixed.Compiled()

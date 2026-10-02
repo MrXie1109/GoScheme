@@ -1112,20 +1112,45 @@ func evalUnless(m *Machine, form Value, env *Env) {
 }
 
 func evalDo(m *Machine, form Value, env *Env) {
-	args := formArgs(form)
-	if len(args) < 2 {
-		m.Raise(NewError("do: malformed", form))
+	expanded, err := doExpansion(formArgs(form), func(cond *Symbol) Value {
+		// The interpreter compares the condition with the token itself, using
+		// the eq? primitive rather than the name, so that a body which rebinds
+		// eq? cannot break the loop.
+		return List(builtinProc(m, "eq?"), cond, continueToken)
+	})
+	if err != nil {
+		m.Raise(err)
 		return
+	}
+	m.Eval(expanded, env)
+}
+
+// doExpansion builds the form a do loop means:
+//
+//	(letrec ((loop (lambda (var ...)
+//	                 (if test
+//	                     (begin result ...)
+//	                     (begin (guard (e (test-of e)) commands ...)
+//	                            (loop step ...))))))
+//	  (loop init ...))
+//
+// The guard is what gives (continue) its meaning: it recognises the private
+// condition and falls through to the step expressions, and re-raises anything
+// else.  testOf builds that recognition, because the two callers can say it
+// differently: the interpreter has the token in hand, while a compiled loop
+// needs a helper that knows it, since the token cannot travel in a constant
+// pool.
+func doExpansion(args []Value, testOf func(cond *Symbol) Value) (Value, error) {
+	if len(args) < 2 {
+		return nil, NewError("do: malformed")
 	}
 	specs, ok := ListToSlice(args[0])
 	if !ok {
-		m.Raise(NewError("do: malformed variable list", args[0]))
-		return
+		return nil, NewError("do: malformed variable list", args[0])
 	}
 	testClause, ok := args[1].(*Pair)
 	if !ok {
-		m.Raise(NewError("do: malformed test clause", args[1]))
-		return
+		return nil, NewError("do: malformed test clause", args[1])
 	}
 	commands := args[2:]
 	loopName := FreshSymbol("do-loop")
@@ -1133,13 +1158,11 @@ func evalDo(m *Machine, form Value, env *Env) {
 	for _, s := range specs {
 		p, ok := s.(*Pair)
 		if !ok {
-			m.Raise(NewError("do: malformed variable spec", s))
-			return
+			return nil, NewError("do: malformed variable spec", s)
 		}
 		items, _ := ListToSlice(p)
 		if len(items) < 1 {
-			m.Raise(NewError("do: malformed variable spec", s))
-			return
+			return nil, NewError("do: malformed variable spec", s)
 		}
 		vars = append(vars, items[0])
 		if len(items) > 1 {
@@ -1159,16 +1182,11 @@ func evalDo(m *Machine, form Value, env *Env) {
 	}
 	// (if test (begin result...) (begin commands... (loop step...)))
 	recur := Cons(loopName, listFromSlice(steps))
-	// (continue) raises a private token; this guard recognises it by identity
-	// and falls through to the step expressions.  It compares with the eq?
-	// primitive itself rather than the name, so a body that rebinds eq? cannot
-	// break the loop, and any other condition is re-raised by guard because no
-	// clause matches it.
 	var tail []Value
 	if len(commands) > 0 {
-		eq := builtinProc(m, "eq?")
-		clause := List(List(eq, Intern("e"), continueToken)) // ((eq? e token))
-		spec := List(Intern("e"), clause)                    // (e ((eq? e token)))
+		cond := FreshSymbol("e")
+		clause := List(testOf(cond)) // ((<the recognition> e))
+		spec := List(cond, clause)   // (e ((<the recognition> e)))
 		tail = append(tail, Cons(Intern("guard"),
 			Cons(spec, listFromSlice(commands))))
 	}
@@ -1179,7 +1197,7 @@ func evalDo(m *Machine, form Value, env *Env) {
 	lam := Cons(Intern("lambda"), Cons(listFromSlice(vars), List(ifExpr)))
 	binding := List(loopName, lam)
 	call := Cons(loopName, listFromSlice(inits))
-	m.Eval(List(Intern("letrec"), List(binding), call), env)
+	return List(Intern("letrec"), List(binding), call), nil
 }
 
 // ---------------------------------------------------------------------------

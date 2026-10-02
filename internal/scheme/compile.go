@@ -272,6 +272,22 @@ func (c *comp) special(name string, x *Pair, tail bool) bool {
 		c.emit(opConst, c.konst(args[0]), 0)
 		return true
 
+	case "do":
+		// A do loop is an expansion in the interpreter too, into a letrec
+		// whose body is guarded — the guard is what gives (continue) its
+		// meaning — and every form in that expansion compiles.  The only thing
+		// that has to differ is how (continue) is recognised: the interpreter
+		// has the token in hand, a compiled loop asks a helper that knows it.
+		expanded, err := doExpansion(args, func(cond *Symbol) Value {
+			return List(doContinue, cond)
+		})
+		if err != nil {
+			c.fail("%v", err)
+			return true
+		}
+		c.expr(expanded, tail)
+		return true
+
 	case "guard":
 		if len(args) < 1 {
 			c.fail("guard: missing clause list")

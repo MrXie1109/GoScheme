@@ -10,6 +10,15 @@ package scheme
 // reports something readable rather than an opaque value.
 var continueToken = NewError("continue: not inside a do loop")
 
+// doContinue is how a compiled do loop recognises (continue): it compares the
+// condition with the token itself, so a body that rebinds eq? — or anything
+// else — cannot break the loop, and the token never has to travel in a
+// constant pool, which it could not do anyway.
+var doContinue = &Primitive{Name: "do-continue", MinArgs: 1, MaxArgs: 1, Sync: true,
+	Fn: func(m *Machine, a []Value) {
+		m.Return(BooleanOf(a[0] == Value(continueToken)))
+	}}
+
 // installContinue registers (continue), which abandons the rest of the body of
 // the innermost do loop and goes on with its step expressions — Go's continue,
 // except that it is dynamic: a procedure called by the body may use it too.
