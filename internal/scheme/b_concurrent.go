@@ -193,87 +193,92 @@ func evalSelect(m *Machine, form Value, env *Env) {
 		// Go's `select {}` blocks forever.
 		select {}
 	}
-	if len(items)%3 != 0 {
-		m.Raise(NewError("select: clauses are written as (operation) => handler"))
+	specs, err := selectSpecs(items)
+	if err != nil {
+		m.RaiseError(err)
 		return
 	}
 	var clauses []*selectClause
-	for i := 0; i < len(items); i += 3 {
-		arrow, ok := items[i+1].(*Symbol)
-		if !ok || arrow.Name != "=>" {
-			m.Raise(NewError("select: expected => between an operation and its handler", items[i+1]))
-			return
-		}
-		cl := &selectClause{handler: items[i+2]}
-		switch op := items[i].(type) {
-		case *Symbol:
-			// A bare `else` is accepted as well as `(else)`.
-			if op.Name != "else" {
-				m.Raise(NewError("select: unsupported operation", op))
-				return
-			}
-			cl.kind = selElse
-		case *Pair:
-			head, _ := op.Car.(*Symbol)
-			if head == nil {
-				m.Raise(NewError("select: malformed operation", op))
-				return
-			}
-			opArgs := mustSlice(op.Cdr)
-			switch head.Name {
-			case "chan-recv!":
-				if len(opArgs) != 1 {
-					m.Raise(NewError("select: (chan-recv! channel) expected", op))
-					return
-				}
-				cl.kind, cl.chExpr = selRecv, opArgs[0]
-			case "chan-send!":
-				if len(opArgs) != 2 {
-					m.Raise(NewError("select: (chan-send! channel value) expected", op))
-					return
-				}
-				cl.kind, cl.chExpr, cl.valExpr = selSend, opArgs[0], opArgs[1]
-			case "after":
-				if len(opArgs) != 1 {
-					m.Raise(NewError("select: (after milliseconds) expected", op))
-					return
-				}
-				cl.kind, cl.msExpr = selAfter, opArgs[0]
-			case "else":
-				if len(opArgs) != 0 {
-					m.Raise(NewError("select: (else) takes no arguments", op))
-					return
-				}
-				cl.kind = selElse
-			default:
-				m.Raise(NewError("select: unsupported operation", head))
-				return
-			}
-		default:
-			m.Raise(NewError("select: malformed operation", items[i]))
-			return
-		}
-		clauses = append(clauses, cl)
-	}
 	var exprs []Value
-	for _, cl := range clauses {
-		switch cl.kind {
-		case selRecv:
-			exprs = append(exprs, cl.chExpr, cl.handler)
-		case selSend:
-			exprs = append(exprs, cl.chExpr, cl.valExpr, cl.handler)
-		case selAfter:
-			exprs = append(exprs, cl.msExpr, cl.handler)
-		default:
-			exprs = append(exprs, cl.handler)
-		}
+	for _, sp := range specs {
+		clauses = append(clauses, &selectClause{kind: sp.kind})
+		exprs = append(exprs, sp.exprs...)
 	}
 	m.EvalList(exprs, env, func(m *Machine, vals []Value) {
 		m.runSelect(clauses, vals)
 	})
 }
 
-// runSelect resolves the evaluated clause operands and races them.
+// selectSpec is one clause of a select form before its expressions have been
+// evaluated: which operation it is, and the expressions it needs, in the order
+// they are evaluated.  The interpreter evaluates them itself and the compiler
+// turns each into a thunk; sharing this parse is what keeps the two orders the
+// same.
+type selectSpec struct {
+	kind  int
+	exprs []Value
+}
+
+// selectSpecs parses the clauses of a select, which are written (operation) =>
+// handler.
+func selectSpecs(items []Value) ([]selectSpec, error) {
+	if len(items)%3 != 0 {
+		return nil, NewError("select: clauses are written as (operation) => handler")
+	}
+	var specs []selectSpec
+	for i := 0; i < len(items); i += 3 {
+		arrow, ok := items[i+1].(*Symbol)
+		if !ok || arrow.Name != "=>" {
+			return nil, NewError("select: expected => between an operation and its handler", items[i+1])
+		}
+		handler := items[i+2]
+		sp := selectSpec{}
+		switch op := items[i].(type) {
+		case *Symbol:
+			// A bare `else` is accepted as well as `(else)`.
+			if op.Name != "else" {
+				return nil, NewError("select: unsupported operation", op)
+			}
+			sp.kind = selElse
+		case *Pair:
+			head, _ := op.Car.(*Symbol)
+			if head == nil {
+				return nil, NewError("select: malformed operation", op)
+			}
+			opArgs := mustSlice(op.Cdr)
+			switch head.Name {
+			case "chan-recv!":
+				if len(opArgs) != 1 {
+					return nil, NewError("select: (chan-recv! channel) expected", op)
+				}
+				sp.kind, sp.exprs = selRecv, []Value{opArgs[0]}
+			case "chan-send!":
+				if len(opArgs) != 2 {
+					return nil, NewError("select: (chan-send! channel value) expected", op)
+				}
+				sp.kind, sp.exprs = selSend, []Value{opArgs[0], opArgs[1]}
+			case "after":
+				if len(opArgs) != 1 {
+					return nil, NewError("select: (after milliseconds) expected", op)
+				}
+				sp.kind, sp.exprs = selAfter, []Value{opArgs[0]}
+			case "else":
+				if len(opArgs) != 0 {
+					return nil, NewError("select: (else) takes no arguments", op)
+				}
+				sp.kind = selElse
+			default:
+				return nil, NewError("select: unsupported operation", head)
+			}
+		default:
+			return nil, NewError("select: malformed operation", items[i])
+		}
+		sp.exprs = append(sp.exprs, handler)
+		specs = append(specs, sp)
+	}
+	return specs, nil
+}
+
 func (m *Machine) runSelect(clauses []*selectClause, vals []Value) {
 	i := 0
 	next := func() Value {

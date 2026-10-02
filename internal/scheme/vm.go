@@ -68,6 +68,71 @@ const opcodeCount = int(opReturn) + 1
 var guardReRaise = &Primitive{Name: "guard-re-raise", MinArgs: 1, MaxArgs: 1,
 	Fn: func(m *Machine, a []Value) { m.Raise(a[0]) }}
 
+// selectHelper does what evalSelect does once the compiler has turned each
+// clause's expressions into thunks: it evaluates them in the interpreter's
+// order and runs the selection, so the two paths differ only in who evaluates
+// the expressions.
+var selectHelper = &Primitive{Name: "select", MinArgs: 0, MaxArgs: -1,
+	Fn: func(m *Machine, a []Value) {
+		if len(a) == 0 {
+			// (select) with no clauses blocks forever, as Go's select {} does.
+			select {}
+		}
+		var clauses []*selectClause
+		var exprs []Value
+		for i := 0; i < len(a); {
+			n, ok := a[i].(*Integer)
+			if !ok {
+				m.Raise(NewError("select: malformed clause"))
+				return
+			}
+			kind64, _ := n.Int64()
+			kind := int(kind64)
+			i++
+			clauses = append(clauses, &selectClause{kind: kind})
+			for k := 0; k < selectExprCount(kind); k++ {
+				if i >= len(a) {
+					m.Raise(NewError("select: malformed clause"))
+					return
+				}
+				exprs = append(exprs, a[i])
+				i++
+			}
+		}
+		// The thunks are applied in order, as the interpreter evaluates the
+		// expressions in order.
+		vals := make([]Value, len(exprs))
+		at := 0
+		var step func()
+		step = func() {
+			if at == len(exprs) {
+				m.runSelect(clauses, vals)
+				return
+			}
+			j := at
+			at++
+			m.ApplyWith(exprs[j], nil, func(mm *Machine, v Value) {
+				vals[j] = v
+				step()
+			})
+		}
+		step()
+	}}
+
+// selectExprCount is how many expressions a clause of each kind has: the
+// channel (or the timeout), any value to send, and the handler.  An else
+// clause is only its handler.
+func selectExprCount(kind int) int {
+	switch kind {
+	case selSend:
+		return 3
+	case selElse:
+		return 1
+	default:
+		return 2
+	}
+}
+
 // bindValues applies a producer and hands every value it returns to a
 // consumer, which is what call-with-values does.  It is a value of the
 // compiler's own rather than that procedure, because a compiled binding form

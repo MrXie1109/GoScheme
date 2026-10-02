@@ -150,6 +150,17 @@ var vmPrograms = []struct {
 	                       (display (let ()
 	                                  (define-record-type box (mk-box v) box? (v unbox))
 	                                  (unbox (mk-box 7)))) (newline)`},
+	// select runs in another thread's timing, so the clauses here are the ones
+	// whose outcome does not depend on it: a channel that is already ready,
+	// and an else.
+	{"select", `(define ch (make-channel 1))
+	             (chan-send! ch 'ready)
+	             (display (select (chan-recv! ch) => (lambda (v) (list 'got v)))) (newline)
+	             (define closed9 (make-channel 1))
+	             (chan-close! closed9)
+	             (display (select (chan-recv! closed9) => (lambda (v) (list 'closed v)))) (newline)
+	             (display (select (chan-recv! (make-channel)) => (lambda (v) 'never)
+	                              (else) => (lambda () 'else))) (newline)`},
 	{"assert", `(display (assert (+ 1 1))) (newline)
 	            (display (guard (e (#t (error-object-message e))) (assert #f))) (newline)`},
 	{"do-continue", `(define kept '())

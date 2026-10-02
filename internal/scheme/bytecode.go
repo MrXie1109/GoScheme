@@ -553,6 +553,7 @@ var internalPrimitives = map[string]*Primitive{
 	"go":                 goHelper,
 	"bind-values":        bindValues,
 	"define-record-type": recordTypeHelper,
+	"select":             selectHelper,
 }
 
 func (b *byteWriter) datum(v Value, seen map[interface{}]bool) {

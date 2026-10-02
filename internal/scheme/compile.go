@@ -272,6 +272,35 @@ func (c *comp) special(name string, x *Pair, tail bool) bool {
 		c.emit(opConst, c.konst(args[0]), 0)
 		return true
 
+	case "select":
+		specs, err := selectSpecs(args)
+		if err != nil {
+			c.fail("%v", err)
+			return true
+		}
+		c.emit(opConst, c.konst(selectHelper), 0)
+		argc := int32(0)
+		for _, sp := range specs {
+			c.emit(opConst, c.konst(Int(int64(sp.kind))), 0)
+			argc++
+			for _, e := range sp.exprs {
+				thunk := c.bodyWithFormals(Empty{}, []Value{e}, "select", func(sub *comp) {
+					sub.body([]Value{e}, true)
+				})
+				if thunk == nil {
+					return true
+				}
+				c.emit(opClosure, c.konst(thunk), 0)
+				argc++
+			}
+		}
+		if tail {
+			c.emit(opTailCall, argc, 0)
+		} else {
+			c.emit(opCall, argc, 0)
+		}
+		return true
+
 	case "define-values":
 		if len(args) != 2 {
 			c.fail("define-values: expected (define-values formals expr)")
