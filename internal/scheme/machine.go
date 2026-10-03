@@ -268,6 +268,17 @@ func (f *fAppArgs) resume(m *Machine, v Value) {
 
 // Run evaluates expr in env until the continuation stack is exhausted.
 func (m *Machine) Run(expr Value, env *Env) (Value, error) {
+	// A form that teaches the compiler something — a define-syntax, an import —
+	// is evaluated by the tree-walker, because its whole point is its effect on
+	// the environment.  A compiled define-syntax expands its uses where it is
+	// compiled and defines nothing, which is right inside a body and wrong at
+	// the top level: the REPL's `(define-syntax swap! ...)` used to leave no
+	// binding behind, so the next line said "unbound variable swap!".
+	// CompileProgram makes the same distinction; this is the same rule for the
+	// one form at a time path.
+	if teachingForm(expr, m, env) {
+		return m.runInterpreted(expr, env)
+	}
 	return m.guardedRun(func() (Value, error) {
 		// Run may be re-entered while the machine is already evaluating (a
 		// library is loaded, say); the frames below base belong to the outer

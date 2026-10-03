@@ -299,6 +299,15 @@ var vmPrograms = []struct {
 	                                (lambda () (call/cc (lambda (k) (note 'body))))
 	                                (lambda () (note 'out)))
 	                  (display (reverse log)) (newline)`},
+	// A macro defined one form at a time — the REPL's case — must leave a
+	// binding behind for the forms after it.  compiled, define-syntax expands
+	// its uses and defines nothing, which is right inside a body and wrong for
+	// a sequence of top-level forms evaluated separately.
+	{"macro-then-use-separately", `(define-syntax swap!
+	                                 (syntax-rules () ((_ a b) (let ((tmp a)) (set! a b) (set! b tmp)))))
+	                               (define p 1) (define q 2)
+	                               (swap! p q)
+	                               (display (list p q)) (newline)`},
 	{"macro", `(define-syntax swap!
 	             (syntax-rules () ((_ a b) (let ((tmp a)) (set! a b) (set! b tmp)))))
 	           (define p 1) (define q 2)

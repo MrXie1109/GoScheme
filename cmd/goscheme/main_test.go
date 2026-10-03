@@ -682,6 +682,48 @@ func TestPasteGoesToTheCursor(t *testing.T) {
 	}
 }
 
+// A pasted multi-line expression has to be redrawn where it lands.  Writing the
+// bytes out instead left the banner and the prompt on screen above them, and the
+// next redraw put the pasted text on top of that — which is what "pasting
+// overwrites the lines above" was.
+func TestPasteIsRedrawnNotEchoed(t *testing.T) {
+	var out bytes.Buffer
+	tracker := newLineTracker(&out)
+	e := newLineEditor(strings.NewReader(
+		pasteStart+"(+ 1\n 2)"+pasteEnd+"\r"), tracker)
+	line, err := e.ReadLine("> ")
+	if err != nil {
+		t.Fatalf("ReadLine: %v", err)
+	}
+	if line != "(+ 1\n 2)" {
+		t.Fatalf("line = %q", line)
+	}
+	// The whole line is rewritten from the prompt on, on as many rows as it
+	// needs, and the cursor is put back on the row e.pos is on.  The bug was
+	// that the pasted text was in the buffer and never drawn at all, so what
+	// matters is that both rows reach the screen and that the redraw erases
+	// what followed them.
+	got := out.String()
+	if !strings.Contains(got, "> (+ 1\n 2)") {
+		t.Errorf("the two-row line was not drawn as two rows: %q", got)
+	}
+	if !strings.Contains(got, "\x1b[J") {
+		t.Errorf("the redraw did not erase the rest of the screen: %q", got)
+	}
+	// The redraw starts by moving the cursor from the row it is on — the second
+	// row of the line, where the paste left e.pos — back up to the prompt row,
+	// which it can only do if it is told which row that is.  That is the
+	// assertion that fails when the editor assumes the cursor is on the first
+	// row: it then rewrites over the row above the line, which is the prompt and
+	// whatever was above it.
+	if !strings.HasPrefix(strings.SplitN(got, "\x1b[J", 2)[0], "\r> ") {
+		t.Errorf("the first redraw did not start at the prompt: %q", got)
+	}
+	if !strings.Contains(got, "\x1b[1A\r> (+ 1\n 2)") {
+		t.Errorf("the second redraw did not go up to the prompt row first: %q", got)
+	}
+}
+
 func TestStringEscapes(t *testing.T) {
 	cases := map[string]string{
 		`"\033[31m"`: "\x1b[31m", // C-style octal
