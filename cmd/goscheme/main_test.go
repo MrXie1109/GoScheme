@@ -747,6 +747,44 @@ func TestBackspaceAfterPasteStaysOnOneRow(t *testing.T) {
 	}
 }
 
+// The cursor must land where the text ends, on whichever row that is.  The
+// prompt is only in front of the *first* row of the line, so its width belongs
+// in the column only when the cursor is on that row; adding it on later rows
+// puts the cursor four columns past the end of the text, which is where the
+// "off by four" report came from — ">>> " is four wide.
+func TestCursorColumnOnEveryRow(t *testing.T) {
+	// One row: the prompt counts.
+	var out bytes.Buffer
+	e := newLineEditor(strings.NewReader("(abc\r"), newLineTracker(&out))
+	if _, err := e.ReadLine(">>> "); err != nil {
+		t.Fatalf("ReadLine: %v", err)
+	}
+	if e.pos != 4 {
+		t.Errorf("pos = %d, want 4", e.pos)
+	}
+
+	// Several rows: the prompt counts on the first row only.
+	out.Reset()
+	e = newLineEditor(strings.NewReader(
+		pasteStart+"(a\nbc"+pasteEnd+"\r"), newLineTracker(&out))
+	line, err := e.ReadLine(">>> ")
+	if err != nil {
+		t.Fatalf("ReadLine: %v", err)
+	}
+	if line != "(a\nbc" {
+		t.Fatalf("line = %q", line)
+	}
+	// The last redraw writes the cursor's column; on the second row it is the
+	// width of "bc", with no prompt in front of it.
+	got := out.String()
+	if !strings.Contains(got, "\x1b[2C") {
+		t.Errorf("the cursor column on the second row is wrong: %q", got)
+	}
+	if strings.Contains(got, "\x1b[6C") {
+		t.Errorf("the prompt width was added on a row that has no prompt: %q", got)
+	}
+}
+
 func TestStringEscapes(t *testing.T) {
 	cases := map[string]string{
 		`"\033[31m"`: "\x1b[31m", // C-style octal

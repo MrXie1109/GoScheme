@@ -386,7 +386,18 @@ func (e *lineEditor) render() {
 		fmt.Fprintf(&sb, "\x1b[%dA", up)
 	}
 	sb.WriteByte('\r')
-	if col := displayWidth(afterLastNewline(e.line[:e.pos])); col > 0 {
+	// The column is counted from the start of the row the cursor ends up on.
+	// On the prompt's own row that includes the prompt, because the prompt is
+	// written before the line; on any later row the prompt is behind us — a row
+	// above — and adding its width would push the cursor past the end of the
+	// text by exactly four columns, which is how wide ">>> " is.  What decides
+	// which row that is, is whether the cursor is on the first row of the line,
+	// not whether it is at the end of it.
+	col := displayWidth(afterLastNewline(e.line[:e.pos]))
+	if countNewlines(e.line[:e.pos]) == 0 {
+		col += e.promptCols
+	}
+	if col > 0 {
 		fmt.Fprintf(&sb, "\x1b[%dC", col)
 	}
 	// Where that left the cursor, counted from the prompt row — which is how
