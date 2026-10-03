@@ -443,7 +443,7 @@ $ goscheme -e '(let loop ((i 0)) (if (= i 2000000) i (loop (+ i 1))))'
 | `(chan-send! ch v)` | 发送；直到有接收者（或缓冲区有空位）才返回 |
 | `(chan-recv! ch)` | 接收；返回两个值：值本身与 *ok?* 标志（关闭后为 `#f`） |
 | `(chan-close! ch)` | 关闭；重复关闭是空操作 |
-| `(channel? obj)` / `(channel-open? ch)` | 谓词 |
+| `(channel? obj)` / `(chan-open? ch)` | 谓词 |
 | `(go body ...)` | 在新的解释器线程（goroutine）上运行 *body* |
 | `(go-wait)` | 等待目前为止启动的所有线程结束 |
 | `(select ...)` | 同时竞速多个操作，等价于 Go 的 `select` |

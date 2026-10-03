@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -16,6 +17,10 @@ import (
 // not a failure: it means "forget this line", which the REPL has to tell apart
 // from an empty line so that an unfinished expression can be abandoned.
 var errInterrupted = errors.New("interrupted")
+
+// tabRepeat is how long a Tab that rang the bell stays recent: another one
+// within it means the user wants the candidates listed.
+const tabRepeat = time.Second
 
 // The escape sequences that bracket a paste when the terminal is asked for
 // bracketed paste mode with ESC [ ? 2004 h.
@@ -112,6 +117,9 @@ type lineEditor struct {
 	// pasting is true while a bracketed paste is being consumed; the pasted
 	// text is echoed as it arrives instead of being redrawn.
 	pasting bool
+	// lastTab is when Tab was pressed to ask for a completion list.  A second
+	// press within tabRepeat lists the candidates; the first rings the bell.
+	lastTab time.Time
 	// lastVPos is the row the cursor was left on by the last render, counted
 	// from the prompt row, and lastRows is how many rows the line occupied when
 	// it was drawn.  A redraw goes back up by lastVPos to reach the prompt row,
@@ -264,15 +272,25 @@ func (e *lineEditor) ReadLine(prompt string) (string, error) {
 	}
 }
 
-// completeWord asks the completer about the word before the cursor.  One
-// candidate replaces the word; several insert what they have in common and, if
-// that adds nothing, are listed above the redrawn line, as a shell does.
+// completeWord completes the word before the cursor, and what it does depends
+// on how many candidates there are:
+//
+//   - one: replace the word with it, and say nothing;
+//   - several, and Tab was pressed once: ring the bell, so a single Tab does not
+//     fill the screen with a list;
+//   - several, and Tab was pressed again within a second: list them;
+//   - none: ring the bell.
+//
+// A Tab that extends the word to what every candidate has in common counts as
+// completing rather than as asking for the list, however many candidates there
+// are: it made progress, so the next Tab is still the one that lists them.
 func (e *lineEditor) completeWord() {
 	if e.complete == nil {
 		return
 	}
 	start, candidates := e.complete(e.line, e.pos)
 	if len(candidates) == 0 {
+		bell(e.out)
 		return
 	}
 	word := string(e.line[start:e.pos])
@@ -281,12 +299,26 @@ func (e *lineEditor) completeWord() {
 		e.render()
 		return
 	}
+	now := time.Now()
+	recent := now.Sub(e.lastTab) <= tabRepeat
 	common := commonPrefix(candidates)
 	if len(common) > len(word) {
+		// The candidates agree on more than the user has typed, so extend the
+		// word to that.  It is progress, so no bell; but a Tab pressed straight
+		// after this one is the second Tab, and lists what is left.
 		e.replaceWord(start, common)
+		e.lastTab = now
 		e.render()
 		return
 	}
+	if !recent {
+		// The first Tab for this word: say there is something to choose from
+		// without filling the screen with it.
+		e.lastTab = now
+		bell(e.out)
+		return
+	}
+	e.lastTab = time.Time{}
 	e.out.newLine()
 	col := 0
 	for _, c := range candidates {
@@ -300,6 +332,10 @@ func (e *lineEditor) completeWord() {
 	fmt.Fprint(e.out, "\n")
 	e.render()
 }
+
+// bell rings the terminal bell: a Tab with nothing to offer, or with a list it
+// is not ready to show yet, says so the way every other line editor does.
+func bell(out io.Writer) { fmt.Fprint(out, "\a") }
 
 // replaceWord replaces line[start:pos] with text and leaves the cursor after it.
 func (e *lineEditor) replaceWord(start int, text string) {

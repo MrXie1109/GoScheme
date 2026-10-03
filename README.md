@@ -503,7 +503,7 @@ The interpreter exposes Go's concurrency model to Scheme, in
 | `(chan-send! ch v)` | send, blocking until a receiver (or buffer space) is available |
 | `(chan-recv! ch)` | receive; returns two values: the value and an *ok?* flag (`#f` once closed) |
 | `(chan-close! ch)` | close; closing twice is a no-op |
-| `(channel? obj)` / `(channel-open? ch)` | predicates |
+| `(channel? obj)` / `(chan-open? ch)` | predicates |
 | `(go body ...)` | run *body* on a new interpreter thread (a goroutine) |
 | `(go-wait)` | wait for every thread started so far |
 | `(select ...)` | race several operations, like Go's `select` |

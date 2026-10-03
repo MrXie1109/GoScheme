@@ -10,7 +10,7 @@
 
 (test #t (channel? (make-channel)))
 (test #f (channel? 42))
-(test #t (channel-open? (make-channel)))
+(test #t (chan-open? (make-channel)))
 
 ;; A buffered channel accepts up to its capacity without blocking.
 (define buffered (make-channel 3))
@@ -53,9 +53,9 @@
 (test #t (call-with-values (lambda () (chan-recv! closed)) (lambda (v ok) (eq? v (if #f #f)))))
 (test 'error (guard (e (#t 'error)) (chan-send! closed 1)))
 (test #f (chan-open? closed))
-;; The old spelling is the same binding.
-(test #t (eq? chan-open? channel-open?))
-(test #f (channel-open? closed))
+;; channel-open? was an alias of chan-open? and is gone; a program that used it
+;; gets an ordinary unbound-variable error.
+(test 'gone (guard (e (#t 'gone)) (eval '(channel-open? 1) (interaction-environment))))
 ;; Closing twice is a no-op.
 (test 'ok (begin (chan-close! closed) 'ok))
 ;; A closed channel is always ready for select.

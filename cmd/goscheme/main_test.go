@@ -933,6 +933,72 @@ func contains(list []string, want string) bool {
 
 // Tab completes Scheme names, library names after (import, and the comma
 // commands.
+// Tab: complete a unique candidate silently, ring the bell when there is
+// nothing to complete, and list several candidates only on the second Tab
+// within a second.
+func TestTabBehaviour(t *testing.T) {
+	newEditor := func(input string) (*lineEditor, *bytes.Buffer) {
+		var out bytes.Buffer
+		e := newLineEditor(strings.NewReader(input), newLineTracker(&out))
+		e.complete = func(line []rune, pos int) (int, []string) {
+			switch string(line[:pos]) {
+			case "(uniq":
+				return 0, []string{"(unique-name"}
+			case "(many", "(many-":
+				// The second Tab asks again, with the word already extended to
+				// what the candidates had in common.
+				return 0, []string{"(many-a", "(many-b"}
+			default:
+				return 0, nil
+			}
+		}
+		return e, &out
+	}
+
+	t.Run("one candidate completes", func(t *testing.T) {
+		e, out := newEditor("(uniq\t\x03")
+		if _, err := e.ReadLine("> "); err != nil && err != errInterrupted {
+			t.Fatal(err)
+		}
+		if got := string(e.line); got != "(unique-name" {
+			t.Errorf("line = %q, want %q", got, "(unique-name")
+		}
+		if strings.Contains(out.String(), "\a") {
+			t.Errorf("a unique completion rang the bell: %q", out.String())
+		}
+	})
+
+	t.Run("nothing to complete rings", func(t *testing.T) {
+		e, out := newEditor("(none\t\x03")
+		if _, err := e.ReadLine("> "); err != nil && err != errInterrupted {
+			t.Fatal(err)
+		}
+		if n := strings.Count(out.String(), "\a"); n != 1 {
+			t.Errorf("the bell rang %d times, want 1: %q", n, out.String())
+		}
+	})
+
+	t.Run("several list only on the second tab", func(t *testing.T) {
+		e, out := newEditor("(many\t\t\x03")
+		if _, err := e.ReadLine("> "); err != nil && err != errInterrupted {
+			t.Fatal(err)
+		}
+		got := out.String()
+		// The first Tab found that every candidate begins "(many-", so it
+		// extended the word instead of ringing: that is progress, and there is
+		// nothing to complain about yet.
+		if strings.Contains(got, "\a") {
+			t.Errorf("the first Tab rang although it completed more of the word: %q", got)
+		}
+		if !strings.Contains(got, "(many-a") || !strings.Contains(got, "(many-b") {
+			t.Errorf("the second Tab did not list the candidates: %q", got)
+		}
+		if !strings.Contains(got, "(many-") {
+			t.Errorf("the word was not extended to the common prefix: %q", got)
+		}
+	})
+}
+
 func TestCompletionCandidates(t *testing.T) {
 	m := scheme.NewMachine()
 	if _, err := m.EvalString("(define my-thing 1)"); err != nil {

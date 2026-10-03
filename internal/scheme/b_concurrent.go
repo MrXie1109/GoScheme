@@ -433,16 +433,16 @@ func installConcurrency(m *Machine) {
 		return BooleanOf(ok), nil
 	}, libChannel)
 
-	// The operations on a channel are chan-something, so this is chan-open?;
-	// the other name is what 2.5.0 shipped and stays as an alias until 3.0.0.
-	chanOpen := m.defSimple("chan-open?", 1, 1, func(a []Value) (Value, error) {
+	// The operations on a channel are chan-something, so this is chan-open?.
+	// channel-open? was what 2.5.0 shipped; the alias was removed in 3.1.2, as
+	// the notes for 2.6.0 said it would be.
+	m.defSimple("chan-open?", 1, 1, func(a []Value) (Value, error) {
 		c, ok := a[0].(*Channel)
 		if !ok {
 			panic(errf("chan-open?", "expected a channel but got %s", WriteToString(a[0])))
 		}
 		return BooleanOf(!c.isClosed()), nil
 	}, libChannel)
-	m.defValue("channel-open?", chanOpen, libChannel)
 
 	m.def("chan-send!", 2, 2, func(m *Machine, a []Value) {
 		c, ok := a[0].(*Channel)
