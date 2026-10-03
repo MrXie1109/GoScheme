@@ -682,11 +682,15 @@ func TestPasteGoesToTheCursor(t *testing.T) {
 	}
 }
 
-// A pasted multi-line expression has to be redrawn where it lands.  Writing the
-// bytes out instead left the banner and the prompt on screen above them, and the
-// next redraw put the pasted text on top of that — which is what "pasting
-// overwrites the lines above" was.
-func TestPasteIsRedrawnNotEchoed(t *testing.T) {
+// A pasted multi-line expression has to be redrawn where it lands, and the
+// redraw has to start from the row the cursor is really on.
+//
+// The bug this pins down: after pasting two rows, the cursor is on the second
+// row but the editor thought it was on the first (it counted the newlines
+// *after* e.pos, which is zero at the end of a line), so the redraw moved up
+// nothing and rewrote the row it was on.  Every following keystroke stacked
+// another copy of the prompt down the screen.
+func TestPasteIsRedrawnWhereTheCursorIs(t *testing.T) {
 	var out bytes.Buffer
 	tracker := newLineTracker(&out)
 	e := newLineEditor(strings.NewReader(
@@ -698,29 +702,48 @@ func TestPasteIsRedrawnNotEchoed(t *testing.T) {
 	if line != "(+ 1\n 2)" {
 		t.Fatalf("line = %q", line)
 	}
-	// The whole line is rewritten from the prompt on, on as many rows as it
-	// needs, and the cursor is put back on the row e.pos is on.  The bug was
-	// that the pasted text was in the buffer and never drawn at all, so what
-	// matters is that both rows reach the screen and that the redraw erases
-	// what followed them.
 	got := out.String()
+
+	// Both rows are drawn, and the line is erased before it is rewritten so
+	// that a shorter line cannot leave the old one behind.
 	if !strings.Contains(got, "> (+ 1\n 2)") {
 		t.Errorf("the two-row line was not drawn as two rows: %q", got)
 	}
 	if !strings.Contains(got, "\x1b[J") {
-		t.Errorf("the redraw did not erase the rest of the screen: %q", got)
+		t.Errorf("the redraw did not erase what it was about to replace: %q", got)
 	}
-	// The redraw starts by moving the cursor from the row it is on — the second
-	// row of the line, where the paste left e.pos — back up to the prompt row,
-	// which it can only do if it is told which row that is.  That is the
-	// assertion that fails when the editor assumes the cursor is on the first
-	// row: it then rewrites over the row above the line, which is the prompt and
-	// whatever was above it.
-	if !strings.HasPrefix(strings.SplitN(got, "\x1b[J", 2)[0], "\r> ") {
-		t.Errorf("the first redraw did not start at the prompt: %q", got)
+	// Having drawn it, the editor must know the cursor is on the second row, so
+	// that the *next* redraw goes back up to the prompt row.  This is the value
+	// the bug got wrong, and it is checked directly because the second redraw
+	// is what showed it: with the cursor row wrong, every following keystroke
+	// redrew on the row below and stacked a prompt.
+	if e.lastVPos != 1 {
+		t.Errorf("the editor thinks the cursor is on row %d after drawing a two-row line",
+			e.lastVPos)
 	}
-	if !strings.Contains(got, "\x1b[1A\r> (+ 1\n 2)") {
-		t.Errorf("the second redraw did not go up to the prompt row first: %q", got)
+}
+
+// Deleting a row of a pasted line must not leave the row on the screen, and
+// must not draw the line on the wrong row either.
+func TestBackspaceAfterPasteStaysOnOneRow(t *testing.T) {
+	var out bytes.Buffer
+	tracker := newLineTracker(&out)
+	e := newLineEditor(strings.NewReader(
+		pasteStart+"(+ 1\n 2)"+pasteEnd+"\x7f\x7f\r"), tracker)
+	line, err := e.ReadLine("> ")
+	if err != nil {
+		t.Fatalf("ReadLine: %v", err)
+	}
+	if line != "(+ 1\n " {
+		t.Fatalf("line = %q, want %q", line, "(+ 1\n ")
+	}
+	// After the two backspaces the line is still two rows, so the redraws
+	// between them must have gone up a row; the count of prompt writes is what
+	// catches a redraw that lands on the wrong row and stacks a copy per
+	// keystroke.
+	if n := strings.Count(out.String(), "\x1b[J> "); n > 4 {
+		t.Errorf("the line was redrawn on the wrong row (%d prompt writes): %q",
+			n, out.String())
 	}
 }
 

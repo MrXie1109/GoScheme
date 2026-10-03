@@ -112,6 +112,14 @@ type lineEditor struct {
 	// pasting is true while a bracketed paste is being consumed; the pasted
 	// text is echoed as it arrives instead of being redrawn.
 	pasting bool
+	// lastVPos is the row the cursor was left on by the last render, counted
+	// from the prompt row, and lastRows is how many rows the line occupied when
+	// it was drawn.  A redraw goes back up by lastVPos to reach the prompt row,
+	// and lastRows is what tells it whether the screen is now showing more rows
+	// than the line needs (a paste undone with backspace), which it has to
+	// clear.
+	lastVPos int
+	lastRows int
 	// pasteCR remembers a carriage return that ended a chunk, in case the
 	// following chunk starts with a line feed.
 	pasteCR bool
@@ -130,6 +138,7 @@ func newLineEditor(in io.Reader, out *lineTracker) *lineEditor {
 func (e *lineEditor) ReadLine(prompt string) (string, error) {
 	e.line = e.line[:0]
 	e.pos = 0
+	e.lastVPos = 0
 	e.prompt = prompt
 	e.promptCols = displayWidth([]rune(prompt))
 	e.histPos = len(e.history)
@@ -338,29 +347,55 @@ func (e *lineEditor) setLine(s string) {
 // back at the insertion point.  The line may contain newlines (a pasted
 // block), in which case it occupies several rows and the cursor is moved
 // accordingly.
+// render draws the line and puts the cursor where e.pos is.
+//
+// It follows the model GNU readline uses (display.c: `_rl_last_v_pos`): the
+// editor remembers the row the cursor was left on by the *previous* draw, and
+// the first thing a redraw does is move back up to the prompt row from there.
+// Deriving that row from e.pos instead — "the cursor is on the row e.pos is on"
+// — is true only when the last draw put it there, and a paste breaks that: the
+// text arrives without being drawn, so the cursor is still on the row the old
+// (shorter) line ended on while e.pos is already several rows further down.
+// The redraw then moves up by the wrong number of rows and rewrites over the
+// prompt and the banner, which is exactly what a pasted multi-line expression
+// did.
 func (e *lineEditor) render() {
 	var sb strings.Builder
-	// The cursor sits at e.pos, so it is that many rows below the prompt row.
-	if up := countNewlines(e.line[:e.pos]); up > 0 {
+	// Back to the prompt row: up by as many rows as the cursor is below it.
+	// Start from the *top* of what the last draw put on the screen: the cursor
+	// may be above or below where the line now ends, but the prompt row is
+	// fixed, so going up by the number of rows the old line used is what
+	// reaches it.  Using the cursor's row instead leaves the extra rows of a
+	// longer previous line on screen — which is what a paste followed by
+	// backspaces did.
+	if up := e.lastVPos; up > 0 {
 		fmt.Fprintf(&sb, "\x1b[%dA", up)
 	}
 	sb.WriteByte('\r')
+	// Erase from the prompt row to the bottom of the screen, so that rows the
+	// line used to occupy but no longer needs are cleared too.  Erasing only
+	// from the cursor would leave anything below it.
+	sb.WriteString("\x1b[J")
 	sb.WriteString(e.prompt)
 	sb.WriteString(string(e.line))
-	sb.WriteString("\x1b[J") // erase everything below
 
-	if down := countNewlines(e.line[e.pos:]); down > 0 {
-		fmt.Fprintf(&sb, "\x1b[%dB\r", down)
-		if col := displayWidth(afterLastNewline(e.line[:e.pos])); col > 0 {
-			fmt.Fprintf(&sb, "\x1b[%dC", col)
-		}
-	} else {
-		end := e.promptCols + displayWidth(e.line)
-		at := e.promptCols + displayWidth(e.line[:e.pos])
-		if back := end - at; back > 0 {
-			fmt.Fprintf(&sb, "\x1b[%dD", back)
-		}
+	// Forward from the end of the line, which is where writing it left the
+	// cursor, to the row and column e.pos is at.
+	up := countNewlines(e.line[e.pos:])
+	if up > 0 {
+		fmt.Fprintf(&sb, "\x1b[%dA", up)
 	}
+	sb.WriteByte('\r')
+	if col := displayWidth(afterLastNewline(e.line[:e.pos])); col > 0 {
+		fmt.Fprintf(&sb, "\x1b[%dC", col)
+	}
+	// Where that left the cursor, counted from the prompt row — which is how
+	// far up the next redraw has to go to reach it.  That is the rows *before*
+	// e.pos, not after it: readline calls this _rl_last_v_pos, and getting it
+	// backwards is what made a backspace after a paste redraw on the row below
+	// instead of the row above, stacking a copy of the prompt per keystroke.
+	e.lastVPos = countNewlines(e.line[:e.pos])
+	e.lastRows = countNewlines(e.line)
 	io.WriteString(e.out, sb.String())
 }
 
