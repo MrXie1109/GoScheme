@@ -935,3 +935,28 @@ func (b *byteReader) datum() Value {
 	b.err = fmt.Errorf("bytecode: bad datum tag")
 	return nil
 }
+
+// IsBytecode reports whether a file begins with a compiled program.
+//
+// It answers the question by looking at the file rather than at its name, so a
+// compiled program runs whatever it is called.  That matters because the file
+// is written executable: installing it as `scmc-disassemble` — no extension,
+// because that is what a command is called — used to make the interpreter read
+// the bytecode as source and complain about the second line.
+//
+// It reads only as far as the magic number, and it does not consume anything:
+// the caller opens the file again, or seeks back, to actually read it.
+func IsBytecode(r io.Reader) bool {
+	br := bufio.NewReader(r)
+	// A compiled file may begin with a shebang, so look past one.
+	if head, err := br.Peek(2); err == nil && string(head) == "#!" {
+		if _, err := br.ReadString('\n'); err != nil {
+			return false
+		}
+	}
+	magic, err := br.Peek(len(bytecodeMagic))
+	if err != nil {
+		return false
+	}
+	return string(magic) == bytecodeMagic
+}

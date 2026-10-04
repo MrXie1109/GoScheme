@@ -180,3 +180,45 @@ func TestObfuscationIsNotDeterministic(t *testing.T) {
 		t.Errorf("the two builds do not have the same instructions")
 	}
 }
+
+// 编译后的文件按内容识别，不按名字：它写成可执行、可能被装成一个没有扩展
+// 名的命令，那时按扩展名判断就会把字节码当源码读。
+func TestIsBytecodeLooksAtContent(t *testing.T) {
+	compile := func(src string) []byte {
+		m := NewMachine()
+		forms, err := NewStringReader(src).ReadAll()
+		if err != nil {
+			t.Fatal(err)
+		}
+		prog, err := CompileProgram(m, forms, m.Global)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var buf bytes.Buffer
+		if err := WriteBytecode(&buf, prog); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+	compiled := compile(`(display 1)`)
+
+	for _, tc := range []struct {
+		name string
+		data []byte
+		want bool
+	}{
+		{"a compiled file", compiled, true},
+		{"a compiled file with no shebang", compiled[len(bytecodeShebang):], true},
+		{"a compiled file with another shebang",
+			append([]byte("#!/bin/sh\n"), compiled[len(bytecodeShebang):]...), true},
+		{"source", []byte("(display 1)\n"), false},
+		{"source that begins with #!", []byte("#!/usr/bin/env goscheme\n(display 1)\n"), false},
+		{"empty", nil, false},
+		{"a shebang with nothing after it", []byte("#!/usr/bin/env goscheme\n"), false},
+		{"the magic alone, truncated", []byte("GSC"), false},
+	} {
+		if got := IsBytecode(bytes.NewReader(tc.data)); got != tc.want {
+			t.Errorf("%s: IsBytecode = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

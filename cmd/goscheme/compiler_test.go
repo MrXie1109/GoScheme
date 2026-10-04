@@ -136,3 +136,21 @@ func TestBytecodeFileIsNotSource(t *testing.T) {
 		t.Errorf("a bytecode file with a bad header was accepted")
 	}
 }
+
+// 一个编译后的文件装成没有扩展名的命令也要能跑：它写成可执行，而命令就是
+// 没有扩展名的。按扩展名判断字节码时，它会被当成源码读，报出第二行的
+// "unexpected character"。
+func TestCompiledFileWithoutExtensionRuns(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "prog.scm")
+	if err := os.WriteFile(script, []byte(`(display (+ 20 22)) (newline)`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "prog") // 没有扩展名
+	if code := runCompile([]string{script, "-o", out}); code != 0 {
+		t.Fatalf("compile returned %d", code)
+	}
+	if got := runScriptFile(t, out); got != "42\n" {
+		t.Errorf("running the compiled file printed %q, want %q", got, "42\n")
+	}
+}

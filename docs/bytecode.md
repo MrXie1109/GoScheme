@@ -136,7 +136,11 @@ it costs neither.
 ## Bytecode files
 
 `goscheme compile` writes a **`.scmc`** file: a shebang line, a magic number, a
-version, and the program as chunks.  A chunk is either compiled code or a source form, and the
+version, and the program as chunks.  The interpreter decides how to read a file
+by looking at it and not at its name — a compiled file is written executable and
+may be installed under a name with no extension at all, which is what a command
+is called — so a `.scmc` file renamed to anything still runs, and a source file
+named `something.scmc` is still read as source.  A chunk is either compiled code or a source form, and the
 source ones are exactly the forms that teach the compiler something
 (`import`, `define-syntax`, `include`) or that it could not compile — which is
 why loading a `.scmc` file still applies its imports and still defines its

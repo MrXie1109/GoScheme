@@ -187,6 +187,17 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  -obfuscate     remove the names from the file")
 }
 
+// isBytecodeFile reports whether path holds a compiled program.  A file that
+// cannot be opened is not one, and is left for the source path to report.
+func isBytecodeFile(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	return scheme.IsBytecode(f)
+}
+
 // commandLine builds the (command-line) list: the script (or, for a bundled
 // executable, the program as it was invoked) followed by the user's arguments.
 func commandLine(script string, args []string) []string {
@@ -260,8 +271,11 @@ func loadFile(m *scheme.Machine, path string) int {
 	if err != nil {
 		abs = path
 	}
-	// A .scmc file is bytecode: it is loaded and run, never read as source.
-	if strings.HasSuffix(path, ".scmc") {
+	// A compiled file is loaded and run, never read as source.  The file is
+	// asked what it is rather than told by its name: a compiled program is
+	// written executable and may be installed under a name with no extension,
+	// which is what a command is called.
+	if isBytecodeFile(abs) {
 		f, err := os.Open(abs)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "goscheme: %v\n", err)
