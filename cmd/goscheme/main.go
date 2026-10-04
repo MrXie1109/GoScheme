@@ -38,12 +38,27 @@ func main() {
 
 // runGuarded makes sure a Go panic never reaches the user as a stack dump.
 func runGuarded() (code int) {
+	// A Go panic anywhere below here is a bug in the interpreter, not in the
+	// program being run, and the program should be told so as a Scheme error
+	// rather than shown a Go stack trace.  Every path goes through this — a
+	// script, a .scmc file, -e, the REPL — so it is the one place it has to
+	// happen.
 	defer func() {
 		if r := recover(); r != nil {
-			fmt.Fprintf(os.Stderr, "goscheme: internal error: %v\n", r)
+			printError(os.Stderr, fmt.Errorf("internal error: %v", r))
 			code = 2
 		}
 	}()
+	// A goroutine that never finishes keeps the Go runtime from deciding that
+	// *every* goroutine is asleep and calling it a deadlock.  That check is
+	// what turns a program waiting on a channel into "fatal error: all
+	// goroutines are asleep - deadlock!" and a stack dump about the
+	// interpreter instead of a message about the program.  With one goroutine
+	// parked for the life of the process, the runtime leaves the decision to
+	// us: a program that blocks simply blocks, and Ctrl-C in the REPL abandons
+	// it.  This is the whole of the deadlock handling — the runtime's check is
+	// the detector, and refusing to trip it is the fix.
+	go func() { select {} }()
 	return run()
 }
 
@@ -275,8 +290,34 @@ func reportError(err error) int {
 	if ee, ok := err.(*scheme.ExitError); ok {
 		return ee.Code
 	}
-	fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+	printError(os.Stderr, err)
 	return 1
+}
+
+// printError writes a diagnostic.  The word "Error:" is red when the output is
+// a terminal that can be expected to understand colour, so that a failure is
+// visible in a wall of output; the message itself is left alone, because it is
+// text a program may be reading.
+func printError(w io.Writer, err error) {
+	if colourWriter(w) {
+		fmt.Fprintf(w, "\x1b[1;31mError:\x1b[0m %v\n", err)
+		return
+	}
+	fmt.Fprintf(w, "Error: %v\n", err)
+}
+
+// colourWriter reports whether w is a terminal that wants colour: the same
+// rules as the line editor's, so that a REPL that colours its input colours its
+// errors too.
+func colourWriter(w io.Writer) bool {
+	if _, set := os.LookupEnv("NO_COLOR"); set {
+		return false
+	}
+	if v := os.Getenv("TERM"); v == "" || v == "dumb" {
+		return false
+	}
+	f, ok := w.(*os.File)
+	return ok && isTerminal(f)
 }
 
 // The two REPL prompts: one for a fresh expression, one while a form is still
@@ -383,7 +424,7 @@ func replEdited(m *scheme.Machine, ed *lineEditor, stdout, stderr io.Writer, sig
 				continue
 			}
 			if buf.Len() > 0 {
-				fmt.Fprintln(stderr, "Error: unexpected end of input")
+				printError(stderr, errors.New("unexpected end of input"))
 			}
 			fmt.Fprintln(stdout)
 			return
@@ -422,7 +463,7 @@ func replEdited(m *scheme.Machine, ed *lineEditor, stdout, stderr io.Writer, sig
 		case scheme.IsIncomplete(perr):
 			prompt = continuationPrompt
 		default:
-			fmt.Fprintf(stderr, "Error: %v\n", perr)
+			printError(stderr, perr)
 			buf.Reset()
 			prompt = primaryPrompt
 		}
@@ -479,7 +520,7 @@ func replOn(m *scheme.Machine, stdin io.Reader, stdout, stderr io.Writer, banner
 			// Wait for the rest of the datum.
 			incomplete = true
 		default:
-			fmt.Fprintf(stderr, "Error: %v\n", perr)
+			printError(stderr, perr)
 			buf.Reset()
 			incomplete = false
 			failed = true
@@ -488,7 +529,7 @@ func replOn(m *scheme.Machine, stdin io.Reader, stdout, stderr io.Writer, banner
 		if rerr != nil {
 			// End of input.
 			if incomplete {
-				fmt.Fprintln(stderr, "Error: unexpected end of input")
+				printError(stderr, errors.New("unexpected end of input"))
 				failed = true
 			}
 			if pending != nil {
@@ -539,7 +580,7 @@ func evalFormInteractive(m *scheme.Machine, form scheme.Value, stdout, stderr io
 			if _, ok := r.err.(*scheme.ExitError); ok {
 				return false
 			}
-			fmt.Fprintf(stderr, "Error: %v\n", r.err)
+			printError(stderr, r.err)
 		default:
 			if _, un := r.value.(scheme.Unspecified); !un {
 				fmt.Fprintln(stdout, scheme.WriteToString(r.value))
@@ -570,7 +611,7 @@ func evalForm(m *scheme.Machine, f scheme.Value, stdout, stderr io.Writer) (keep
 		if _, ok := err.(*scheme.ExitError); ok {
 			return false, false
 		}
-		fmt.Fprintf(stderr, "Error: %v\n", err)
+		printError(stderr, err)
 		return true, true
 	}
 	if _, un := v.(scheme.Unspecified); !un {

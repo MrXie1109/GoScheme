@@ -177,7 +177,7 @@ func (e *lineEditor) ReadLine(prompt string) (string, error) {
 			// anything else that belonged to the cursor being here: without
 			// this the finished line kept them, so the brackets of the line
 			// above stayed lit in green while the next line was being typed.
-			e.redrawPlain()
+			e.redrawSettled()
 			e.out.newLine()
 			line := string(e.line)
 			e.remember(line)
@@ -345,10 +345,12 @@ func (e *lineEditor) completeWord() {
 	e.render()
 }
 
-// redrawPlain rewrites the line with no styling at all, leaving the cursor
-// where the text ends.  It is what happens to a line that has been submitted:
-// the highlights were about the cursor and the editing, and both are gone.
-func (e *lineEditor) redrawPlain() {
+// redrawSettled rewrites the line for a cursor that is no longer on it, which
+// is what happens when the line is submitted.  The colour that says what a name
+// *is* stays — that is a property of the text — and the colour that says where
+// the cursor *is* goes, because the cursor has moved on: the bracket pair that
+// was lit up belongs to the editing, not to the line.
+func (e *lineEditor) redrawSettled() {
 	if e.highlight == nil || !e.colour {
 		return
 	}
@@ -359,7 +361,10 @@ func (e *lineEditor) redrawPlain() {
 	sb.WriteByte('\r')
 	sb.WriteString("\x1b[J")
 	sb.WriteString(e.prompt)
-	sb.WriteString(string(e.line))
+	// noCursor is a position that is not on any bracket, so the pair highlight
+	// is not drawn; everything else about the line is coloured as usual.
+	const noCursor = -1
+	renderSpans(&sb, e.highlight(e.line, noCursor), true)
 	// Put the cursor after the last row of the line, which is where the
 	// newline that follows should start.
 	if down := countNewlines(e.line); down > 0 {

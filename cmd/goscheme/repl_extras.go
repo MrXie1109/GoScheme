@@ -265,7 +265,7 @@ func runCommaCommand(m *scheme.Machine, line string, stdout, stderr io.Writer, s
 		}
 		forms, err := readForms(rest)
 		if err != nil {
-			fmt.Fprintf(stderr, "Error: %v\n", err)
+			printError(stderr, err)
 			return false
 		}
 		start := time.Now()

@@ -173,11 +173,15 @@ func bracketStyle(line []rune, pos int, matches map[int]int, unmatched map[int]b
 // bracketAtCursor returns the index of the bracket the cursor is about: the one
 // at pos, or the one just before it.  There is at most one, because two
 // brackets cannot both be adjacent to the same cursor position.
+//
+// A pos outside the line — which is what a caller passes when the line has been
+// submitted and there is no cursor on it any more — is not on a bracket, and
+// the bounds are checked before the line is indexed.
 func bracketAtCursor(line []rune, pos int) (int, bool) {
-	if pos < len(line) && isBracket(line[pos]) {
+	if pos >= 0 && pos < len(line) && isBracket(line[pos]) {
 		return pos, true
 	}
-	if pos > 0 && pos-1 < len(line) && isBracket(line[pos-1]) {
+	if pos > 0 && pos <= len(line) && isBracket(line[pos-1]) {
 		return pos - 1, true
 	}
 	return 0, false

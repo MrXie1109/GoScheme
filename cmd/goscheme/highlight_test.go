@@ -3,6 +3,8 @@
 package main
 
 import (
+	"bytes"
+	"io"
 	"strings"
 	"testing"
 )
@@ -240,5 +242,48 @@ func TestUnmatchedStaysMarkedAtEveryCursorPosition(t *testing.T) {
 				t.Errorf("pos %d: %q is marked although it closes something", pos, sp.text)
 			}
 		}
+	}
+}
+
+// A submitted line loses the cursor's highlight and keeps everything else.  The
+// bracket pair was lit because the cursor was on it; the cursor has moved on,
+// but "define" is still a keyword and "+" is still a procedure, and those are
+// properties of the text.
+func TestSubmittedLineKeepsItsColours(t *testing.T) {
+	var out bytes.Buffer
+	e := newLineEditor(strings.NewReader("(if 1 2)\r\x04"), newLineTracker(&out))
+	h := func(line []rune, pos int) []span {
+		return highlight(line, pos, classOf([]string{"+"}, []string{"if"}))
+	}
+	e.highlight = h
+	e.colour = true
+	if _, err := e.ReadLine("> "); err != nil && err != io.EOF {
+		t.Fatalf("ReadLine: %v", err)
+	}
+	got := out.String()
+
+	// The keyword is still coloured on the line that stays on the screen.
+	if !strings.Contains(got, "\x1b[35mif\x1b[0m") {
+		t.Errorf("the submitted line lost the keyword colour: %q", got)
+	}
+	// And the bracket highlight is gone: the settled redraw is the one with no
+	// cursor on the line, so neither bracket is marked.
+	settled := h([]rune("(if 1 2)"), -1)
+	for _, sp := range settled {
+		if sp.style == styleParen || sp.style == styleMatch {
+			t.Errorf("the settled line still marks %q", sp.text)
+		}
+	}
+	// While the cursor is on a bracket, it is marked — otherwise this test
+	// would pass for a highlighter that never marked anything.
+	live := h([]rune("(if 1 2)"), 0)
+	marked := 0
+	for _, sp := range live {
+		if sp.style == styleParen || sp.style == styleMatch {
+			marked++
+		}
+	}
+	if marked != 2 {
+		t.Errorf("with the cursor on a bracket, %d brackets are marked, want 2", marked)
 	}
 }
