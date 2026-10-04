@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/MrXie1109/GoScheme/internal/scheme"
@@ -83,8 +84,40 @@ func runCompile(args []string) int {
 		fmt.Fprintf(os.Stderr, "goscheme compile: %v\n", err)
 		return 1
 	}
+	// The file is written executable, because it starts with a shebang and can
+	// be run as it stands:
+	//
+	//	goscheme compile prog.scm -o prog.scmc && ./prog.scmc
+	//
+	// The mode is set explicitly rather than left to the umask, and the file's
+	// existing mode is kept when it has one, so that compiling over a file does
+	// not quietly change permissions the user chose.
+	if err := makeExecutable(out); err != nil {
+		fmt.Fprintf(os.Stderr, "goscheme compile: %v\n", err)
+		return 1
+	}
 	// Nothing is printed on success: no news is the good news, and the file
 	// that was written is the evidence.  A form the compiler declined is not
 	// news either — it is in the file as source and runs interpreted.
 	return 0
+}
+
+// makeExecutable adds the execute bits that match the read bits, leaving the
+// rest of the mode alone.  It does nothing on Windows, where the concept does
+// not apply and the call would fail.
+func makeExecutable(path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	mode := st.Mode().Perm()
+	// Read implies execute, bit for bit: rw-r--r-- becomes rwxr-xr-x.
+	exec := (mode & 0444) >> 2
+	if mode&exec == exec {
+		return nil
+	}
+	return os.Chmod(path, mode|exec)
 }

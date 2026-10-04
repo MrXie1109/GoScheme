@@ -112,7 +112,12 @@ type lineEditor struct {
 	line []rune
 	pos  int
 
-	prompt     string
+	prompt string
+	// primary is the prompt the expression started behind.  Every row after the
+	// first is drawn behind continuationPrompt, and a redraw has to reproduce
+	// both: the first row keeps the prompt it was first typed at, even after
+	// the editor has moved on to drawing continuation rows.
+	primary    string
 	promptCols int
 	// pasting is true while a bracketed paste is being consumed; the pasted
 	// text is echoed as it arrives instead of being redrawn.
@@ -120,6 +125,13 @@ type lineEditor struct {
 	// highlight splits the line into styled spans; nil turns it off, and the
 	// line is then written as it is.
 	highlight func(line []rune, pos int) []span
+	// continues reports whether what has been typed so far is an incomplete
+	// expression, in which case Enter opens another line instead of submitting
+	// it.  It is what makes a multi-line form one editing session: the whole
+	// expression stays in e.line, so the bracket matching sees all of it and a
+	// backspace at the start of a line climbs to the line above.  The prompt
+	// for those lines is continuationPrompt.
+	continues func(text string) bool
 	// colour says whether to write the escape sequences the spans ask for.
 	colour bool
 	// lastTab is when Tab was pressed to ask for a completion list.  A second
@@ -153,6 +165,7 @@ func (e *lineEditor) ReadLine(prompt string) (string, error) {
 	e.pos = 0
 	e.lastVPos = 0
 	e.prompt = prompt
+	e.primary = prompt
 	e.promptCols = displayWidth([]rune(prompt))
 	e.histPos = len(e.history)
 	e.out.newLine()
@@ -171,6 +184,18 @@ func (e *lineEditor) ReadLine(prompt string) (string, error) {
 
 		switch k.kind {
 		case keyEnter:
+			// An incomplete expression opens another line rather than being
+			// submitted: the form is not finished, and one editing session that
+			// spans it is what lets the brackets pair across the break and a
+			// backspace climb back over it.
+			if e.continues != nil && e.continues(string(e.line)) {
+				e.line = append(e.line, '\n')
+				e.pos = len(e.line)
+				e.prompt = continuationPrompt
+				e.promptCols = displayWidth([]rune(continuationPrompt))
+				e.render()
+				continue
+			}
 			// The line is about to become history, and what stays on the screen
 			// should be the text as it was typed, not as it was being edited.
 			// Drawing it plainly once removes the bracket pair highlight and
@@ -198,6 +223,12 @@ func (e *lineEditor) ReadLine(prompt string) (string, error) {
 			e.pos++
 
 		case keyBackspace:
+			// Deleting is the same operation at the start of a continuation
+			// line as anywhere else: the character before the cursor is the
+			// line break that began this line, and removing it joins this line
+			// to the one above.  So a backspace here climbs, one keystroke at a
+			// time, all the way to the first line — which is what makes a
+			// half-written form editable instead of only abandonable.
 			if e.pos > 0 {
 				e.line = append(e.line[:e.pos-1], e.line[e.pos:]...)
 				e.pos--
@@ -345,6 +376,66 @@ func (e *lineEditor) completeWord() {
 	e.render()
 }
 
+// styledRows asks the highlighter to colour the whole expression and cuts its
+// answer into rows.  The editor draws row by row, but the colours are decided
+// for the expression as a whole, which is the only scope in which a bracket can
+// be matched with the one that closes it on another line.
+func (e *lineEditor) styledRows() [][]span {
+	if e.highlight == nil || !e.colour {
+		return nil
+	}
+	all := e.highlight(e.line, e.pos)
+	rows := [][]span{}
+	var cur []span
+	for _, sp := range all {
+		text := sp.text
+		for {
+			i := strings.IndexByte(text, '\n')
+			if i < 0 {
+				if text != "" {
+					cur = append(cur, span{text: text, style: sp.style})
+				}
+				break
+			}
+			if i > 0 {
+				cur = append(cur, span{text: text[:i], style: sp.style})
+			}
+			rows = append(rows, cur)
+			cur = nil
+			text = text[i+1:]
+		}
+	}
+	rows = append(rows, cur)
+	return rows
+}
+
+// splitRows splits the text into rows at its newlines.
+func splitRows(rs []rune) [][]rune {
+	rows := [][]rune{}
+	start := 0
+	for i, r := range rs {
+		if r == '\n' {
+			rows = append(rows, rs[start:i])
+			start = i + 1
+		}
+	}
+	return append(rows, rs[start:])
+}
+
+// rowAndColumn turns an index into rs into the row it is on and the column
+// within that row.
+func rowAndColumn(rs []rune, pos int) (row, col int) {
+	for i := 0; i < pos && i < len(rs); i++ {
+		if rs[i] == '\n' {
+			row++
+			col = 0
+		} else {
+			col++
+		}
+	}
+	return row, col
+}
+
 // redrawSettled rewrites the line for a cursor that is no longer on it, which
 // is what happens when the line is submitted.  The colour that says what a name
 // *is* stays — that is a property of the text — and the colour that says where
@@ -360,18 +451,47 @@ func (e *lineEditor) redrawSettled() {
 	}
 	sb.WriteByte('\r')
 	sb.WriteString("\x1b[J")
-	sb.WriteString(e.prompt)
-	// noCursor is a position that is not on any bracket, so the pair highlight
-	// is not drawn; everything else about the line is coloured as usual.
+	// The same rows and prompts render uses, drawn for a cursor that is not
+	// there: it is what the expression looks like once it has been submitted.
+	// The highlighter is given the whole expression and a position on no
+	// bracket, exactly as render gives it the whole expression and the cursor —
+	// colouring one row at a time here would undo the matching, because a
+	// bracket on one row is closed by one on another.
 	const noCursor = -1
-	renderSpans(&sb, e.highlight(e.line, noCursor), true)
-	// Put the cursor after the last row of the line, which is where the
-	// newline that follows should start.
+	saved := e.pos
+	e.pos = noCursor
+	styled := e.styledRows()
+	e.pos = saved
+	rows := splitRows(e.line)
+	for i, r := range rows {
+		if i > 0 {
+			sb.WriteByte('\n')
+		}
+		if i == 0 {
+			sb.WriteString(e.primary)
+		} else {
+			sb.WriteString(continuationPrompt)
+		}
+		if i < len(styled) {
+			renderSpans(&sb, styled[i], true)
+			continue
+		}
+		sb.WriteString(string(r))
+	}
+	// Put the cursor after the last row, which is where the newline that
+	// follows should start: down past the rows already written, then right of
+	// that row's prompt and text.
 	if down := countNewlines(e.line); down > 0 {
 		fmt.Fprintf(&sb, "\x1b[%dB\r", down)
-		if col := displayWidth(afterLastNewline(e.line)); col > 0 {
-			fmt.Fprintf(&sb, "\x1b[%dC", col)
-		}
+	}
+	col := displayWidth(afterLastNewline(e.line))
+	if countNewlines(e.line) > 0 {
+		col += displayWidth([]rune(continuationPrompt))
+	} else {
+		col += displayWidth([]rune(e.primary))
+	}
+	if col > 0 {
+		fmt.Fprintf(&sb, "\x1b[%dC", col)
 	}
 	e.lastVPos = countNewlines(e.line)
 	io.WriteString(e.out, sb.String())
@@ -456,17 +576,47 @@ func (e *lineEditor) render() {
 	// line used to occupy but no longer needs are cleared too.  Erasing only
 	// from the cursor would leave anything below it.
 	sb.WriteString("\x1b[J")
-	sb.WriteString(e.prompt)
-	// The line is drawn in pieces so that names, literals and the bracket pair
+	// The expression is drawn one row at a time, each behind its own prompt:
+	// the first behind the primary prompt and the rest behind the continuation
+	// prompt.  The prompts are what the rows look like on screen, and the
+	// cursor column below is counted from one of them, so they are part of the
+	// same calculation rather than decoration added afterwards.
+	//
+	// The text is drawn in pieces so that names, literals and the bracket pair
 	// the cursor is on can be coloured.  The pieces are chosen from the plain
 	// text and the colours are added as they are written, so every column count
 	// below is taken from the text alone — an escape sequence occupies no
-	// columns, and counting one would put the cursor in the wrong place, which
-	// is the bug this file has already had twice.
-	if e.highlight != nil && e.colour {
-		renderSpans(&sb, e.highlight(e.line, e.pos), true)
-	} else {
-		sb.WriteString(string(e.line))
+	// columns, and counting one puts the cursor in the wrong place, which is
+	// the bug this file has already had twice.
+	// The highlighter is given the whole expression and the cursor's place in
+	// it, and answers row by row.  Giving it one row at a time was the bug in
+	// the screenshot: a bracket opened on the first row and closed on the last
+	// looked unmatched on every row that held only one end of it, and the
+	// closing bracket — which is perfectly matched — was drawn as an error.
+	rows := splitRows(e.line)
+	posRow, posCol := rowAndColumn(e.line, e.pos)
+	styled := e.styledRows()
+	draw := func(i int, rs []rune, spans []span) {
+		if i == 0 {
+			sb.WriteString(e.primary)
+		} else {
+			sb.WriteString(continuationPrompt)
+		}
+		if spans == nil {
+			sb.WriteString(string(rs))
+			return
+		}
+		renderSpans(&sb, spans, true)
+	}
+	for i, r := range rows {
+		if i > 0 {
+			sb.WriteByte('\n')
+		}
+		var spans []span
+		if e.highlight != nil && e.colour && i < len(styled) {
+			spans = styled[i]
+		}
+		draw(i, r, spans)
 	}
 
 	// Forward from the end of the line, which is where writing it left the
@@ -476,27 +626,27 @@ func (e *lineEditor) render() {
 		fmt.Fprintf(&sb, "\x1b[%dA", up)
 	}
 	sb.WriteByte('\r')
-	// The column is counted from the start of the row the cursor ends up on.
-	// On the prompt's own row that includes the prompt, because the prompt is
-	// written before the line; on any later row the prompt is behind us — a row
-	// above — and adding its width would push the cursor past the end of the
-	// text by exactly four columns, which is how wide ">>> " is.  What decides
-	// which row that is, is whether the cursor is on the first row of the line,
-	// not whether it is at the end of it.
-	col := displayWidth(afterLastNewline(e.line[:e.pos]))
-	if countNewlines(e.line[:e.pos]) == 0 {
-		col += e.promptCols
+	// The column is counted from the start of the row the cursor ends up on,
+	// and that row's prompt is part of it: every row has a prompt in front of
+	// the text, so the width is added on all of them — but the width of *that*
+	// row's prompt, which is not the same on the first row as on the rest.
+	col := posCol
+	if posRow == 0 {
+		col += displayWidth([]rune(e.primary))
+	} else {
+		col += displayWidth([]rune(continuationPrompt))
 	}
 	if col > 0 {
 		fmt.Fprintf(&sb, "\x1b[%dC", col)
 	}
-	// Where that left the cursor, counted from the prompt row — which is how
-	// far up the next redraw has to go to reach it.  That is the rows *before*
-	// e.pos, not after it: readline calls this _rl_last_v_pos, and getting it
-	// backwards is what made a backspace after a paste redraw on the row below
-	// instead of the row above, stacking a copy of the prompt per keystroke.
-	e.lastVPos = countNewlines(e.line[:e.pos])
-	e.lastRows = countNewlines(e.line)
+	// Where that left the cursor, counted from the top row — which is how far up
+	// the next redraw has to go to reach it.  Every row is drawn from the start
+	// of its own line, so the cursor is on the row its position is on: readline
+	// calls this _rl_last_v_pos, and getting it backwards is what made a
+	// backspace after a paste redraw on the row below instead of the row above,
+	// stacking a copy of the prompt per keystroke.
+	e.lastVPos = posRow
+	e.lastRows = len(rows) - 1
 	io.WriteString(e.out, sb.String())
 }
 

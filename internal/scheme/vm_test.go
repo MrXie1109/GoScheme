@@ -557,8 +557,19 @@ func TestBytecodeFormat(t *testing.T) {
 	if err := WriteBytecode(&buf, prog); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(buf.String(), bytecodeMagic) {
-		t.Errorf("the file does not start with %q", bytecodeMagic)
+	// The file starts with a shebang so that it can be executed directly; the
+	// magic follows it, and the reader skips it.
+	if !strings.HasPrefix(buf.String(), bytecodeShebang) {
+		t.Errorf("the file does not start with a shebang")
+	}
+	if !strings.HasPrefix(strings.TrimPrefix(buf.String(), bytecodeShebang), bytecodeMagic) {
+		t.Errorf("the file does not start with %q after the shebang", bytecodeMagic)
+	}
+	// A reader that is handed the file without its shebang — an older compiler
+	// wrote one — still reads it.
+	if _, err := ReadBytecode(strings.NewReader(
+		strings.TrimPrefix(buf.String(), bytecodeShebang))); err != nil {
+		t.Errorf("a file with no shebang was not read: %v", err)
 	}
 	if _, err := ReadBytecode(strings.NewReader("not bytecode at all")); err == nil {
 		t.Errorf("reading a non-bytecode file should fail")

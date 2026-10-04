@@ -64,10 +64,11 @@ func (m *Machine) Child() *Machine {
 		ErrParam: m.ErrParam,
 		// Libraries and the set of libraries being loaded are shared: a cycle
 		// must be visible across the threads that load a chain of libraries.
-		libExports: m.libExports,
-		libLoading: m.libLoading,
-		wg:         m.wg,
-		cancel:     m.cancel,
+		libExports:  m.libExports,
+		libLoading:  m.libLoading,
+		wg:          m.wg,
+		cancel:      m.cancel,
+		watchCancel: m.watchCancel,
 	}
 }
 

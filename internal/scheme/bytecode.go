@@ -16,6 +16,7 @@ package scheme
 // recursive, so a quoted list or vector is stored as itself.
 
 import (
+	"bufio"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -361,8 +362,26 @@ func (m *Machine) startForms(forms []Value, env *Env) error {
 // ---------------------------------------------------------------------------
 
 // WriteBytecode writes a compiled program.
+// bytecodeShebang is written at the head of a compiled file so that it can be
+// run directly, the way a script can:
+//
+//	goscheme compile prog.scm -o prog.scmc && chmod +x prog.scmc && ./prog.scmc
+//
+// The reader skips it.  It is a line of text rather than part of the format, so
+// a file that has been through the interpreter is still a valid compiled file
+// whichever way it is opened, and a reader that does not know about it reports
+// a bad magic number rather than reading nonsense.
+const bytecodeShebang = "#!" + bytecodeInterpreter + "\n"
+
+// bytecodeInterpreter is the program named in the shebang.  A compiled file
+// says "goscheme" because that is the name the interpreter is installed under;
+// a file run through a differently named binary still works, because the
+// shebang is only consulted by the kernel when the file is executed.
+const bytecodeInterpreter = "/usr/bin/env goscheme"
+
 func WriteBytecode(w io.Writer, p *Program) error {
 	bw := &byteWriter{w: &bufWriter{w: w}}
+	bw.raw([]byte(bytecodeShebang))
 	bw.raw([]byte(bytecodeMagic))
 	bw.u8(bytecodeVersion)
 	bw.uvarint(uint64(len(p.Chunks)))
@@ -381,7 +400,17 @@ func WriteBytecode(w io.Writer, p *Program) error {
 
 // ReadBytecode reads a compiled program.
 func ReadBytecode(r io.Reader) (*Program, error) {
-	br := &byteReader{r: r}
+	// A shebang line, if the file was written to be executable, is read and
+	// discarded.  It is a line of text rather than part of the format, so the
+	// magic number still has to follow it; anything else that begins with #! is
+	// not a compiled file, and the magic check below says so.
+	buffered := bufio.NewReader(r)
+	if head, err := buffered.Peek(2); err == nil && string(head) == "#!" {
+		if _, err := buffered.ReadString('\n'); err != nil {
+			return nil, fmt.Errorf("bytecode: unterminated #! line")
+		}
+	}
+	br := &byteReader{r: buffered}
 	magic := make([]byte, 4)
 	if _, err := io.ReadFull(br.r, magic); err != nil {
 		return nil, fmt.Errorf("bytecode: %v", err)

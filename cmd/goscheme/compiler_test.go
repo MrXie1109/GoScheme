@@ -105,8 +105,13 @@ func TestBytecodeFileIsNotSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(data) < 4 || string(data[:4]) != "GSCM" {
-		t.Fatalf("the file does not start with the bytecode magic")
+	// A compiled file begins with a shebang so it can be made executable; the
+	// bytecode magic follows it.
+	if !bytes.HasPrefix(data, []byte("#!")) {
+		t.Fatalf("the file does not start with a shebang: %q", data[:12])
+	}
+	if !bytes.Contains(data[:128], []byte("GSCM")) {
+		t.Fatalf("the file does not contain the bytecode magic")
 	}
 	if got := runScriptFile(t, out); got != "7\n" {
 		t.Errorf("running the bytecode printed %q", got)

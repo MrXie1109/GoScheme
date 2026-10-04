@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -149,6 +150,13 @@ func editorFor(src string) (*lineEditor, *bytes.Buffer) {
 	return newLineEditor(strings.NewReader(src), newLineTracker(&out)), &out
 }
 
+// incompleteForm reports whether text is an unfinished expression, which is
+// what an editor in the REPL is given.
+func incompleteForm(text string) bool {
+	_, err := readForms(text)
+	return scheme.IsIncomplete(err)
+}
+
 func TestLineEditorBracketedPaste(t *testing.T) {
 	ed, out := editorFor("\x1b[200~(+ 1\n2 3)\x1b[201~\r")
 	line, err := ed.ReadLine(primaryPrompt)
@@ -158,8 +166,19 @@ func TestLineEditorBracketedPaste(t *testing.T) {
 	if line != "(+ 1\n2 3)" {
 		t.Errorf("paste returned %q, want %q", line, "(+ 1\n2 3)")
 	}
-	if !strings.Contains(out.String(), "(+ 1\n2 3)") {
-		t.Errorf("the pasted text was not echoed: %q", out.String())
+	// Each row is drawn behind its own prompt, so the text appears as
+	// ">>> (+ 1" followed by "... 2 3)" rather than as one unbroken string.
+	// Both rows have to be there: the pasted text was once kept in the buffer
+	// and never drawn at all.
+	got := out.String()
+	if !strings.Contains(got, primaryPrompt+"(+ 1") {
+		t.Errorf("the first pasted row was not drawn: %q", got)
+	}
+	if !strings.Contains(got, continuationPrompt+"2 3)") {
+		t.Errorf("the second pasted row was not drawn: %q", got)
+	}
+	if !strings.Contains(got, "\x1b[J") {
+		t.Errorf("the redraw did not erase what it replaced: %q", got)
 	}
 }
 
@@ -273,17 +292,24 @@ func TestREPLBracketedPasteBlock(t *testing.T) {
 	tracker := newLineTracker(&out)
 	m.SetStandardOutput(scheme.NewPortFromFile("stdout", tracker, false, true))
 	ed := newLineEditor(strings.NewReader("\x1b[200~(+ 1 2)\n(* 3 4)\n\x1b[201~\r\x04"), tracker)
+	ed.continues = incompleteForm
 	replEdited(m, ed, tracker, &errOut, nil)
 
 	got := out.String()
-	if strings.Contains(got, continuationPrompt) {
-		t.Errorf("a completed paste produced a continuation prompt:\n%s", got)
+	// The pasted block is one editing buffer holding two rows, so the rows are
+	// drawn behind the primary prompt and then the continuation prompt — the
+	// second row *is* a continuation row as far as the editor is concerned,
+	// whichever form happens to sit on it.  What matters is that both rows
+	// reach the terminal, in order, with nothing wedged between them and
+	// nothing overwritten.
+	if !strings.Contains(got, primaryPrompt+"(+ 1 2)") {
+		t.Errorf("the first pasted row was not drawn:\n%s", got)
 	}
-	// The prompt also appears in redraws, so counting it is not meaningful;
-	// what matters is that the pasted block reaches the terminal in one piece
-	// with nothing wedged between its lines.
-	if !strings.Contains(got, "(+ 1 2)\n(* 3 4)") {
-		t.Errorf("the pasted block was broken up:\n%s", got)
+	if !strings.Contains(got, continuationPrompt+"(* 3 4)") {
+		t.Errorf("the second pasted row was not drawn:\n%s", got)
+	}
+	if strings.Contains(got, "(* 3 4)"+primaryPrompt) {
+		t.Errorf("the rows were drawn out of order:\n%s", got)
 	}
 	if !strings.Contains(got, "3\n") || !strings.Contains(got, "12\n") {
 		t.Errorf("not every form in the paste was evaluated:\n%s", got)
@@ -365,13 +391,16 @@ func TestREPLPasteWithCarriageReturnsRendersLines(t *testing.T) {
 	tracker := newLineTracker(&out)
 	m.SetStandardOutput(scheme.NewPortFromFile("stdout", tracker, false, true))
 	ed := newLineEditor(strings.NewReader("\x1b[200~(+ 1\r2 3)\x1b[201~\r\x04"), tracker)
+	ed.continues = incompleteForm
 	replEdited(m, ed, tracker, &errOut, nil)
 
 	got := out.String()
 	if strings.Contains(got, "2 3)(+ 1") {
 		t.Errorf("the pasted lines overwrote each other:\n%q", got)
 	}
-	if !strings.Contains(got, "(+ 1\n2 3)") {
+	// The first row is drawn behind the primary prompt and the continuation
+	// behind its own, which is what the two lines look like on screen.
+	if !strings.Contains(got, primaryPrompt+"(+ 1") || !strings.Contains(got, continuationPrompt+"2 3)") {
 		t.Errorf("the pasted block was not echoed line by line:\n%s", got)
 	}
 	if !strings.Contains(got, "6\n") {
@@ -704,9 +733,10 @@ func TestPasteIsRedrawnWhereTheCursorIs(t *testing.T) {
 	}
 	got := out.String()
 
-	// Both rows are drawn, and the line is erased before it is rewritten so
-	// that a shorter line cannot leave the old one behind.
-	if !strings.Contains(got, "> (+ 1\n 2)") {
+	// Both rows are drawn, each behind its own prompt, and the line is erased
+	// before it is rewritten so that a shorter line cannot leave the old one
+	// behind.
+	if !strings.Contains(got, "> (+ 1\n"+continuationPrompt+" 2)") {
 		t.Errorf("the two-row line was not drawn as two rows: %q", got)
 	}
 	if !strings.Contains(got, "\x1b[J") {
@@ -775,13 +805,12 @@ func TestCursorColumnOnEveryRow(t *testing.T) {
 		t.Fatalf("line = %q", line)
 	}
 	// The last redraw writes the cursor's column; on the second row it is the
-	// width of "bc", with no prompt in front of it.
+	// width of that row's prompt plus the width of "bc".  Every row has a
+	// prompt in front of it, so the column is never just the text — but it is
+	// that row's prompt, which is why the two rows do not come out the same.
 	got := out.String()
-	if !strings.Contains(got, "\x1b[2C") {
+	if !strings.Contains(got, fmt.Sprintf("\x1b[%dC", displayWidth([]rune(continuationPrompt))+2)) {
 		t.Errorf("the cursor column on the second row is wrong: %q", got)
-	}
-	if strings.Contains(got, "\x1b[6C") {
-		t.Errorf("the prompt width was added on a row that has no prompt: %q", got)
 	}
 }
 
@@ -1155,5 +1184,64 @@ func TestCommaCommands(t *testing.T) {
 	// on.)
 	if strings.Contains(got, "after") {
 		t.Errorf("input after ,quit was read:\n%s", got)
+	}
+}
+
+// A half-written expression keeps being edited on the next line, and a
+// backspace at the start of that line climbs back over the break — so a
+// multi-line form can be corrected instead of only abandoned.
+func TestMultiLineEditing(t *testing.T) {
+	var out bytes.Buffer
+	e := newLineEditor(strings.NewReader("(list 1 2\r\x7f\x7f\x7f99)\r"), newLineTracker(&out))
+	e.continues = incompleteForm
+	line, err := e.ReadLine(primaryPrompt)
+	if err != nil {
+		t.Fatalf("ReadLine: %v", err)
+	}
+	// (list 1 2, then Enter opens a continuation; three backspaces delete the
+	// space and the "2" and the break itself, and 99) finishes the form.
+	if line != "(list 199)" {
+		t.Errorf("line = %q, want %q", line, "(list 199)")
+	}
+	got := out.String()
+	// The first row keeps the prompt it was typed at, whatever the editor is
+	// drawing later.
+	if !strings.Contains(got, primaryPrompt+"(list 1 2") {
+		t.Errorf("the first row lost its prompt: %q", got)
+	}
+	if !strings.Contains(got, continuationPrompt) {
+		t.Errorf("the continuation row was not drawn behind its own prompt: %q", got)
+	}
+}
+
+// A bracket opened on one row and closed on another is matched, because the
+// whole expression is coloured at once.  Colouring row by row made the closing
+// bracket look like an error.
+func TestBracketsMatchAcrossRows(t *testing.T) {
+	text := []rune("(list (car '(1 2))\n      3)")
+	spans := highlight(text, len(text), classOf(nil, nil))
+	var red, marked []string
+	for _, sp := range spans {
+		switch sp.style {
+		case styleUnmatched:
+			red = append(red, sp.text)
+		case styleParen, styleMatch:
+			marked = append(marked, sp.text)
+		}
+	}
+	if len(red) != 0 {
+		t.Errorf("a matched bracket was drawn as an error: %v", red)
+	}
+	if len(marked) != 2 {
+		t.Errorf("marked %d brackets, want the pair: %v", len(marked), marked)
+	}
+
+	// And the rows of styled text still rebuild the expression exactly.
+	var sb strings.Builder
+	for _, sp := range spans {
+		sb.WriteString(sp.text)
+	}
+	if sb.String() != string(text) {
+		t.Errorf("the spans rebuilt %q", sb.String())
 	}
 }

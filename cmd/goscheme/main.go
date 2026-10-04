@@ -648,6 +648,13 @@ func newREPLLineEditor(m *scheme.Machine, out *lineTracker) *lineEditor {
 	h := &replHighlighter{m: m}
 	e.highlight = h.highlight
 	e.colour = colourEnabled(os.Stdout)
+	// A half-written expression keeps being edited on the next line rather than
+	// being submitted: the reader is asked whether it has a complete datum, and
+	// says no while a form is still open.
+	e.continues = func(text string) bool {
+		_, err := readForms(text)
+		return scheme.IsIncomplete(err)
+	}
 	return e
 }
 

@@ -639,9 +639,9 @@ func vmRun(m *Machine, code *Code, ip int, env *vmEnv, globals *Env, vals []Valu
 		// An interrupted evaluation stops here too.  The VM has its own
 		// instruction loop, so a check in the interpreter's runLoop would never
 		// be reached by compiled code — which is most code — and a cancelled
-		// loop would run to completion.  The nil test is the whole cost when
-		// there is no cancel to watch.
-		if m.cancel != nil && m.cancelled() {
+		// loop would run to completion.  The flag is false unless the REPL is
+		// evaluating a form, so running a file pays one load and a branch.
+		if m.interruptible() {
 			m.RaiseError(ErrInterrupted)
 			return
 		}

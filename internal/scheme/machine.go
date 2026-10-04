@@ -62,16 +62,20 @@ type Machine struct {
 	// two execution paths are compared, and it is what `-interp` sets.
 	Interpret bool
 
-	// cancel is closed to interrupt this machine's evaluation.  The REPL closes
-	// it when Ctrl-C arrives during a form: the evaluation is running in
-	// another goroutine, and without this the keystroke printed "^C" and left
-	// the evaluation running, so a form that had been abandoned would still
-	// take the value it was waiting for — a (chan-send! ch x) that was "cancelled"
-	// showed up later in a (chan-recv! ch).
+	// cancel is closed to interrupt this machine's evaluation, and watchCancel
+	// says whether to look at it at all.  The REPL sets both when Ctrl-C should
+	// be able to abandon a form: the evaluation runs in another goroutine, and
+	// without this the keystroke printed "^C" and left the evaluation running,
+	// so a form that had been abandoned would still take the value it was
+	// waiting for — a (chan-send! ch x) that was "cancelled" showed up later in
+	// a (chan-recv! ch).
 	//
-	// A nil channel is never ready, so a machine with no cancel (everything
-	// outside the REPL) checks nothing and pays nothing.
-	cancel <-chan struct{}
+	// watchCancel is false everywhere else, and it is a plain bool so that the
+	// hot loops pay one load and a branch that is almost never taken.  Running
+	// a file cannot be interrupted — there is no keyboard watching it — so
+	// there is nothing to check and no reason to check it per instruction.
+	watchCancel bool
+	cancel      <-chan struct{}
 
 	// framesCopied records that some continuation has been captured, which
 	// copies the frame stack.  From then on a compiled frame may be reachable
@@ -366,7 +370,7 @@ func (m *Machine) runLoop(baseStack, baseWinds, baseHands int) (Value, error) {
 		// no cancel set — which is every machine but the one the REPL is
 		// evaluating a form on — so the interruptible path costs the ordinary
 		// one nothing.
-		if m.cancel != nil && m.cancelled() {
+		if m.interruptible() {
 			restore()
 			return nil, ErrInterrupted
 		}
@@ -411,8 +415,20 @@ var ErrInterrupted = errors.New("interrupted")
 
 // SetCancel gives this machine a channel to watch: closing it interrupts the
 // evaluation with ErrInterrupted at its next step.  Passing nil removes the
-// watch.
-func (m *Machine) SetCancel(ch <-chan struct{}) { m.cancel = ch }
+// watch.  Only a caller that can actually deliver an interrupt should set this
+// — the REPL, on the machine it is evaluating a form with — because every
+// machine that watches pays for the check on its hot loops.
+func (m *Machine) SetCancel(ch <-chan struct{}) {
+	m.cancel = ch
+	m.watchCancel = ch != nil
+}
+
+// interruptible reports whether the evaluation should stop.  It is written to
+// be one load of a bool in the usual case, which is why the flag exists
+// separately from the channel.
+func (m *Machine) interruptible() bool {
+	return m.watchCancel && m.cancelled()
+}
 
 // cancelled reports whether the evaluation has been interrupted.
 func (m *Machine) cancelled() bool {
