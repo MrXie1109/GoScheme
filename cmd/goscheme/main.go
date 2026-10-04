@@ -169,7 +169,22 @@ func exitCodeFor(failed bool) int {
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: goscheme [-i] [-q] [-interp] [-e expr] [file] [args...]")
 	fmt.Fprintln(os.Stderr, "       goscheme build <script> [-o <output>] [-i <interpreter>]")
-	fmt.Fprintln(os.Stderr, "       goscheme compile <script> [-o <output.scmc>]")
+	fmt.Fprintln(os.Stderr, "       goscheme compile <script> [-o <output.scmc>] [-obfuscate]")
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "  -e EXPR        evaluate EXPR (may be repeated, evaluated in order)")
+	fmt.Fprintln(os.Stderr, "  -i             enter the REPL after loading the file")
+	fmt.Fprintln(os.Stderr, "  -q             do not print the REPL banner")
+	fmt.Fprintln(os.Stderr, "  -interp        run in the tree-walker instead of the bytecode VM")
+	fmt.Fprintln(os.Stderr, "  -v, --version  print the version and exit")
+	fmt.Fprintln(os.Stderr, "  -h, --help     print this usage")
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "The build subcommand writes a copy of the interpreter with the program bound in:")
+	fmt.Fprintln(os.Stderr, "  -o FILE        where to write it")
+	fmt.Fprintln(os.Stderr, "  -i INTERPRETER the interpreter to copy (the running one by default)")
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "The compile subcommand writes the compiled program:")
+	fmt.Fprintln(os.Stderr, "  -o FILE        where to write it (the script's name with .scmc)")
+	fmt.Fprintln(os.Stderr, "  -obfuscate     remove the names from the file")
 }
 
 // commandLine builds the (command-line) list: the script (or, for a bundled

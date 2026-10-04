@@ -1245,3 +1245,79 @@ func TestBracketsMatchAcrossRows(t *testing.T) {
 		t.Errorf("the spans rebuilt %q", sb.String())
 	}
 }
+
+// captureUsage returns what usage() prints.
+func captureUsage(t *testing.T) string {
+	t.Helper()
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	usage()
+	w.Close()
+	os.Stderr = old
+	out, _ := io.ReadAll(r)
+	return string(out)
+}
+
+// 每个子命令的选项都要出现在 usage 的**用法行**里，不只是出现在下面的说明
+// 里：用法行是"怎么调用"的答案，而手工维护的文本最容易漏掉后加的选项。
+func TestUsageLinesMentionEveryOption(t *testing.T) {
+	got := captureUsage(t)
+	// 用法行是 "usage:" 那一行和两个子命令行；说明段以 "The " 开头，所以
+	// 认子命令行时要求它紧接着是 "<script>"，那正是用法行的写法。
+	lines := []string{}
+	for _, l := range strings.Split(got, "\n") {
+		t := strings.TrimSpace(l)
+		if strings.HasPrefix(t, "usage: goscheme") ||
+			strings.HasPrefix(t, "goscheme build <script>") ||
+			strings.HasPrefix(t, "goscheme compile <script>") {
+			lines = append(lines, t)
+		}
+	}
+	if len(lines) != 3 {
+		t.Fatalf("usage 的用法行有 %d 行，期望 3 行：\n%s", len(lines), got)
+	}
+	// 每个选项必须出现在它所属的那一行里。
+	for _, tc := range []struct{ line, opt string }{
+		{lines[0], "-e"}, {lines[0], "-interp"}, {lines[0], "-i"}, {lines[0], "-q"},
+		{lines[1], "-o"}, {lines[1], "-i"},
+		{lines[2], "-o"}, {lines[2], "-obfuscate"},
+	} {
+		if !strings.Contains(tc.line, tc.opt) {
+			t.Errorf("用法行 %q 没提到 %s", tc.line, tc.opt)
+		}
+	}
+	// 而且下面要有对应的说明。
+	for _, opt := range []string{"-obfuscate", "-interp", "-e EXPR"} {
+		if !strings.Contains(got, opt) {
+			t.Errorf("usage 没有解释 %s", opt)
+		}
+	}
+}
+
+// goscheme compile 自己的 usage 也要提到它的选项。
+func TestCompileUsageMentionsObfuscate(t *testing.T) {
+	got := captureStderr(t, func() { runCompile(nil) })
+	if !strings.Contains(got, "-obfuscate") {
+		t.Errorf("goscheme compile 的 usage 没提到 -obfuscate：\n%s", got)
+	}
+}
+
+// captureStderr runs f and returns what it wrote to stderr.
+func captureStderr(t *testing.T, f func()) string {
+	t.Helper()
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	f()
+	w.Close()
+	os.Stderr = old
+	out, _ := io.ReadAll(r)
+	return string(out)
+}
