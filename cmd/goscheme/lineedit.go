@@ -171,6 +171,13 @@ func (e *lineEditor) ReadLine(prompt string) (string, error) {
 
 		switch k.kind {
 		case keyEnter:
+			// The line is about to become history, and what stays on the screen
+			// should be the text as it was typed, not as it was being edited.
+			// Drawing it plainly once removes the bracket pair highlight and
+			// anything else that belonged to the cursor being here: without
+			// this the finished line kept them, so the brackets of the line
+			// above stayed lit in green while the next line was being typed.
+			e.redrawPlain()
 			e.out.newLine()
 			line := string(e.line)
 			e.remember(line)
@@ -336,6 +343,33 @@ func (e *lineEditor) completeWord() {
 	}
 	fmt.Fprint(e.out, "\n")
 	e.render()
+}
+
+// redrawPlain rewrites the line with no styling at all, leaving the cursor
+// where the text ends.  It is what happens to a line that has been submitted:
+// the highlights were about the cursor and the editing, and both are gone.
+func (e *lineEditor) redrawPlain() {
+	if e.highlight == nil || !e.colour {
+		return
+	}
+	var sb strings.Builder
+	if up := e.lastVPos; up > 0 {
+		fmt.Fprintf(&sb, "\x1b[%dA", up)
+	}
+	sb.WriteByte('\r')
+	sb.WriteString("\x1b[J")
+	sb.WriteString(e.prompt)
+	sb.WriteString(string(e.line))
+	// Put the cursor after the last row of the line, which is where the
+	// newline that follows should start.
+	if down := countNewlines(e.line); down > 0 {
+		fmt.Fprintf(&sb, "\x1b[%dB\r", down)
+		if col := displayWidth(afterLastNewline(e.line)); col > 0 {
+			fmt.Fprintf(&sb, "\x1b[%dC", col)
+		}
+	}
+	e.lastVPos = countNewlines(e.line)
+	io.WriteString(e.out, sb.String())
 }
 
 // bell rings the terminal bell: a Tab with nothing to offer, or with a list it
