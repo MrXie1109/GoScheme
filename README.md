@@ -39,6 +39,7 @@ $ goscheme -e '(display (map (lambda (x) (* x x)) (list 1 2 3 4))) (newline)'
 - [Implementation notes](#implementation-notes)
 - [The bytecode VM](docs/bytecode.md)
   - [The format, the machine and the numbers](docs/bytecode-internals.md)
+  - [Obfuscating a compiled program](docs/obfuscate.md)
 - [Performance against C, Python and Guile](docs/performance.md)
 - [Performance](#performance)
 - [Testing](#testing)
@@ -152,7 +153,8 @@ shebang and is written executable, so it can be run as it stands.
 names, and the globals the program defines — and shuffles the constant pools, so
 that the file runs the same but no longer reads like a description of itself.
 It is not encryption: the strings and numbers the program works with are still
-there.  See [docs/bytecode.md](docs/bytecode.md).
+there.  See [docs/obfuscate.md](docs/obfuscate.md) for what it does and does not
+protect against.
 
 With neither a file nor `-e`, the interpreter starts a REPL.  The primary
 prompt is `>>> `, and `... ` appears while a form is still open.

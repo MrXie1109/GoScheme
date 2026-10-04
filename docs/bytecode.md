@@ -214,6 +214,9 @@ The file stays a valid `.scmc` file of the same version: the interpreter reads
 an obfuscated program without knowing it was obfuscated, because the names were
 never needed to run it.
 
+What this is *for*, and what it does not protect against, is in
+[obfuscate.md](obfuscate.md); this section is what it changes about the format.
+
 Version 5 added the symbol table — every name in the file written once, and
 referred to by index afterwards, ordered so that the names used most often get
 the shortest index.  The R7RS test suite compiles 24.5% smaller because of it

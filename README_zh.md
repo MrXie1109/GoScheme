@@ -117,7 +117,7 @@ v, _ = i.Call(square, goscheme.Int(12)) // Go 调用 Scheme 过程
 ```
 goscheme [选项] [文件] [参数 ...]
 goscheme build <脚本> [-o <输出>] [-i <解释器>]
-goscheme compile <脚本> [-o <输出.scmc>]
+goscheme compile <脚本> [-o <输出.scmc>] [-obfuscate]
 
   -e, --eval 表达式    求值表达式（可重复，按顺序求值）
   -i, --interactive    载入文件后进入 REPL
@@ -132,6 +132,11 @@ goscheme compile <脚本> [-o <输出.scmc>]
 回落到树遍历解释器；`-interp` 强制使用解释器，这也是两者对照的方式。
 `goscheme compile` 把编译结果写成 `.scmc` 文件，而把 `.scmc` 交给解释器会直接加载
 运行、不再解析源码。细节见 [docs/bytecode.md](docs/bytecode.md)。
+
+`goscheme compile -obfuscate` 会去掉文件里的名字——函数体名、槽位名、以及程序自己
+定义的全局名——并打乱常量池，于是文件运行结果不变，但读起来不再像一份自我说明。
+**它不是加密**：程序用到的字符串和数字仍在文件里。它做到什么、防不住什么，见
+[docs/obfuscate.md](docs/obfuscate.md)。
 
 既没有文件也没有 `-e` 时进入 REPL。新表达式用 `>>> ` 提示，表达式尚未写完时用
 `... ` 提示。
