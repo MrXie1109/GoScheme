@@ -378,7 +378,49 @@ loop can be bound to a local.
 Both were removed.  `Env.Generation` is kept: it is a correct and free way to
 tell whether a binding changed, and it is what any future attempt would need.
 
-## Where the next 2× would come from
+### A younger generation for the allocator
+
+This one was measured before it was written, and the measurement says there is
+nothing there:
+
+```
+loop of 3000000 iterations:  668 ms total, 147 GCs, 2.96 ms of GC pause
+```
+
+**The collector is 0.44% of the run.**  Turning it off entirely, with
+`debug.SetGCPercent(-1)`, makes the same loop **16.6% slower** — the heap grows
+and the program's cache behaviour gets worse.  A nursery would reduce a cost
+that is already under half a percent.
+
+The distinction that matters: allocation here is expensive as an *action*
+(`runtime.mallocgc` is 31.5% of the profile) and cheap as *garbage*.  A
+generational collector makes the second cheaper and does nothing for the first.
+The only way to remove the first is to stop allocating — which is the unboxed
+slot, above — and not to collect the result better.
+
+## Where the next 2× actually is
+
+Of the five items below, the first four have now been tried in their obvious
+form and measured.  All four lose, and the profile explains why in one line:
+
+```
+counting loop:  4.0 allocations per iteration
+                Int (the boxed result of + and -)      75% of the objects
+                newVMEnv (the frame of each call)      23%
+                runtime.mallocgc                       31.5% of the time
+                GC pause                                0.44% of the time
+```
+
+**The cost is the allocation, not the collection.**  Every proposed fix either
+makes the allocation cheaper (the pool: tried, slower, because cache locality
+matters more) or collects the result better (a nursery: nothing to collect). The
+one that would work is the one that removes the allocation — a frame slot that
+holds an `int64` instead of a boxed `Value` — and that needs a typed slot table
+and a typed operand stack, because `opLocal` pushes the slot onto `vals []Value`
+and would box it again immediately.  That is a compiler with type inference, and
+saying so is more useful than another micro-optimization that measures slower.
+
+## The five items, as originally written
 
 In the order that pays:
 
