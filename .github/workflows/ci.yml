@@ -150,7 +150,14 @@ jobs:
           assets="$assets dist/SHA256SUMS"
           notes=".github/release-notes/${GITHUB_REF_NAME}.md"
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            # The release already exists, which happens when a tag is moved and
+            # the workflow runs again.  The assets are replaced, and so are the
+            # notes: uploading alone left the body from the earlier run, so the
+            # published notes described the commit the tag used to point at.
             gh release upload "$GITHUB_REF_NAME" $assets --clobber
+            if [ -f "$notes" ]; then
+              gh release edit "$GITHUB_REF_NAME" --notes-file "$notes"
+            fi
           elif [ -f "$notes" ]; then
             gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" \
               --notes-file "$notes" $assets
