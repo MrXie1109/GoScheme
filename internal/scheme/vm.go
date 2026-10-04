@@ -636,6 +636,15 @@ func vmRun(m *Machine, code *Code, ip int, env *vmEnv, globals *Env, vals []Valu
 	// can outlive the call holds it, so appending to it disturbs nothing.
 	instrs := code.Instrs
 	for {
+		// An interrupted evaluation stops here too.  The VM has its own
+		// instruction loop, so a check in the interpreter's runLoop would never
+		// be reached by compiled code — which is most code — and a cancelled
+		// loop would run to completion.  The nil test is the whole cost when
+		// there is no cancel to watch.
+		if m.cancel != nil && m.cancelled() {
+			m.RaiseError(ErrInterrupted)
+			return
+		}
 		in := instrs[ip]
 		ip++
 		switch in.op {
