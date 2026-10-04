@@ -352,11 +352,31 @@ allocation it saves is once per call while the copying it costs is once per call
 
 ### Cached global references
 
-This one has real room — `Env.get` and its map lookup are 11% of a program that
-reads globals in a loop — and the groundwork is in place: `Env.Generation` is
-bumped by `Define` and `Set`, so a compiled body can remember what a name was
-bound to and know the answer is still current.  It measured at no cost (the
-panel moved 1.0%, which is noise).  The cache itself is not written yet.
+The profile said there was room: `Env.get` and its map lookup are 11% of a
+program that reads globals in a loop, and the groundwork measured at no cost
+(`Env.Generation`, bumped by `Define` and `Set`; the panel moved 1.0%, which is
+noise).
+
+The cache was written, twice, and lost both times:
+
+| cache | result |
+|---|---|
+| one entry per instruction, allocated per frame | **71% slower** |
+| one entry per global reference, numbered by the compiler | **40% slower** |
+
+The first is a mistake worth naming: sizing the cache by `len(code.Instrs)`
+allocates three slices per frame for a body that may have one global in it.  The
+second is the interesting one, because it is the design the profile asked for
+and it still loses.  What the lookup costs is a two-frame walk and a map probe;
+what the cache costs is a generation load, a compare, a nil check and a possible
+allocation on *every* read.  Most global references are executed a handful of
+times — a top-level define, a branch taken once — so there is nothing to
+amortise the bookkeeping over, and the loop that would have benefited is already
+served by the arithmetic instructions and by the fact that a value read in a
+loop can be bound to a local.
+
+Both were removed.  `Env.Generation` is kept: it is a correct and free way to
+tell whether a binding changed, and it is what any future attempt would need.
 
 ## Where the next 2× would come from
 

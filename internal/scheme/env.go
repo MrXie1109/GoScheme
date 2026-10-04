@@ -136,6 +136,33 @@ func (e *Env) Has(sym *Symbol) bool {
 }
 
 // get returns the binding of sym in this frame only.
+// LookupWithFrame is Lookup, and also says which frame the binding was found
+// in.  That frame's generation is what a caller caches against: while it is
+// unchanged, the binding it found is still the one there.
+func (e *Env) LookupWithFrame(sym *Symbol) (Value, *Env, bool) {
+	for env := e; env != nil; env = env.parent {
+		if v, ok := env.get(sym); ok {
+			return v, env, true
+		}
+	}
+	if sym.Mark != 0 {
+		// A marked symbol (from a macro expansion) is looked up through the
+		// definition environment; the frame found there is the one to cache
+		// against, and it is returned so that the caller invalidates on it.
+		if def := markEnvOf(sym.Mark); def != nil {
+			if sym.orig != nil {
+				if v, frame, ok := def.LookupWithFrame(sym.orig); ok {
+					return v, frame, true
+				}
+			}
+			if v, frame, ok := def.LookupWithFrame(sym.Base()); ok {
+				return v, frame, true
+			}
+		}
+	}
+	return nil, nil, false
+}
+
 func (e *Env) get(sym *Symbol) (Value, bool) {
 	locked := concurrentThreads.Load() != 0
 	if locked {

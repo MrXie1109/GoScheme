@@ -380,6 +380,15 @@ func cellSet(c *cell, v Value) {
 	c.v = v
 }
 
+// Caching global references in the frame was tried twice and is slower both
+// times: 71% with one entry per instruction, 40% with one entry per reference.
+// The lookup it saves is a two-frame walk and a map probe, and the bookkeeping
+// it costs is a generation check, a nil check and a possible allocation on
+// every read — and most global references are executed rarely enough that there
+// is nothing to amortise it over.  A body that reads a global in a loop is the
+// case it was for, and that case is already served by the arithmetic
+// instructions and by binding the value to a local.
+
 // vmInlineSlots is how many slots a frame keeps inside itself.  A frame whose
 // slots are a separate slice is two allocations — the env and the array — and
 // this makes the common small frame one: a parameter or two and an internal
