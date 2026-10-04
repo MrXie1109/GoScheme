@@ -73,6 +73,12 @@ const (
 	keyRight
 	keyHome
 	keyEnd
+	// Ctrl+Right and Ctrl+Left move by a word, which is what the sequence
+	// ESC [ 1 ; 5 C / D means.  Without them the modifier was ignored, so the
+	// keys moved by one character — the one thing a user does not expect from
+	// a modified arrow.
+	keyWordRight
+	keyWordLeft
 	keyUp
 	keyDown
 	keyCtrlA
@@ -239,6 +245,12 @@ func (e *lineEditor) ReadLine(prompt string) (string, error) {
 				e.line = append(e.line[:e.pos], e.line[e.pos+1:]...)
 			}
 
+		case keyWordRight:
+			e.pos = wordEnd(e.line, e.pos)
+			e.render()
+		case keyWordLeft:
+			e.pos = wordStart(e.line, e.pos)
+			e.render()
 		case keyLeft, keyCtrlB:
 			if e.pos > 0 {
 				e.pos--
@@ -407,6 +419,42 @@ func (e *lineEditor) styledRows() [][]span {
 	}
 	rows = append(rows, cur)
 	return rows
+}
+
+// wordEnd returns the position one word to the right of pos, which is what
+// Ctrl+Right moves to.
+//
+// The rule is the one a shell uses and the one the completion already assumes:
+// a word is a run of characters that can appear in a name, and moving right
+// stops at the end of the next such run.  Everything else — spaces, brackets,
+// quotes — is skipped over, so from the middle of `(foo bar)` each press lands
+// after `foo`, then after `bar`, then at the end.
+func wordEnd(line []rune, pos int) int {
+	i := pos
+	// Skip what is not part of a word, so that a press from a space or a
+	// bracket moves to the next word rather than to the next character.
+	for i < len(line) && !isNameChar(line[i]) {
+		i++
+	}
+	// Then the word itself.
+	for i < len(line) && isNameChar(line[i]) {
+		i++
+	}
+	return i
+}
+
+// wordStart returns the position one word to the left of pos, which is what
+// Ctrl+Left moves to.  It is wordEnd's mirror: skip backwards over what is not
+// a word, then back to the start of the word before it.
+func wordStart(line []rune, pos int) int {
+	i := pos
+	for i > 0 && !isNameChar(line[i-1]) {
+		i--
+	}
+	for i > 0 && isNameChar(line[i-1]) {
+		i--
+	}
+	return i
 }
 
 // splitRows splits the text into rows at its newlines.
@@ -884,16 +932,31 @@ func (e *lineEditor) readEscape() (key, error) {
 }
 
 func classifyCSI(prefix byte, params string, final byte) key {
+	// The modifiers arrive as "1;5" for Ctrl, "1;3" for Alt, "1;2" for Shift.
+	// Only Ctrl changes what a horizontal arrow does — it moves by a word — and
+	// an unmodified arrow is the common case, so anything else falls back to
+	// the plain key rather than becoming unknown.
+	ctrl := strings.HasSuffix(params, ";5")
 	switch final {
 	case 'A':
 		return key{kind: keyUp}
 	case 'B':
 		return key{kind: keyDown}
 	case 'C':
+		if ctrl {
+			return key{kind: keyWordRight}
+		}
 		return key{kind: keyRight}
 	case 'D':
+		if ctrl {
+			return key{kind: keyWordLeft}
+		}
 		return key{kind: keyLeft}
 	case 'H':
+		// Ctrl+Home is left as Home.  Some terminals send it for the same
+		// movement a word left, but the more common meaning is the beginning of
+		// the input, and guessing wrong there moves the cursor further than the
+		// user asked for — the opposite of what a modified key is for.
 		return key{kind: keyHome}
 	case 'F':
 		return key{kind: keyEnd}

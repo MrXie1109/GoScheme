@@ -161,7 +161,7 @@ prompt is `>>> `, and `... ` appears while a form is still open.
 
 On a terminal the REPL switches the terminal into raw mode and provides the
 editing keys one expects: cursor movement (arrows, Home/End, Ctrl-A/E/B/F),
-backspace and delete, Ctrl-U/K/W, Ctrl-L to clear the screen, Ctrl-C to abandon
+movement by a word (Ctrl-Left/Right), backspace and delete, Ctrl-U/K/W, Ctrl-L to clear the screen, Ctrl-C to abandon
 the line, Ctrl-D to leave, and history via the up/down arrows.  It also enables
 **bracketed paste**, so the terminal itself marks where a paste begins and ends
 and the pasted block is inserted at the prompt as one piece — a prompt is never

@@ -142,7 +142,8 @@ goscheme compile <脚本> [-o <输出.scmc>] [-obfuscate]
 `... ` 提示。
 
 在终端下，REPL 会把终端切换到 raw 模式，并提供应有的编辑能力：光标移动
-（方向键、Home/End、Ctrl-A/E/B/F）、退格与删除、Ctrl-U/K/W、Ctrl-L 清屏、
+（方向键、Home/End、Ctrl-A/E/B/F）、按词移动（Ctrl-左/右）、退格与删除、
+Ctrl-U/K/W、Ctrl-L 清屏、
 Ctrl-C 放弃当前行、Ctrl-D 退出，以及上下方向键的历史记录。同时启用
 **bracketed paste（括号粘贴）**：由终端自己标出粘贴的起止，整段粘贴作为**一个
 整体**插入到当前行——提示符绝不会插进粘贴内容中间，粘贴内部的换行也不会提前提交。

@@ -1321,3 +1321,105 @@ func captureStderr(t *testing.T, f func()) string {
 	out, _ := io.ReadAll(r)
 	return string(out)
 }
+
+// Ctrl+Right and Ctrl+Left move by a word.  The sequences are ESC [ 1 ; 5 C
+// and ESC [ 1 ; 5 D; before this the modifier was ignored and they moved by one
+// character, which is what a user does not expect from a modified arrow.
+func TestCtrlArrowMovesByWord(t *testing.T) {
+	// The sequences are decoded through the same path a terminal's bytes take,
+	// so this is a test of classifyCSI as well as of the movement.
+	for _, tc := range []struct {
+		keys []byte
+		want int // the cursor position after the keys
+		line string
+	}{
+		// From the start of `(foo bar)`: one press lands after foo, another
+		// after bar, another at the end.
+		{[]byte("\x1b[1;5C"), 4, "(foo bar)"},
+		{[]byte("\x1b[1;5C\x1b[1;5C"), 8, "(foo bar)"},
+		{[]byte("\x1b[1;5C\x1b[1;5C\x1b[1;5C"), 9, "(foo bar)"},
+		// And back from the end.  The editor starts with the cursor at 0, so
+		// these begin by putting it at the end — Ctrl-E in the keys below is
+		// not part of what is being tested, the position is.
+		{[]byte("\x05\x1b[1;5D"), 5, "(foo bar)"},
+		{[]byte("\x05\x1b[1;5D\x1b[1;5D"), 1, "(foo bar)"},
+		{[]byte("\x05\x1b[1;5D\x1b[1;5D\x1b[1;5D"), 0, "(foo bar)"},
+		// A plain arrow still moves by one character.
+		{[]byte("\x1b[C"), 1, "(foo bar)"},
+		{[]byte("\x1b[C\x1b[C"), 2, "(foo bar)"},
+		// Ctrl+Home and Ctrl+End keep their ordinary meaning — the ends of the
+		// line — rather than being read as word movement, so neither moves by
+		// a word.
+		{[]byte("\x1b[1;5F"), 9, "(foo bar)"},
+		{[]byte("\x05\x1b[1;5H"), 0, "(foo bar)"},
+		// Alt is not Ctrl: it must not be read as a word movement.
+		{[]byte("\x1b[1;3C"), 1, "(foo bar)"},
+	} {
+		var out bytes.Buffer
+		e := newLineEditor(bytes.NewReader(tc.keys), newLineTracker(&out))
+		e.line = []rune(tc.line)
+		for {
+			k, err := e.readKey()
+			if err != nil {
+				break
+			}
+			switch k.kind {
+			case keyWordRight:
+				e.pos = wordEnd(e.line, e.pos)
+			case keyWordLeft:
+				e.pos = wordStart(e.line, e.pos)
+			case keyRight:
+				if e.pos < len(e.line) {
+					e.pos++
+				}
+			case keyLeft:
+				if e.pos > 0 {
+					e.pos--
+				}
+			case keyCtrlE, keyEnd:
+				e.pos = len(e.line)
+			case keyHome:
+				e.pos = 0
+			default:
+				t.Fatalf("%q gave an unexpected key %v", tc.keys, k.kind)
+			}
+		}
+		if e.pos != tc.want {
+			t.Errorf("%q from %q left the cursor at %d, want %d", tc.keys, tc.line, e.pos, tc.want)
+		}
+	}
+}
+
+// The word boundaries themselves, including the edges.
+func TestWordBoundaries(t *testing.T) {
+	// "(foo-bar baz!)": 0 is (, 1..7 is foo-bar, 8 is the space, 9..12 is
+	// baz!, 13 is ), and 14 is the end of the line.  The values below are what
+	// the rule gives — skip what is not a word, then the word — not what the
+	// positions look like they should be.
+	line := []rune("(foo-bar baz!)")
+	for _, tc := range []struct{ from, right, left int }{
+		{0, 8, 0},   // on the ( : right skips it and foo-bar; left is the start
+		{1, 8, 0},   // on the f: left walks back over the ( , which is not a word
+		{2, 8, 1},   // inside foo-bar: right to its end, left to its start
+		{7, 8, 1},   // on its last letter
+		{8, 13, 1},  // on the space: right past baz!, left to the start of foo-bar
+		{9, 13, 1},  // on the b of baz!: left to foo-bar, over the space
+		{12, 13, 9}, // on the ! at the end of baz!
+		{13, 14, 9}, // on the ): right past it, left to baz!
+		{14, 14, 9}, // at the end of the line
+	} {
+		if got := wordEnd(line, tc.from); got != tc.right {
+			t.Errorf("wordEnd(%q, %d) = %d, want %d", string(line), tc.from, got, tc.right)
+		}
+		if got := wordStart(line, tc.from); got != tc.left {
+			t.Errorf("wordStart(%q, %d) = %d, want %d", string(line), tc.from, got, tc.left)
+		}
+	}
+	// An empty line, and a line of separators, must not move past the ends.
+	if got := wordEnd(nil, 0); got != 0 {
+		t.Errorf("wordEnd on an empty line = %d", got)
+	}
+	if got := wordStart([]rune("   "), 3); got != 0 {
+		t.Errorf("wordStart on separators = %d, want 0", got)
+	}
+}
