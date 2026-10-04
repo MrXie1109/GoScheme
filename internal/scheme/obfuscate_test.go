@@ -143,11 +143,24 @@ counter`
 // source, and compiling it twice does not produce the same bytes.
 func TestObfuscationIsNotDeterministic(t *testing.T) {
 	src := `(define (f x) (list x x x x x x x x)) (f 'a)`
-	_, first := obfuscatedProgram(t, src)
-	_, second := obfuscatedProgram(t, src)
-	if bytes.Equal(first, second) {
-		t.Errorf("two obfuscated builds are identical, so the shuffle is not seeded")
+	// Several builds, because two can coincide by chance when the pools are
+	// small: the shuffle is random, and a test that demands two differ is
+	// flaky in exactly the case it is least needed.  Ten builds of a program
+	// with eight constants cannot all be the same permutation by accident.
+	seen := map[string]bool{}
+	for i := 0; i < 10; i++ {
+		_, b := obfuscatedProgram(t, src)
+		seen[string(b)] = true
 	}
+	if len(seen) == 1 {
+		t.Errorf("ten obfuscated builds are identical, so the shuffle is not seeded")
+	}
+	first := []byte{}
+	for k := range seen {
+		first = []byte(k)
+		break
+	}
+	_ = first
 	// Both still have the same instructions: the shuffle moves constants, it
 	// does not change the program.
 	strip := func(b []byte) string {
@@ -176,8 +189,18 @@ func TestObfuscationIsNotDeterministic(t *testing.T) {
 		}
 		return sb.String()
 	}
-	if strip(first) != strip(second) {
-		t.Errorf("the two builds do not have the same instructions")
+	// Every build has the same instructions: the shuffle moves constants
+	// around, it does not change the program.
+	var want string
+	for k := range seen {
+		got := strip([]byte(k))
+		if want == "" {
+			want = got
+			continue
+		}
+		if got != want {
+			t.Errorf("two builds do not have the same instructions")
+		}
 	}
 }
 

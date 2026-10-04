@@ -44,7 +44,18 @@ type Env struct {
 	Name   string
 	// Library is non-nil for the top level environment of a library.
 	Library *Library
+	// gen is bumped whenever a binding in this frame changes, and is what lets
+	// a compiled body remember the value it looked up: the cache is good while
+	// the generation is the one it was taken at.  Every frame has one, but only
+	// the ones a global is looked up through matter, and a body caches against
+	// the frame it found the binding in — so a define or a set! anywhere along
+	// the chain invalidates by construction.
+	gen uint64
 }
+
+// Generation returns a number that changes whenever a binding in this frame
+// changes.  It is only meaningful within one process.
+func (e *Env) Generation() uint64 { return e.gen }
 
 // unassigned marks a variable that has been declared but not yet given a
 // value (letrec, internal defines).
@@ -77,6 +88,7 @@ func (e *Env) Define(sym *Symbol, v Value) {
 	if locked {
 		e.mu.Lock()
 	}
+	e.gen++
 	for i := 0; i < e.n; i++ {
 		if e.names[i] == sym {
 			e.vals[i] = v
@@ -155,6 +167,7 @@ func (e *Env) Set(sym *Symbol, v Value) bool {
 		for i := 0; i < env.n; i++ {
 			if env.names[i] == sym {
 				env.vals[i] = v
+				env.gen++
 				if locked {
 					env.mu.Unlock()
 				}
@@ -163,6 +176,7 @@ func (e *Env) Set(sym *Symbol, v Value) bool {
 		}
 		if _, ok := env.vars[sym]; ok {
 			env.vars[sym] = v
+			env.gen++
 			if locked {
 				env.mu.Unlock()
 			}

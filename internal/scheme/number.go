@@ -45,6 +45,15 @@ type Complex struct {
 // mutated in place — every operation builds a new one — so sharing them is
 // safe.  The range covers the counters, lengths and indices that dominate real
 // programs.
+//
+// Widening it was tried and is slower: at -65536..65536 the array is 3 MB and
+// no longer stays in cache, so the values a program actually uses — small ones,
+// over and over — miss where they used to hit, and the loops that gained
+// nothing from the wider range lost more than the ones that gained.  A blocked
+// pool that fills each 1024-value block on demand was tried too and was also
+// slower, by 2.6%: the block lookup on every construction costs more than the
+// allocations it avoids.  Summing to 600000 allocates an Integer per iteration
+// and there is nothing cheap to do about it here; see docs/performance.md.
 const (
 	smallIntMin = -256
 	smallIntMax = 1024
