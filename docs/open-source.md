@@ -67,6 +67,41 @@ options — changing them costs something, so:
 - something breaks only when the old behaviour was a bug or there is a security
   reason, and the release notes say which.
 
+### Ship the source, not only the bytecode
+
+`goscheme compile` produces a `.scmc` file, and it is a good way to distribute a
+program: it is smaller, it starts without compiling, and `-obfuscate` can strip
+the names out of it. None of that is a reason to ship *only* the `.scmc`.
+
+**When you distribute a GoScheme program, please distribute the `.scm` as well —
+next to it, or in the same archive, or in the repository it came from.** This is
+a request, not a condition of the licence: MIT lets you ship a `.scmc` and
+nothing else, and nothing here changes that.
+
+The reason is the thing this project is for. A `.scmc` runs on one interpreter;
+a `.scm` can be read, learned from, fixed by its user, ported to another Scheme,
+and still be running in twenty years when this interpreter is not. A compiled
+file with the names obfuscated is, deliberately, close to unreadable — that is
+what it is for — and a program distributed only that way cannot teach anybody
+anything or be repaired by anybody but its author.
+
+So the guidance is:
+
+- **a library or anything meant to be read**: ship the `.scm`, and treat the
+  `.scmc` as a convenience alongside it;
+- **an application you want to protect**: obfuscation is there for that, and the
+  source is yours to keep — but consider shipping it anyway, or at least saying
+  in the program where the source lives, if the program is one people will want
+  to learn from;
+- **inside your own project**: keep the `.scm` in version control and let the
+  `.scmc` be a build product, which is also the only way the bytecode can be
+  rebuilt for a newer version of the interpreter.
+
+Compiled files are readable enough to prove what they do — `scripts/scmc-disassemble.scm`
+exists for exactly that — but readable enough to prove is not the same as
+readable enough to learn from, and it is the second one that keeps a language
+alive.
+
 ## What you can expect
 
 | | |

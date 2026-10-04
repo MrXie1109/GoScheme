@@ -287,6 +287,10 @@ examples/                 可直接运行的示例与运行脚本（见 examples
 dist/                     `make dist` 的产物：发布用二进制，只挂在 GitHub
                           Release 上，不纳入 git 跟踪
 scripts/build-dist.sh     `make dist` 使用的交叉编译脚本
+scripts/scmc-disassemble.scm
+                          用 GoScheme 写的 .scmc 反汇编器：打印编译文件里有什么
+test/bytecode/v4.scmc     一份旧字节码版本的文件，留在这里让 `make check-disasm`
+                          能证明旧文件仍读得进来
 docs/extensions/         每个 (goscheme ...) 库一页接口参考
 docs/srfi/               每个 (srfi N) 库一页接口参考
 docs/ffi-design.md       (goscheme ffi) 的设计说明

@@ -325,6 +325,11 @@ examples/                 runnable examples and their runner (see examples/READM
 dist/                     `make dist` output: the release binaries, which are
                           attached to GitHub Releases and not tracked by git
 scripts/build-dist.sh     cross-compilation script used by `make dist`
+scripts/scmc-disassemble.scm
+                          a .scmc disassembler, written in GoScheme: prints
+                          what a compiled file contains
+test/bytecode/v4.scmc     a file from an older bytecode version, kept so that
+                          `make check-disasm` can prove old files still read
 docs/extensions/          one reference page per (goscheme ...) library
 docs/srfi/                one reference page per (srfi N) library
 docs/ffi-design.md        the design notes behind (goscheme ffi)
