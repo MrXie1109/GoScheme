@@ -49,7 +49,12 @@ check-disasm: build
 	@# shebang existed has to read and disassemble the same way.
 	@tail -n +2 $(BUILD)/check.scmc > $(BUILD)/check-noshebang.scmc
 	@$(BUILD)/$(BIN) scripts/scmc-disassemble.scm --check $(BUILD)/check-noshebang.scmc
-	@rm -f $(BUILD)/check-noshebang.scmc
+	@rm -f $(BUILD)/check-noshebang.scmc $(BUILD)/check-v5.scmc
+	@# The symbol table is version 5; the file above is one, and the reader has
+	@# to accept the version 4 shape too, where every symbol was written out
+	@# where it was used.  The committed sample is a real one: a small program
+	@# compiled by the interpreter as it was before the table existed.
+	@$(BUILD)/$(BIN) scripts/scmc-disassemble.scm --check test/bytecode/v4.scmc
 
 ## fmt: format the Go sources
 fmt:

@@ -176,7 +176,12 @@
       ((= tag 9) (let ((re (read-datum port)) (im (read-datum port)))
                    (list 'complex re im)))
       ((= tag 10) (read-string port))
-      ((= tag 11) (string->symbol (read-string port)))
+      ((= tag 11) (if *symbols*
+                      (let ((i (read-uvarint port)))
+                        (if (< i (vector-length *symbols*))
+                            (string->symbol (vector-ref *symbols* i))
+                            (error "scmc: symbol index" i "is past the table")))
+                      (string->symbol (read-string port))))
       ((= tag 12) (let ((car* (read-datum port)) (cdr* (read-datum port)))
                     (cons car* cdr*)))
       ((= tag 13) (let* ((n (read-uvarint port))
@@ -227,6 +232,14 @@
                           #t
                           (loop))))))))))) 
 
+;;; The symbol table and the file's version.  Version 5 writes every symbol
+;;; once, in a table at the head of the file, and refers to it by index; earlier
+;;; files write the name where it is used.  read-datum has to know which, and it
+;;; is a plain recursive reader with no context to thread, so the two things it
+;;; needs are here and set once per file.
+(define *symbols* #f)
+(define *version* 0)
+
 (define (read-program path)
   (let ((port (open-binary-input-file path)))
     (skip-shebang port)
@@ -234,8 +247,15 @@
            (version (read-u8* port)))
       (if (not (equal? (utf8->string magic) "GSCM"))
           (error "scmc: not a .scmc file" path))
-      (if (> version 4)
+      (if (> version 5)
           (error "scmc: version" version "is newer than this script knows"))
+      (set! *version* version)
+      (set! *symbols* (if (>= version 5)
+                          (let ((k (read-uvarint port)))
+                            (let loop ((i 0) (out '()))
+                              (if (= i k) (list->vector (reverse out))
+                                  (loop (+ i 1) (cons (read-string port) out)))))
+                          #f))
       (let ((n (read-uvarint port)))
         (list (cons 'version version)
               (cons 'chunks

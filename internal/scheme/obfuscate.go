@@ -247,7 +247,7 @@ func ObfuscateGlobals(p *Program, m *Machine) int {
 			if c.Form != nil {
 				// A source chunk is read by the interpreter, so every symbol it
 				// mentions keeps its name.
-				collectSymbols(c.Form, fromSource)
+				collectDatumSymbols(c.Form, fromSource)
 			}
 			scanCode(c.Code)
 			for j := range c.Steps {
@@ -326,16 +326,16 @@ func constSym(c *Code, idx int32) (string, bool) {
 }
 
 // collectSymbols records every symbol in a datum.
-func collectSymbols(v Value, into map[string]bool) {
+func collectDatumSymbols(v Value, into map[string]bool) {
 	switch x := v.(type) {
 	case *Symbol:
 		into[x.Name] = true
 	case *Pair:
-		collectSymbols(x.Car, into)
-		collectSymbols(x.Cdr, into)
+		collectDatumSymbols(x.Car, into)
+		collectDatumSymbols(x.Cdr, into)
 	case *Vector:
 		for _, e := range x.Items {
-			collectSymbols(e, into)
+			collectDatumSymbols(e, into)
 		}
 	}
 }

@@ -22,6 +22,7 @@ import (
 	"io"
 	"math"
 	"math/big"
+	"sort"
 )
 
 // Program is a compiled program: the chunks in source order.
@@ -52,7 +53,12 @@ const (
 	// nothing else about the format changed.
 	// 3 added the primitive reference in a constant pool.  Older files are
 	// still read; a file from a newer version is refused rather than misread.
-	bytecodeVersion = 4
+	// 5 added the symbol table: every symbol in the file is written once, in a
+	// table at the head, and referred to by index.  Before that each occurrence
+	// wrote its name again, and a program mentions `scheme` once per import and
+	// `display` once per call — 4 bytes of length and text, repeated, for a
+	// name the reader would have interned to the same symbol anyway.
+	bytecodeVersion = 5
 )
 
 // Compiled reports how many of the program's top-level forms are bytecode, and
@@ -381,9 +387,22 @@ const bytecodeInterpreter = "/usr/bin/env goscheme"
 
 func WriteBytecode(w io.Writer, p *Program) error {
 	bw := &byteWriter{w: &bufWriter{w: w}}
+	// The symbols are collected before anything is written, because the table
+	// comes first and every reference to a symbol is an index into it.  The
+	// order is the order of first appearance, so that a file is deterministic
+	// for a given program.
+	bw.symbols = collectSymbols(p)
+	bw.symbolIndex = make(map[string]int32, len(bw.symbols))
+	for i, name := range bw.symbols {
+		bw.symbolIndex[name] = int32(i)
+	}
 	bw.raw([]byte(bytecodeShebang))
 	bw.raw([]byte(bytecodeMagic))
 	bw.u8(bytecodeVersion)
+	bw.uvarint(uint64(len(bw.symbols)))
+	for _, name := range bw.symbols {
+		bw.str(name)
+	}
 	bw.uvarint(uint64(len(p.Chunks)))
 	for _, c := range p.Chunks {
 		bw.chunk(c)
@@ -392,6 +411,76 @@ func WriteBytecode(w io.Writer, p *Program) error {
 		return bw.err
 	}
 	return bw.w.Flush()
+}
+
+// collectSymbols returns every symbol name the program mentions, once each,
+// ordered so that the ones mentioned most often come first.
+//
+// The order is not cosmetic: a reference to a symbol is a uvarint index into
+// this table, so the first 128 names cost one byte each and the rest cost two or
+// more.  Sorting by how often a name is used therefore shortens the file, and it
+// does so with no decoding cost at all — which is why this is a frequency order
+// rather than a Huffman code over the names.  Huffman would shrink the table
+// itself, and the table is the small part; the references are the part that
+// repeats, and their length is what the order decides.  Ties are broken by the
+// name so that a given program always produces the same file.
+func collectSymbols(p *Program) []string {
+	counts := map[string]int{}
+	var walkValue func(Value)
+	var walkCode func(*Code)
+	walkValue = func(v Value) {
+		switch x := v.(type) {
+		case *Symbol:
+			counts[x.Name]++
+		case *Pair:
+			walkValue(x.Car)
+			walkValue(x.Cdr)
+		case *Vector:
+			for _, e := range x.Items {
+				walkValue(e)
+			}
+		case *Code:
+			walkCode(x)
+		}
+	}
+	walkCode = func(c *Code) {
+		if c == nil {
+			return
+		}
+		for _, k := range c.Consts {
+			walkValue(k)
+		}
+		for _, s := range c.Params {
+			counts[s.Name]++
+		}
+		for _, s := range c.Names {
+			if s != nil {
+				counts[s.Name]++
+			}
+		}
+	}
+	var walkChunk func(*Chunk)
+	walkChunk = func(c *Chunk) {
+		walkValue(c.Form)
+		walkCode(c.Code)
+		for i := range c.Steps {
+			walkChunk(&c.Steps[i])
+		}
+	}
+	for i := range p.Chunks {
+		walkChunk(&p.Chunks[i])
+	}
+	names := make([]string, 0, len(counts))
+	for name := range counts {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		if counts[names[i]] != counts[names[j]] {
+			return counts[names[i]] > counts[names[j]]
+		}
+		return names[i] < names[j]
+	})
+	return names
 }
 
 // ---------------------------------------------------------------------------
@@ -418,8 +507,24 @@ func ReadBytecode(r io.Reader) (*Program, error) {
 	if string(magic) != bytecodeMagic {
 		return nil, fmt.Errorf("bytecode: not a .scmc file")
 	}
-	if v := br.u8(); v < 1 || v > bytecodeVersion {
-		return nil, fmt.Errorf("bytecode: version %d, but this interpreter speaks %d", v, bytecodeVersion)
+	version := br.u8()
+	if version < 1 || version > bytecodeVersion {
+		return nil, fmt.Errorf("bytecode: version %d, but this interpreter speaks %d", version, bytecodeVersion)
+	}
+	// Version 5 puts every symbol in the file into a table at the head, and
+	// writes indices afterwards.  Older files name each symbol where it is used
+	// and have no table, which is why this is conditional on the version
+	// rather than on the first byte of the table.
+	br.version = int(version)
+	if version >= 5 {
+		n := br.uvarint()
+		br.symbols = make([]*Symbol, n)
+		for i := range br.symbols {
+			br.symbols[i] = Intern(br.str())
+		}
+	}
+	if br.err != nil {
+		return nil, br.err
 	}
 	n := br.uvarint()
 	if br.err != nil {
@@ -443,6 +548,10 @@ func ReadBytecode(r io.Reader) (*Program, error) {
 type byteWriter struct {
 	w   *bufWriter
 	err error
+	// symbols is the table at the head of the file and symbolIndex is its
+	// reverse, so that writing a symbol is one varint instead of its name.
+	symbols     []string
+	symbolIndex map[string]int32
 }
 
 // bufWriter buffers the bytes of a file, so that a large constant pool does
@@ -477,6 +586,22 @@ func (b *byteWriter) raw(p []byte) {
 }
 
 func (b *byteWriter) u8(v byte) { b.raw([]byte{v}) }
+
+// symbol writes a reference to the symbol table at the head of the file.  The
+// table is ordered by how often a name is used, so the common ones are an index
+// below 128 and cost one byte.
+func (b *byteWriter) symbol(x *Symbol) {
+	idx, ok := b.symbolIndex[x.Name]
+	if !ok {
+		// A symbol that was not collected: the program was mutated between the
+		// collection and the write.  Writing it by name is not an option — the
+		// reader expects an index — so the file would be wrong, and saying so
+		// is better than writing a number that means another symbol.
+		b.err = fmt.Errorf("bytecode: symbol %q was not in the table", x.Name)
+		return
+	}
+	b.uvarint(uint64(idx))
+}
 
 func (b *byteWriter) uvarint(v uint64) {
 	var tmp [binary.MaxVarintLen64]byte
@@ -653,7 +778,7 @@ func (b *byteWriter) datum(v Value, seen map[interface{}]bool) {
 		b.str(x.Value())
 	case *Symbol:
 		b.u8(tSymbol)
-		b.str(x.Name)
+		b.symbol(x)
 	case *Pair:
 		if seen[x] {
 			b.err = fmt.Errorf("bytecode: cannot store cyclic data")
@@ -704,6 +829,12 @@ type byteReader struct {
 	err error
 	one [1]byte
 	buf [8]byte
+	// symbols is the table from the head of the file.  A file older than
+	// version 5 has none, and reads its symbols by name as it always did.
+	symbols []*Symbol
+	// version is the file's, so that the datum reader knows which shape of
+	// symbol reference to expect.
+	version int
 }
 
 func (b *byteReader) u8() byte {
@@ -900,6 +1031,16 @@ func (b *byteReader) datum() Value {
 	case tString:
 		return NewString(b.str())
 	case tSymbol:
+		// Version 5 and later write an index into the table at the head of the
+		// file; earlier files write the name.
+		if b.version >= 5 {
+			i := b.uvarint()
+			if int(i) >= len(b.symbols) {
+				b.err = fmt.Errorf("bytecode: symbol index %d is past the table (%d entries)", i, len(b.symbols))
+				return nil
+			}
+			return b.symbols[i]
+		}
 		return Intern(b.str())
 	case tPair:
 		car := b.datum()

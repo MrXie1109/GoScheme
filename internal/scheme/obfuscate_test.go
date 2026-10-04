@@ -245,3 +245,114 @@ func TestIsBytecodeLooksAtContent(t *testing.T) {
 		}
 	}
 }
+
+// 符号表：文件里每个名字只存一次，引用是索引。存储的字节因此少了很多，
+// 而且名字在文件里只出现一次，而不是每次用到都写一遍。
+func TestSymbolTableIsWrittenOnce(t *testing.T) {
+	src := `
+	  (import (scheme base) (scheme write))
+	  (display "a") (display "b") (display "c") (display "d")
+	  (newline)`
+	m := NewMachine()
+	forms, err := NewStringReader(src).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prog, err := CompileProgram(m, forms, m.Global)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := WriteBytecode(&buf, prog); err != nil {
+		t.Fatal(err)
+	}
+	data := buf.Bytes()
+	// display is called four times and is a compiled reference each time, so
+	// its name is stored once — in the table — and referenced by index.
+	if n := bytes.Count(data, []byte("display")); n != 1 {
+		t.Errorf("`display` appears %d times in the file, want 1 (the table)", n)
+	}
+	// The import form is a source chunk: it is kept as written and evaluated by
+	// the interpreter, so the library name in it is text and is expected.  What
+	// must not happen is a symbol written twice as a *reference*.
+	if n := bytes.Count(data, []byte("display\x00")); n != 0 {
+		t.Errorf("a symbol reference was written by name %d times", n)
+	}
+	// And the program still runs.
+	loaded, err := ReadBytecode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := NewOutputStringPort()
+	m2 := NewMachine()
+	m2.CurOut = out
+	m2.OutParam.values[0] = out
+	if _, err := m2.RunProgram(loaded, m2.Global); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.OutputString(); got != "abcd\n" {
+		t.Errorf("printed %q, want %q", got, "abcd")
+	}
+}
+
+// 表按使用频率排序，所以最常用的名字索引最小、编码最短：一个 uvarint 在
+// 127 以下只占一个字节。这是文件变小的地方，而不是表的排序本身。
+func TestFrequentSymbolsComeFirst(t *testing.T) {
+	src := `(car (cdr (car (cdr (car (cdr x))))))`
+	m := NewMachine()
+	forms, err := NewStringReader(src).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prog, err := CompileProgram(m, forms, m.Global)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := collectSymbols(prog)
+	if len(names) == 0 {
+		t.Fatal("no symbols collected")
+	}
+	// car and cdr are used three times each; x once.  Both frequent ones have
+	// to come before the rare one.
+	pos := map[string]int{}
+	for i, n := range names {
+		pos[n] = i
+	}
+	if pos["car"] >= pos["x"] || pos["cdr"] >= pos["x"] {
+		t.Errorf("table order is %v; the frequent names should come first", names)
+	}
+}
+
+// 旧文件仍然读得进来：版本 4 的文件把每个符号写在用到它的地方，没有表。
+func TestVersion4FileStillReads(t *testing.T) {
+	// A file written by the old writer: version 4, a symbol by name.
+	var buf bytes.Buffer
+	bw := &byteWriter{w: &bufWriter{w: &buf}}
+	bw.raw([]byte(bytecodeMagic))
+	bw.u8(4)
+	bw.uvarint(1) // one chunk
+	// chunk: a Code constant (tag 1), then a code body.
+	bw.u8(1)
+	bw.str("<top>")
+	bw.uvarint(1) // one instruction
+	bw.u8(byte(opConst))
+	bw.uvarint(0)
+	bw.uvarint(0)
+	bw.uvarint(0) // consts
+	bw.uvarint(0) // slots
+	bw.uvarint(0) // params
+	bw.u8(0)      // no rest
+	bw.uvarint(0) // no boxed
+	bw.uvarint(0) // no checked
+	bw.uvarint(0) // no names
+	bw.uvarint(1) // one constant: a symbol by name, old style
+	bw.u8(tSymbol)
+	bw.str("old-style")
+	if bw.err != nil {
+		t.Fatal(bw.err)
+	}
+	bw.w.Flush()
+	if _, err := ReadBytecode(bytes.NewReader(buf.Bytes())); err != nil {
+		t.Errorf("a version 4 file was not read: %v", err)
+	}
+}

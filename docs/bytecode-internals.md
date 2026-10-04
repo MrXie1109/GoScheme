@@ -27,9 +27,19 @@ A `.scmc` file is a header and a list of chunks.  It is written by
   the same way.  Any shebang content is accepted; the reader only asks whether
   the file starts with `#!` and, if so, discards through the line break;
 * the magic is four bytes, `G S C M`;
-* the version is **4** (version 3 added the primitive reference in a constant
-  pool, version 2 the steps chunk, version 1 had neither; every older file is
-  still read, and a version from the future is refused rather than misread);
+* the version is **5** (version 4 added the comparison instructions, version 3
+  the primitive reference in a constant pool, version 2 the steps chunk,
+  version 1 had none of it; every older file is still read, and a version from
+  the future is refused rather than misread);
+* version 5 and later put a **symbol table** here: a count and then that many
+  names, and every symbol afterwards is an index into it rather than a name.
+  The table is ordered by how often each name is used, so the frequent ones have
+  an index below 128 and cost one byte — the sort is what shortens the file, and
+  it costs nothing to decode.  The reference documentation measure: the R7RS
+  test suite compiles to 162814 bytes, against 215630 when every use wrote the
+  name again.  Huffman-coding the names was considered and rejected: it would
+  shrink the table, which is the small part, and add a decode step to the part
+  that repeats;
 * then one chunk per top-level part of the program, in source order.
 
 ### The primitives

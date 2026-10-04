@@ -147,7 +147,7 @@ why loading a `.scmc` file still applies its imports and still defines its
 macros, while the rest of the program is never parsed again.
 
 ```
-#!...  | GSCM 03 | chunk count | chunk ... 
+#!...  | GSCM 05 | symbol count | symbol ... | chunk count | chunk ... 
 chunk   = 0 <datum>            ; a source form to evaluate
         | 1 <code>             ; bytecode to run
         | 2 <count> <chunk>... ; steps that share one continuation extent
@@ -214,8 +214,11 @@ The file stays a valid `.scmc` file of the same version: the interpreter reads
 an obfuscated program without knowing it was obfuscated, because the names were
 never needed to run it.
 
-Version 4 added the comparison instructions, version 3 the primitive reference
-in a constant pool and version 2 the steps chunk; older files are still read, and a file
+Version 5 added the symbol table — every name in the file written once, and
+referred to by index afterwards, ordered so that the names used most often get
+the shortest index.  The R7RS test suite compiles 24.5% smaller because of it
+(215630 bytes to 162814).  Version 4 added the comparison instructions, version
+3 the primitive reference in a constant pool and version 2 the steps chunk; older files are still read, and a file
 from a newer version than the interpreter speaks is refused rather than
 misread.
 
