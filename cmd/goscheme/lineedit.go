@@ -117,6 +117,11 @@ type lineEditor struct {
 	// pasting is true while a bracketed paste is being consumed; the pasted
 	// text is echoed as it arrives instead of being redrawn.
 	pasting bool
+	// highlight splits the line into styled spans; nil turns it off, and the
+	// line is then written as it is.
+	highlight func(line []rune, pos int) []span
+	// colour says whether to write the escape sequences the spans ask for.
+	colour bool
 	// lastTab is when Tab was pressed to ask for a completion list.  A second
 	// press within tabRepeat lists the candidates; the first rings the bell.
 	lastTab time.Time
@@ -413,7 +418,17 @@ func (e *lineEditor) render() {
 	// from the cursor would leave anything below it.
 	sb.WriteString("\x1b[J")
 	sb.WriteString(e.prompt)
-	sb.WriteString(string(e.line))
+	// The line is drawn in pieces so that names, literals and the bracket pair
+	// the cursor is on can be coloured.  The pieces are chosen from the plain
+	// text and the colours are added as they are written, so every column count
+	// below is taken from the text alone — an escape sequence occupies no
+	// columns, and counting one would put the cursor in the wrong place, which
+	// is the bug this file has already had twice.
+	if e.highlight != nil && e.colour {
+		renderSpans(&sb, e.highlight(e.line, e.pos), true)
+	} else {
+		sb.WriteString(string(e.line))
+	}
 
 	// Forward from the end of the line, which is where writing it left the
 	// cursor, to the row and column e.pos is at.

@@ -349,7 +349,7 @@ func repl(m *scheme.Machine, quiet bool) int {
 
 	// An interactive session reports its errors on the terminal, and there is
 	// usually a human deciding what to do about them, so its status is 0.
-	replEdited(m, newLineEditor(os.Stdin, out), out, os.Stderr, sigint)
+	replEdited(m, newREPLLineEditor(m, out), out, os.Stderr, sigint)
 	return 0
 }
 
@@ -577,6 +577,69 @@ func evalForm(m *scheme.Machine, f scheme.Value, stdout, stderr io.Writer) (keep
 		fmt.Fprintln(stdout, scheme.WriteToString(v))
 	}
 	return true, false
+}
+
+// newREPLLineEditor builds the editor the interactive REPL uses, with the
+// highlighting and completion a REPL wants.
+func newREPLLineEditor(m *scheme.Machine, out *lineTracker) *lineEditor {
+	e := newLineEditor(os.Stdin, out)
+	h := &replHighlighter{m: m}
+	e.highlight = h.highlight
+	e.colour = colourEnabled(os.Stdout)
+	return e
+}
+
+// colourEnabled reports whether to colour the line.  A terminal that says it is
+// not one, or a user who has said no, gets plain text: escape sequences written
+// into a pipe or a file are noise, and NO_COLOR is the convention for the rest.
+func colourEnabled(f *os.File) bool {
+	if _, set := os.LookupEnv("NO_COLOR"); set {
+		return false
+	}
+	if v := os.Getenv("TERM"); v == "" || v == "dumb" {
+		return false
+	}
+	return isTerminal(f)
+}
+
+// replHighlighter colours a line of Scheme: the names the interpreter provides,
+// the syntax, and the bracket pair the cursor is on.
+type replHighlighter struct {
+	m *scheme.Machine
+	// builtins and syntax are filled in the first time a line is drawn, because
+	// the environment is still being built when the editor is created.
+	builtins map[string]bool
+	syntax   map[string]bool
+}
+
+func (h *replHighlighter) highlight(line []rune, pos int) []span {
+	h.once()
+	return highlight(line, pos, func(word string) style {
+		switch {
+		case h.syntax[word]:
+			return styleSyntax
+		case h.builtins[word]:
+			return styleBuiltin
+		default:
+			return stylePlain
+		}
+	})
+}
+
+func (h *replHighlighter) once() {
+	if h.builtins != nil {
+		return
+	}
+	h.builtins = map[string]bool{}
+	if h.m != nil {
+		for sym := range h.m.Builtin.Snapshot() {
+			h.builtins[sym.Name] = true
+		}
+	}
+	h.syntax = map[string]bool{}
+	for _, name := range scheme.SyntaxNames() {
+		h.syntax[name] = true
+	}
 }
 
 // isTerminal reports whether f is a character device, i.e. whether the

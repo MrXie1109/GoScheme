@@ -158,6 +158,18 @@ func evalBadAux(m *Machine, form Value, env *Env) {
 // Quoting
 // ---------------------------------------------------------------------------
 
+// SyntaxNames lists the syntactic keywords the interpreter recognises, for a
+// caller that wants to show them differently from procedures — the REPL colours
+// them.  It is a function rather than the map itself so that nothing outside
+// can add to or remove from the table the evaluator dispatches on.
+func SyntaxNames() []string {
+	names := make([]string, 0, len(specialForms))
+	for name := range specialForms {
+		names = append(names, name)
+	}
+	return names
+}
+
 func evalQuote(m *Machine, form Value, env *Env) {
 	args := formArgs(form)
 	if len(args) != 1 {
