@@ -38,6 +38,7 @@ $ goscheme -e '(display (map (lambda (x) (* x x)) (list 1 2 3 4))) (newline)'
 - [交叉编译](#交叉编译)
 - [环境要求](#环境要求)
 - [已知限制](#已知限制)
+- [开源倡议](docs/open-source.md)
 - [许可证](#许可证)
 
 ## 快速开始

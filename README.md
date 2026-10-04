@@ -40,12 +40,12 @@ $ goscheme -e '(display (map (lambda (x) (* x x)) (list 1 2 3 4))) (newline)'
 - [The bytecode VM](docs/bytecode.md)
   - [The format, the machine and the numbers](docs/bytecode-internals.md)
 - [Performance against C, Python and Guile](docs/performance.md)
-  - [The format, the machine and the numbers](docs/bytecode-internals.md)
 - [Performance](#performance)
 - [Testing](#testing)
 - [Cross-compilation](#cross-compilation)
 - [Requirements](#requirements)
 - [Known limitations](#known-limitations)
+- [Open source](docs/open-source.md)
 - [License](#license)
 
 ## Quick start

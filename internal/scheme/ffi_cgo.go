@@ -1,5 +1,7 @@
 //go:build cgo
 
+// SPDX-License-Identifier: MIT
+
 package scheme
 
 /*
