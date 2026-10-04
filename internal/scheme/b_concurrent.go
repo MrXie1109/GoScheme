@@ -67,6 +67,7 @@ func (m *Machine) Child() *Machine {
 		libExports: m.libExports,
 		libLoading: m.libLoading,
 		wg:         m.wg,
+		cancel:     m.cancel,
 	}
 }
 
@@ -450,7 +451,7 @@ func installConcurrency(m *Machine) {
 			m.Raise(errf("chan-send!", "expected a channel but got %s", WriteToString(a[0])))
 			return
 		}
-		if err := channelSend(c, a[1]); err != nil {
+		if err := channelSend(c, a[1], m.cancel); err != nil {
 			m.RaiseError(err)
 			return
 		}
@@ -463,7 +464,11 @@ func installConcurrency(m *Machine) {
 			m.Raise(errf("chan-recv!", "expected a channel but got %s", WriteToString(a[0])))
 			return
 		}
-		v, ok2 := <-c.ch
+		v, ok2, err := channelRecv(c, m.cancel)
+		if err != nil {
+			m.RaiseError(err)
+			return
+		}
 		if !ok2 {
 			m.Return(&MultipleValues{Values: []Value{UnspecifiedValue, False}})
 			return
@@ -498,7 +503,7 @@ func installConcurrency(m *Machine) {
 
 // channelSend sends v, converting a send racing with a close into an error
 // instead of a panic.
-func channelSend(c *Channel, v Value) (err error) {
+func channelSend(c *Channel, v Value, cancel <-chan struct{}) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = NewError("chan-send!: channel is closed")
@@ -507,6 +512,35 @@ func channelSend(c *Channel, v Value) (err error) {
 	if c.isClosed() {
 		return NewError("chan-send!: channel is closed")
 	}
-	c.ch <- v
-	return nil
+	if cancel == nil {
+		c.ch <- v
+		return nil
+	}
+	// A send waits for a receiver, and that wait has to be interruptible: a
+	// form the user abandoned with Ctrl-C must not stay parked here and take
+	// the value later, which is what it did — the receiver got a value from a
+	// send that had been cancelled.
+	select {
+	case c.ch <- v:
+		return nil
+	case <-cancel:
+		return ErrInterrupted
+	}
+}
+
+// channelRecv receives from c, and reports ErrInterrupted if the wait is
+// cancelled.  The receive primitives are written out here rather than inline so
+// that the two waits — the ordinary one and the one that can be abandoned —
+// stay in one place.
+func channelRecv(c *Channel, cancel <-chan struct{}) (Value, bool, error) {
+	if cancel == nil {
+		v, ok := <-c.ch
+		return v, ok, nil
+	}
+	select {
+	case v, ok := <-c.ch:
+		return v, ok, nil
+	case <-cancel:
+		return nil, false, ErrInterrupted
+	}
 }

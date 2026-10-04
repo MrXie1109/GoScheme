@@ -3,6 +3,7 @@
 package scheme
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -60,6 +61,17 @@ type Machine struct {
 	// tree-walker exactly as it did before compile.go existed.  It is how the
 	// two execution paths are compared, and it is what `-interp` sets.
 	Interpret bool
+
+	// cancel is closed to interrupt this machine's evaluation.  The REPL closes
+	// it when Ctrl-C arrives during a form: the evaluation is running in
+	// another goroutine, and without this the keystroke printed "^C" and left
+	// the evaluation running, so a form that had been abandoned would still
+	// take the value it was waiting for — a (chan-send! ch x) that was "cancelled"
+	// showed up later in a (chan-recv! ch).
+	//
+	// A nil channel is never ready, so a machine with no cancel (everything
+	// outside the REPL) checks nothing and pays nothing.
+	cancel <-chan struct{}
 
 	// framesCopied records that some continuation has been captured, which
 	// copies the frame stack.  From then on a compiled frame may be reachable
@@ -350,6 +362,14 @@ func (m *Machine) runLoop(baseStack, baseWinds, baseHands int) (Value, error) {
 		}
 	}
 	for {
+		// The nil check comes first and is the whole cost for a machine that has
+		// no cancel set — which is every machine but the one the REPL is
+		// evaluating a form on — so the interruptible path costs the ordinary
+		// one nothing.
+		if m.cancel != nil && m.cancelled() {
+			restore()
+			return nil, ErrInterrupted
+		}
 		if m.pending != nil {
 			if !m.dispatchError() {
 				err := m.pending
@@ -384,6 +404,28 @@ func (m *Machine) runLoop(baseStack, baseWinds, baseHands int) (Value, error) {
 // ---------------------------------------------------------------------------
 // Errors and conditions
 // ---------------------------------------------------------------------------
+
+// ErrInterrupted is returned by an evaluation that was cancelled.  It is not a
+// Scheme condition: the program did not fail, it was told to stop.
+var ErrInterrupted = errors.New("interrupted")
+
+// SetCancel gives this machine a channel to watch: closing it interrupts the
+// evaluation with ErrInterrupted at its next step.  Passing nil removes the
+// watch.
+func (m *Machine) SetCancel(ch <-chan struct{}) { m.cancel = ch }
+
+// cancelled reports whether the evaluation has been interrupted.
+func (m *Machine) cancelled() bool {
+	if m.cancel == nil {
+		return false
+	}
+	select {
+	case <-m.cancel:
+		return true
+	default:
+		return false
+	}
+}
 
 // Raise signals a Scheme condition.
 func (m *Machine) Raise(cond Value) {

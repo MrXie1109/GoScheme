@@ -553,6 +553,15 @@ func evalFormInteractive(m *scheme.Machine, form scheme.Value, stdout, stderr io
 	machine := m.Child()
 	done := make(chan outcome, 1)
 
+	// Ctrl-C during a form abandons it.  The evaluation runs in another
+	// goroutine, so printing "^C" is not enough: the machine is given a channel
+	// to watch, and closing it stops the evaluation at its next step and wakes
+	// it out of a blocked send or receive.  Without that the abandoned form
+	// kept running — a (chan-send! ch v) that was "cancelled" stayed parked on
+	// the channel and delivered v to whoever received next.
+	cancel := make(chan struct{})
+	machine.SetCancel(cancel)
+
 	// While an evaluation runs Ctrl-C must abort it rather than cancel a line.
 	_ = setInterrupts(os.Stdin, true)
 	go func() {
@@ -565,11 +574,6 @@ func evalFormInteractive(m *scheme.Machine, form scheme.Value, stdout, stderr io
 		done <- outcome{value: v, err: err}
 	}()
 
-	// The pending timer is what stops the Go runtime from declaring a
-	// deadlock while the evaluation is blocked.
-	timer := time.NewTimer(time.Hour)
-	defer timer.Stop()
-
 	select {
 	case r := <-done:
 		_ = setInterrupts(os.Stdin, false)
@@ -580,6 +584,12 @@ func evalFormInteractive(m *scheme.Machine, form scheme.Value, stdout, stderr io
 			if _, ok := r.err.(*scheme.ExitError); ok {
 				return false
 			}
+			// An interrupted form is not a failure to report: the user asked
+			// for it to stop.
+			if errors.Is(r.err, scheme.ErrInterrupted) {
+				fmt.Fprint(stdout, "^C\n")
+				return true
+			}
 			printError(stderr, r.err)
 		default:
 			if _, un := r.value.(scheme.Unspecified); !un {
@@ -589,9 +599,20 @@ func evalFormInteractive(m *scheme.Machine, form scheme.Value, stdout, stderr io
 		return true
 	case <-sigint:
 		_ = setInterrupts(os.Stdin, false)
+		close(cancel)
+		// Wait for the evaluation to notice.  It is running in another
+		// goroutine and may be part way through a step or blocked in a
+		// primitive; both check the channel, so this returns quickly — and
+		// waiting for it is what makes the next form start from a quiet
+		// machine rather than alongside the one that was abandoned.
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			// It did not stop.  Say nothing about it here: the REPL must stay
+			// usable, and a machine that ignores the channel is a bug to find,
+			// not a reason to hang the prompt.
+		}
 		fmt.Fprint(stdout, "^C\n")
-		return true
-	case <-timer.C:
 		return true
 	}
 }
