@@ -45,6 +45,11 @@ check-disasm: build
 	@$(BUILD)/$(BIN) scripts/scmc-disassemble.scm --check $(BUILD)/check.scmc
 	@$(BUILD)/$(BIN) compile test/scheme/goscheme-tests.scm -o $(BUILD)/check-ext.scmc
 	@$(BUILD)/$(BIN) scripts/scmc-disassemble.scm --check $(BUILD)/check-ext.scmc
+	@# The same file without its shebang: a compiled file from before the
+	@# shebang existed has to read and disassemble the same way.
+	@tail -n +2 $(BUILD)/check.scmc > $(BUILD)/check-noshebang.scmc
+	@$(BUILD)/$(BIN) scripts/scmc-disassemble.scm --check $(BUILD)/check-noshebang.scmc
+	@rm -f $(BUILD)/check-noshebang.scmc
 
 ## fmt: format the Go sources
 fmt:

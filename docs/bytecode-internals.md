@@ -17,9 +17,15 @@ A `.scmc` file is a header and a list of chunks.  It is written by
 `WriteBytecode` and read by `ReadBytecode`.
 
 ```
-GSCM | version u8 | chunk count uvarint | chunk ...
+[#!... \n] | GSCM | version u8 | chunk count uvarint | chunk ...
 ```
 
+* a shebang line may come first, and is skipped if it does.  `goscheme compile`
+  writes `#!/usr/bin/env goscheme` and sets the execute bits, so a compiled file
+  runs as it stands.  It is not part of the format: the bytes after it are the
+  file, and a file with no shebang — one written before this was added — is read
+  the same way.  Any shebang content is accepted; the reader only asks whether
+  the file starts with `#!` and, if so, discards through the line break;
 * the magic is four bytes, `G S C M`;
 * the version is **3** (version 2 added the steps chunk, version 1 had neither
   that nor the primitive reference; every older file is still read, and a

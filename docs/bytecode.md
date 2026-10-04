@@ -135,15 +135,15 @@ it costs neither.
 
 ## Bytecode files
 
-`goscheme compile` writes a **`.scmc`** file: a magic number, a version, and the
-program as chunks.  A chunk is either compiled code or a source form, and the
+`goscheme compile` writes a **`.scmc`** file: a shebang line, a magic number, a
+version, and the program as chunks.  A chunk is either compiled code or a source form, and the
 source ones are exactly the forms that teach the compiler something
 (`import`, `define-syntax`, `include`) or that it could not compile — which is
 why loading a `.scmc` file still applies its imports and still defines its
 macros, while the rest of the program is never parsed again.
 
 ```
-GSCM 02 | chunk count | chunk ... 
+#!...  | GSCM 03 | chunk count | chunk ... 
 chunk   = 0 <datum>            ; a source form to evaluate
         | 1 <code>             ; bytecode to run
         | 2 <count> <chunk>... ; steps that share one continuation extent
@@ -164,6 +164,19 @@ compiled one at a time instead and written as the **steps** of a single chunk
 either way.  Nothing in the language reaches that path any more, so it is the
 safety net rather than the common case: it is what a compiler extension or a
 mistake falls back to, and it has a test of its own.
+
+The first line is a shebang, `#!/usr/bin/env goscheme`, because the file is
+written executable and can be run as it stands:
+
+```sh
+goscheme compile prog.scm -o prog.scmc
+./prog.scmc
+```
+
+It is a line of text rather than part of the format, and the reader skips it
+whenever it is there: a file compiled before this existed — with no shebang —
+reads exactly as it always did, and so does one whose shebang names something
+else.  Only the four bytes after it have to be the magic.
 
 Version 3 added the primitive reference in a constant pool and version 2 the
 steps chunk; older files are still read, and a file

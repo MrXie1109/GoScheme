@@ -19,6 +19,11 @@ binary files a byte at a time, decodes Go's varints and zig-zag integers by
 hand, parses a tagged recursive format whose values can hold compiled code
 inside compiled code, and prints the result.
 
+It reads both shapes of file: a `.scmc` written by a compiler that adds a shebang
+line, and one written by an older compiler that does not.  The shebang is a line
+of text in front of the format rather than part of it, so it is skipped by the
+same rule the interpreter uses — the file starts with `#!`, so the line goes.
+
 ```sh
 $ goscheme compile hello.scm            # writes hello.scmc
 $ goscheme scripts/scmc-disassemble.scm hello.scmc

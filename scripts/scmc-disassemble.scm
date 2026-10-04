@@ -206,8 +206,30 @@
                                (loop (+ i 1) (cons (read-chunk port) out)))))))
       (else (error "scmc: unknown chunk tag" tag)))))
 
+;; A compiled file may begin with a shebang, so that it can be made
+;; executable, and the interpreter skips it — so this has to skip it too.
+;; Nothing is consumed unless the whole "#!" is there: a file that merely
+;; begins with # is not a compiled file, and the magic check says so.
+(define (skip-shebang port)
+  (let ((first (peek-u8 port)))
+    (if (or (eof-object? first) (not (= first 35)))   ; not #\
+        #t
+        (begin
+          (read-u8 port)                              ; consume #
+          (let ((second (peek-u8 port)))
+            (if (or (eof-object? second) (not (= second 33)))   ; not !
+                (error "scmc: not a .scmc file: it begins with # but not #!")
+                (begin
+                  (read-u8 port)                      ; consume !
+                  (let loop ()
+                    (let ((c (read-u8 port)))
+                      (if (or (eof-object? c) (= c 10))
+                          #t
+                          (loop))))))))))) 
+
 (define (read-program path)
   (let ((port (open-binary-input-file path)))
+    (skip-shebang port)
     (let* ((magic (read-bytes port 4))
            (version (read-u8* port)))
       (if (not (equal? (utf8->string magic) "GSCM"))
