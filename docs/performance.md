@@ -298,6 +298,66 @@ rewrites the *names* in a compiled file — body names, slot names, the globals
 the program defines — and shuffles the constant pools.  It is not encryption
 and does not pretend to be.  See [bytecode.md](bytecode.md).
 
+## What was tried for the three next steps, and what the measurements said
+
+The plan below was worked through, and the first thing it taught is that the
+obvious form of each item does not work.  Every measurement is pinned to one
+core, best of nine, against the panel; a change that did not win was removed
+rather than kept behind a flag.
+
+### Unboxed integers in a compiled frame
+
+The allocation profile of a counting loop says exactly where the time goes:
+
+```
+(define (loop i acc) (if (= i 0) acc (loop (- i 1) (+ acc i))))
+(loop 200000 0)                        ->  4.0 allocations per iteration
+```
+
+| what allocates | share of the objects |
+|---|---|
+| `Int` — building the result of `+` and `-` | **75%** |
+| `newVMEnv` — the frame of each call | **23%** |
+
+Two ways to attack the `Int` line were tried and both lost:
+
+| change | result |
+|---|---|
+| widen the small-integer pool from ±1024 to ±65536 | **4.3% slower** |
+| a blocked pool, filling each 1024-value block on demand | **2.6% slower** |
+
+The first loses because a 3 MB array stops fitting in cache, and a program
+reuses small values over and over: they miss where they used to hit.  The second
+loses because the block lookup happens on every construction and costs more than
+the allocation it avoids.
+
+The reason neither can help the loops that allocate most is worth writing down,
+because it rules the whole approach out: that loop's accumulator reaches
+**20000100000**.  A pool covering the values a real program counts to is tens of
+megabytes.  **The allocation is not a consequence of the pool being too small;
+it is a consequence of a frame slot holding a boxed `Value`** — and unboxing it
+means a typed second slot table plus a typed operand stack, because `opLocal`
+pushes the slot onto `vals []Value` and would box it again immediately.  That is
+a compiler project with type inference, not a simple optimization, and it is the
+honest answer to why this item is still on the list.
+
+### The frame allocation, which looked like the easy win
+
+`newVMEnv` allocates 23% of the objects, and 4 slots are kept inline before it
+falls back to a slice.  Raising that to 8 is a one-line change and it was
+**6% slower**: a frame pays for the slots whether or not it uses them, the
+bigger frame is copied more on every call and every suspension, and the
+allocation it saves is once per call while the copying it costs is once per call
+*and* once per return.
+
+### Cached global references
+
+This one has real room — `Env.get` and its map lookup are 11% of a program that
+reads globals in a loop — and the groundwork is in place: `Env.Generation` is
+bumped by `Define` and `Set`, so a compiled body can remember what a name was
+bound to and know the answer is still current.  It measured at no cost (the
+panel moved 1.0%, which is noise).  The cache itself is not written yet.
+
 ## Where the next 2× would come from
 
 In the order that pays:

@@ -384,6 +384,11 @@ func cellSet(c *cell, v Value) {
 // slots are a separate slice is two allocations — the env and the array — and
 // this makes the common small frame one: a parameter or two and an internal
 // definition.  A bigger frame still falls back to a slice.
+//
+// Raising it to 8 was tried and is 6% SLOWER: every frame carries the slots
+// whether or not it uses them, and a frame that is 4 slots'-worth bigger is
+// copied more on every call and on every suspension.  The allocation it saves
+// is per call; the copying it costs is per call and per return.
 const vmInlineSlots = 4
 
 // vmEnv is one activation frame: its slots and the frame the closure that
