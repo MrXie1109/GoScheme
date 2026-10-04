@@ -17,6 +17,7 @@ import (
 // without reading source again — see "goscheme file.scmc".
 func runCompile(args []string) int {
 	var scriptPath, out string
+	obfuscate := false
 	for i := 0; i < len(args); i++ {
 		switch a := args[i]; a {
 		case "-o", "--output":
@@ -26,6 +27,8 @@ func runCompile(args []string) int {
 			}
 			i++
 			out = args[i]
+		case "-obfuscate", "--obfuscate":
+			obfuscate = true
 		default:
 			if strings.HasPrefix(a, "-") && a != "-" {
 				fmt.Fprintf(os.Stderr, "goscheme compile: unknown option %s\n", a)
@@ -39,7 +42,7 @@ func runCompile(args []string) int {
 		}
 	}
 	if scriptPath == "" {
-		fmt.Fprintln(os.Stderr, "usage: goscheme compile <script> [-o <output.scmc>]")
+		fmt.Fprintln(os.Stderr, "usage: goscheme compile <script> [-o <output.scmc>] [-obfuscate]")
 		return 2
 	}
 	if out == "" {
@@ -69,6 +72,10 @@ func runCompile(args []string) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "goscheme compile: %v\n", err)
 		return 1
+	}
+	if obfuscate {
+		scheme.Obfuscate(prog)
+		scheme.ObfuscateGlobals(prog, m)
 	}
 	f, err := os.Create(out)
 	if err != nil {

@@ -27,9 +27,9 @@ A `.scmc` file is a header and a list of chunks.  It is written by
   the same way.  Any shebang content is accepted; the reader only asks whether
   the file starts with `#!` and, if so, discards through the line break;
 * the magic is four bytes, `G S C M`;
-* the version is **3** (version 2 added the steps chunk, version 1 had neither
-  that nor the primitive reference; every older file is still read, and a
-  version from the future is refused rather than misread);
+* the version is **4** (version 3 added the primitive reference in a constant
+  pool, version 2 the steps chunk, version 1 had neither; every older file is
+  still read, and a version from the future is refused rather than misread);
 * then one chunk per top-level part of the program, in source order.
 
 ### The primitives
@@ -151,7 +151,7 @@ whose header cannot be read is never treated as source.
 
 ## The instruction set
 
-Twenty-three opcodes.  `—` is an empty operand stack for that instruction.
+Twenty-eight opcodes.  `—` is an empty operand stack for that instruction.
 
 | opcode | operands | stack | what it does |
 |---|---|---|---|
@@ -178,9 +178,31 @@ Twenty-three opcodes.  `—` is an empty operand stack for that instruction.
 | `opCall` | argument count | p a… → v † | call, and come back here |
 | `opTailCall` | argument count | p a… → — | call, discarding this activation |
 | `opReturn` | — | v → — | return v from this activation |
+| `opNumLt` | argument count | a… → v | `<` |
+| `opNumLe` | argument count | a… → v | `<=` |
+| `opNumGt` | argument count | a… → v | `>` |
+| `opNumGe` | argument count | a… → v | `>=` |
+| `opNumEq` | argument count | a… → v | `=` |
 
 Targets are absolute instruction indices in the same body; the compiler patches
 them as it goes, so a jump is one varint and no second pass.
+
+The five comparison instructions exist because a call to `<` costs a type
+assertion on the operator, an arity check and an indirect call, once per
+comparison — once per loop iteration in the code that matters.  The compiler
+emits the instruction instead wherever it can see that the operator is still the
+interpreter's own binding and the arity is one the primitive accepts; a program
+that rebinds `<` gets the general call.  The instruction does what the primitive
+does: a fast path for small exact integers, and otherwise a call to the very
+primitive it stands for, so the numeric tower is never reimplemented.  Measured
+pinned to a core, the whole benchmark panel is 8% faster.
+
+`+`, `-` and `*` have no instruction, and that is a measurement rather than an
+omission: they were tried and were 22% *slower*, because they are variadic
+primitives whose body is already a tight loop, so an instruction that tests its
+operands and then falls back to the same primitive costs more than the call it
+saves.  The comparisons win because they are chained, so the call and the arity
+check are the expensive part.
 
 † `opCall` leaves the value on the stack immediately when the callee is a simple
 primitive, and when the activation is resumed otherwise; either way the

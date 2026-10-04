@@ -52,7 +52,7 @@ const (
 	// nothing else about the format changed.
 	// 3 added the primitive reference in a constant pool.  Older files are
 	// still read; a file from a newer version is refused rather than misread.
-	bytecodeVersion = 3
+	bytecodeVersion = 4
 )
 
 // Compiled reports how many of the program's top-level forms are bytecode, and

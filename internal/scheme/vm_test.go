@@ -398,8 +398,58 @@ func compileAndRun(t *testing.T, src string) string {
 	return out.OutputString()
 }
 
+// compileAndRunObfuscated is compileAndRun with Obfuscate in the middle, so that
+// every program in the corpus is also a test that obfuscation changes nothing
+// but the names.
+func compileAndRunObfuscated(t *testing.T, src string) string {
+	t.Helper()
+	out := NewOutputStringPort()
+	m := NewMachine()
+	m.CurOut = out
+	m.OutParam.values[0] = out
+	forms, err := NewStringReader(src).ReadAll()
+	if err != nil {
+		t.Fatalf("reading: %v", err)
+	}
+	prog, err := CompileProgram(m, forms, m.Global)
+	if err != nil {
+		t.Fatalf("compiling: %v", err)
+	}
+	Obfuscate(prog)
+	ObfuscateGlobals(prog, m)
+	var buf bytes.Buffer
+	if err := WriteBytecode(&buf, prog); err != nil {
+		t.Fatalf("writing bytecode: %v", err)
+	}
+	loaded, err := ReadBytecode(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("reading bytecode: %v", err)
+	}
+	m2 := NewMachine()
+	m2.CurOut = out
+	m2.OutParam.values[0] = out
+	if _, err := m2.RunProgram(loaded, m2.Global); err != nil {
+		t.Fatalf("running obfuscated bytecode: %v", err)
+	}
+	return out.OutputString()
+}
+
+// stripErrorLabels removes the "name: " prefix of each error line, which is the
+// part obfuscation is allowed to change.
+func stripErrorLabels(s string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(s, "\n") {
+		if i := strings.Index(line, ": "); i > 0 && !strings.Contains(line[:i], " ") {
+			line = line[i+2:]
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
 // TestVMDifferential is the contract: the same program prints the same thing
-// compiled, compiled-and-reloaded, and interpreted.
+// compiled, compiled-and-reloaded, interpreted, and obfuscated.
 func TestVMDifferential(t *testing.T) {
 	for _, p := range vmPrograms {
 		p := p
@@ -414,6 +464,18 @@ func TestVMDifferential(t *testing.T) {
 			if reloaded != interpreted {
 				t.Errorf("bytecode file and interpreted differ:\n reloaded: %q\ninterpreted: %q",
 					reloaded, interpreted)
+			}
+			// The same program again, obfuscated.  What is compared is the
+			// program's output with the *names* taken out of it: an error
+			// message that names the procedure it happened in is renamed along
+			// with it — "b3: wrong number of arguments" where the plain build
+			// says "procedure: ..." — so the comparison ignores the label
+			// before the colon and nothing else.  Everything a program computes
+			// has to be identical.
+			obfuscated := compileAndRunObfuscated(t, p.src)
+			if stripErrorLabels(obfuscated) != stripErrorLabels(interpreted) {
+				t.Errorf("obfuscated and interpreted differ:\nobfuscated: %q\ninterpreted: %q",
+					obfuscated, interpreted)
 			}
 			if compiled == "" {
 				t.Errorf("the program printed nothing, so the test proves nothing")

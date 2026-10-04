@@ -130,7 +130,7 @@ them all, so they cannot quietly rot.  Two are worth calling out:
 ```
 goscheme [options] [file] [argument ...]
 goscheme build <script> [-o <output>] [-i <interpreter>]
-goscheme compile <script> [-o <output.scmc>]
+goscheme compile <script> [-o <output.scmc>] [-obfuscate]
 
   -e, --eval EXPR     evaluate EXPR (may be repeated, evaluated in order)
   -i, --interactive   enter the REPL after loading FILE
@@ -145,8 +145,14 @@ A script is **compiled to bytecode and run on the VM** where the compiler
 understands it, and interpreted where it does not; `-interp` forces the
 tree-walker, which is how the two are compared.  `goscheme compile` writes the
 compiled program to a `.scmc` file, and a `.scmc` file given to the interpreter
-is loaded and run without being parsed as source.  See
-[docs/bytecode.md](docs/bytecode.md).
+is loaded and run without being parsed as source.  A compiled file starts with a
+shebang and is written executable, so it can be run as it stands.
+
+`goscheme compile -obfuscate` removes the names from the file — body names, slot
+names, and the globals the program defines — and shuffles the constant pools, so
+that the file runs the same but no longer reads like a description of itself.
+It is not encryption: the strings and numbers the program works with are still
+there.  See [docs/bytecode.md](docs/bytecode.md).
 
 With neither a file nor `-e`, the interpreter starts a REPL.  The primary
 prompt is `>>> `, and `... ` appears while a form is still open.

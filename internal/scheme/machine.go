@@ -110,6 +110,11 @@ func NewMachine() *Machine {
 	m.ErrParam = &Parameter{Name: "current-error-port", IsPort: true, values: []Value{m.CurErr}}
 	m.Builtin = NewEnvNamed(nil, "builtins")
 	installBuiltins(m)
+	// The arithmetic instructions stand for specific builtins, and the compiler
+	// can only tell a call to the interpreter's + from a call to a program's
+	// own + by comparing against them, so they are recorded here, where the
+	// builtins have just been made.
+	installArithmeticInstructions(m)
 	m.finishLibraries()
 	m.Global = NewEnvNamed(m.Builtin, "interaction")
 	return m

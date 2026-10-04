@@ -234,7 +234,7 @@
            (version (read-u8* port)))
       (if (not (equal? (utf8->string magic) "GSCM"))
           (error "scmc: not a .scmc file" path))
-      (if (> version 3)
+      (if (> version 4)
           (error "scmc: version" version "is newer than this script knows"))
       (let ((n (read-uvarint port)))
         (list (cons 'version version)
@@ -407,7 +407,8 @@
      "global" "set-global" "define-global"
      "closure" "interp-closure" "pop" "eqv"
      "jump" "jump-false" "jump-true" "jump-false-keep" "jump-true-keep"
-     "call" "tail-call" "return"))
+     "call" "tail-call" "return"
+     "num<" "num<=" "num>" "num>=" "num="))
 
 (define (opcode-name op)
   (if (and (>= op 0) (< op (vector-length opcode-names)))

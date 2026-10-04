@@ -178,8 +178,40 @@ whenever it is there: a file compiled before this existed — with no shebang �
 reads exactly as it always did, and so does one whose shebang names something
 else.  Only the four bytes after it have to be the magic.
 
-Version 3 added the primitive reference in a constant pool and version 2 the
-steps chunk; older files are still read, and a file
+### Obfuscated output
+
+`goscheme compile -obfuscate` writes a file that runs the same and does not read
+like a description of the program:
+
+```sh
+goscheme compile prog.scm -o prog.scmc -obfuscate
+```
+
+* every compiled body is renamed `b0`, `b1`, …;
+* slot names become `v0`, `v1`, … — they stay in the file, because
+  `opLocalCheck` uses them to say which variable was used before it was
+  initialized, so the message survives and the name in it does not;
+* each constant pool is shuffled, and the instructions that index it are
+  rewritten to match, so which constant sits at index 0 is not a clue about
+  where the code begins.  Compiling twice gives different bytes;
+* the globals the program defines itself are renamed (`secret-key` → `g0`),
+  but only where it can be shown that nothing else refers to them by name: a
+  name mentioned in a source chunk keeps its name, because that chunk is
+  evaluated by the interpreter as written, and a name the program does not
+  define belongs to a library.
+
+It is not encryption, and does not pretend to be: the strings and numbers the
+program works with are still in the file, because it needs them, and a reader
+can still follow the instructions.  What goes is the vocabulary — the names that
+say what the program is *for*.  A program that builds a symbol from a string and
+looks it up keeps that name, and is not caught.
+
+The file stays a valid `.scmc` file of the same version: the interpreter reads
+an obfuscated program without knowing it was obfuscated, because the names were
+never needed to run it.
+
+Version 4 added the comparison instructions, version 3 the primitive reference
+in a constant pool and version 2 the steps chunk; older files are still read, and a file
 from a newer version than the interpreter speaks is refused rather than
 misread.
 

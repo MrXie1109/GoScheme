@@ -54,12 +54,24 @@ const (
 	opCall          // arg1: argument count
 	opTailCall      // arg1: argument count
 	opReturn
+	// The comparison primitives, as instructions.  Emitted where the compiler
+	// can see that the operator is still the interpreter's own binding and the
+	// call has the arity the instruction takes, so a program that rebinds <
+	// gets the general call it asked for.  The operation is the primitive's
+	// own — a fixnum fast path, and the primitive itself otherwise — reached
+	// without a call, an arity check and an interface method lookup.  arg1 is
+	// the argument count.  See arithmeticOps for why + - * are not here.
+	opNumLt
+	opNumLe
+	opNumGt
+	opNumGe
+	opNumEq
 )
 
 // opcodeCount is how many opcodes this interpreter knows.  The reader uses it:
 // an instruction from a newer file would otherwise be a silent no-op, because
 // the instruction loop's switch has no default case.
-const opcodeCount = int(opReturn) + 1
+const opcodeCount = int(opNumEq) + 1
 
 // guardReRaise is what a compiled guard does when none of its clauses matched:
 // it raises the condition again.  It is a value of its own rather than a lookup
@@ -757,6 +769,83 @@ func vmRun(m *Machine, code *Code, ip int, env *vmEnv, globals *Env, vals []Valu
 			if IsTrue(vals[len(vals)-1]) {
 				ip = int(in.arg1)
 			}
+
+		case opNumLt, opNumLe, opNumGt, opNumGe, opNumEq:
+			// The arguments are on the stack; the result replaces them.  The
+			// fast path handles the case these programs are made of — small
+			// exact integers — and anything else falls back to the primitive
+			// that implements the operation in full, so the semantics are
+			// whatever the standard library says they are.
+			n := int(in.arg1)
+			base := len(vals) - n
+			// The operands are read, not written, so nothing has to be copied
+			// out of the way: vals[base:] is only aliased by the array the
+			// result is appended to, and appending writes at index base, which
+			// is the *first* operand — after every operand has been read by the
+			// fast paths below.  The fallback is the case that would trip over
+			// it, and it takes its own copy of the operands for that reason.
+			args := vals[base:]
+			// The overwhelmingly common shape is two small exact integers, and
+			// it is worth not going through the variadic helper for it: the
+			// helper sets up a loop and a slice, and the whole point of this
+			// instruction is that it costs less than the call it replaced.
+			if n == 2 {
+				if x, ok := args[0].(*Integer); ok && x.small {
+					if y, ok := args[1].(*Integer); ok && y.small {
+						// Written out rather than called: the instruction loop
+						// is far too large for the compiler to inline anything
+						// into it, so a helper call here would be paid on
+						// every comparison.  That is what the arithmetic
+						// instructions measured slower for, and why only the
+						// comparisons are instructions.
+						a, b := x.i, y.i
+						switch in.op {
+						case opNumLt:
+							vals = append(vals[:base], BooleanOf(a < b))
+							continue
+						case opNumLe:
+							vals = append(vals[:base], BooleanOf(a <= b))
+							continue
+						case opNumGt:
+							vals = append(vals[:base], BooleanOf(a > b))
+							continue
+						case opNumGe:
+							vals = append(vals[:base], BooleanOf(a >= b))
+							continue
+						case opNumEq:
+							vals = append(vals[:base], BooleanOf(a == b))
+							continue
+						}
+					}
+				}
+			}
+			if res, kind := smallIntOp(in.op, args); kind != smallIntNo {
+				if kind == smallIntBool {
+					vals = append(vals[:base], BooleanOf(res != 0))
+				} else {
+					vals = append(vals[:base], Int(res))
+				}
+				continue
+			}
+			// Not a case the fast path covers — a flonum, a bignum, a
+			// rational, or a chain that is not all fixnums.  Rather than
+			// reimplementing the numeric tower and its error messages here,
+			// the primitive that already implements them is called, with a
+			// frame pushed exactly as a general call would, so a raise lands
+			// in the right continuation and on the right stack.  The operands
+			// are copied first: the array they live in is the one the result
+			// is about to be written to.
+			heap := make([]Value, len(args))
+			copy(heap, args)
+			proc := arithmeticPrimitives[in.op]
+			if v, res := m.callSyncPrimitive(proc, heap); res == syncValue {
+				vals = append(vals[:base], v)
+				continue
+			}
+			f := &fVM{code: code, ip: ip, env: env, globals: globals}
+			f.save(vals)
+			m.stack = append(m.stack, f)
+			return
 
 		case opCall:
 			n := int(in.arg1)

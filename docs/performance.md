@@ -241,6 +241,63 @@ document says so rather than dressing it up.
   rows — which suggests the honest headline is closer to **30×** for programs
   that allocate real data, and 100×+ for arithmetic in a tight loop.
 
+## What has been done about it: the comparison instructions
+
+The first item on the list below was tried from the other end — not "unbox the
+integers" but "stop calling a procedure to compare two of them".  A call to `<`
+costs a type assertion on the operator, an arity check, and an indirect call
+through the primitive's function pointer; an instruction costs a type assertion
+and a comparison.  The compiler emits the instruction wherever it can see that
+the operator is still the interpreter's own binding, so a program that rebinds
+`<` gets the call it asked for.
+
+Measured on the twelve workloads, pinned to one core, best of nine:
+
+| workload | before | after | |
+|---|---|---|---|
+| `locals` | 69.62 ms | 62.36 ms | −10.4% |
+| `vectors` | 36.04 ms | 32.12 ms | −10.9% |
+| `globals` | 71.56 ms | 64.34 ms | −10.1% |
+| `tail-loop` | 62.73 ms | 56.60 ms | −9.8% |
+| `strings` | 11.39 ms | 10.53 ms | −7.6% |
+| `sort` | 12.17 ms | 11.28 ms | −7.3% |
+| `fib` | 9.59 ms | 8.96 ms | −6.6% |
+| `callcc` | 12.04 ms | 11.55 ms | −4.1% |
+| `closures` | 21.00 ms | 20.69 ms | −1.5% |
+| `lists` | 73.26 ms | 72.54 ms | −1.0% |
+| `higher-order` | 21.04 ms | 20.92 ms | −0.6% |
+| `mini-eval` | 23.59 ms | 23.97 ms | +1.6% |
+
+**Geometric mean: 5.8% faster**, with every workload but one improved or level.
+(An earlier run of the same binaries measured 8.1%; this machine is shared, and
+the two runs bracket the honest answer.)
+
+### What was tried and thrown away
+
+`+`, `-` and `*` were made instructions too, in the same way, and **measured
+slower**: a loop of additions went from 6.13 s to 7.47 s.  The reason is that
+they are variadic primitives whose body is already a tight loop, so an
+instruction that tests two operands and then falls back to that same primitive
+costs more than the call it saves.  Comparisons win because they are chained, so
+the call and the arity check are the expensive part.  The arithmetic opcodes were
+removed rather than kept behind a flag: an optimization that loses is a
+liability, and the measurement is recorded here so that nobody re-adds it.
+
+Two smaller things were tried inside the instruction itself, and both mattered:
+calling a helper that returned the result measured slower, because the
+instruction loop is far too large for Go to inline anything into it, so the
+fast path is written out inline; and the operand array must not be aliased by
+the result being appended over it, which cost every operation an allocation
+until the copy was moved to the fallback path where it is rare.
+
+## Obfuscation
+
+`goscheme compile -obfuscate` is separate from all of the above and costs
+nothing at run time (10.32 ms against 10.58 ms for `sort`, which is noise): it
+rewrites the *names* in a compiled file — body names, slot names, the globals
+the program defines — and shuffles the constant pools.  It is not encryption
+and does not pretend to be.  See [bytecode.md](bytecode.md).
+
 ## Where the next 2× would come from
 
 In the order that pays:
