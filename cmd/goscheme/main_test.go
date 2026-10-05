@@ -1423,3 +1423,97 @@ func TestWordBoundaries(t *testing.T) {
 		t.Errorf("wordStart on separators = %d, want 0", got)
 	}
 }
+
+// Submitting a multi-line expression must not leave a blank line between it and
+// its value.
+//
+// redrawSettled draws the expression again with no cursor highlight, and it
+// then moved the cursor *down* by the number of newlines in the expression —
+// on the reasoning that writing the rows had left the cursor above the last
+// one.  It had not: writing a row ends with the cursor on it, so the extra
+// moves went past the end, one blank line per newline in the form.  A
+// single-line expression has no newline, moved nothing, and looked right, which
+// is why only multi-line input showed it.
+func TestSubmittingMultiLineLeavesNoBlankLine(t *testing.T) {
+	var out bytes.Buffer
+	e := newLineEditor(strings.NewReader("(list\r 1\r 2)\r\x04"), newLineTracker(&out))
+	e.highlight = func(line []rune, pos int) []span {
+		return highlight(line, pos, classOf(nil, nil))
+	}
+	e.colour = true
+	e.continues = incompleteForm
+	line, err := e.ReadLine(primaryPrompt)
+	if err != nil && err != io.EOF {
+		t.Fatalf("ReadLine: %v", err)
+	}
+	if line != "(list\n 1\n 2)" {
+		t.Fatalf("line = %q", line)
+	}
+	// The submitted output must end with the cursor at the end of the *last*
+	// row of the expression, not on a row below it: the caller prints the value
+	// on the next line, and a move past the end shows up as a blank line.
+	got := out.String()
+	tail := got[strings.LastIndex(got, "\x1b[J"):]
+	if strings.Contains(tail, "\x1b[1B") || strings.Contains(tail, "\x1b[2B") {
+		t.Errorf("the settled redraw moved the cursor down past the last row: %q", tail)
+	}
+	// It ends by putting the cursor in the column after the last row's prompt
+	// and text: the last row is "...  2)", four columns of prompt and three of
+	// text, so the cursor belongs in column seven.  What follows it in the
+	// output is the newline the caller adds, which starts the value's line.
+	if !strings.Contains(tail, "\x1b[7C") {
+		t.Errorf("the cursor was not put after the last row's text: %q", tail)
+	}
+	if !strings.HasSuffix(tail, "\x1b[7C\n") {
+		t.Errorf("the submitted line did not end at the last row: %q", tail)
+	}
+}
+
+// A wide character occupies two columns, and a terminal moves two cells for it.
+// Counting runes instead put the cursor one cell short for every wide character
+// before it, so the text and the cursor drifted apart as the line was typed.
+func TestWideCharactersMoveTheCursorTwoColumns(t *testing.T) {
+	for _, tc := range []struct {
+		keys string
+		want int
+		why  string
+	}{
+		{"中文", 8, "two wide characters after a four-column prompt"},
+		{"中文abc", 11, "wide characters then narrow ones"},
+		{"é", 5, "a narrow non-ASCII character takes one column"},
+		{"", 4, "backspace over a wide character removes both columns"},
+		{"中", 6, "Ctrl-A then Ctrl-E returns to the end"},
+	} {
+		var out bytes.Buffer
+		e := newLineEditor(strings.NewReader(tc.keys), newLineTracker(&out))
+		for {
+			k, err := e.readKey()
+			if err != nil {
+				break
+			}
+			switch k.kind {
+			case keyRune:
+				e.line = append(e.line, k.r)
+				e.pos = len(e.line)
+			case keyBackspace:
+				if e.pos > 0 {
+					e.line = append(e.line[:e.pos-1], e.line[e.pos:]...)
+					e.pos--
+				}
+			case keyCtrlA:
+				e.pos = 0
+			case keyCtrlE:
+				e.pos = len(e.line)
+			default:
+				t.Fatalf("%q gave an unexpected key", tc.keys)
+			}
+		}
+		// The column the editor would place the cursor in, which is what the
+		// terminal is told to move to.
+		_, col := rowAndColumn(e.line, e.pos)
+		got := col + displayWidth([]rune(primaryPrompt))
+		if got != tc.want {
+			t.Errorf("%q (%s): cursor column %d, want %d", tc.keys, tc.why, got, tc.want)
+		}
+	}
+}

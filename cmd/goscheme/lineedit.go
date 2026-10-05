@@ -472,13 +472,21 @@ func splitRows(rs []rune) [][]rune {
 
 // rowAndColumn turns an index into rs into the row it is on and the column
 // within that row.
+// rowAndColumn turns an index into rs into the row it is on and the column
+// within that row.
+//
+// The column is a *display* column, not a count of characters: a wide character
+// occupies two of them, and a terminal moves two cells for it.  Counting runes
+// put the cursor short by one for every wide character before it — typing
+// (display "中文") left the cursor two cells left of where the text ended, and
+// the gap grew with every such character.
 func rowAndColumn(rs []rune, pos int) (row, col int) {
 	for i := 0; i < pos && i < len(rs); i++ {
 		if rs[i] == '\n' {
 			row++
 			col = 0
 		} else {
-			col++
+			col += runeWidth(rs[i])
 		}
 	}
 	return row, col
@@ -526,18 +534,25 @@ func (e *lineEditor) redrawSettled() {
 		}
 		sb.WriteString(string(r))
 	}
-	// Put the cursor after the last row, which is where the newline that
-	// follows should start: down past the rows already written, then right of
-	// that row's prompt and text.
-	if down := countNewlines(e.line); down > 0 {
-		fmt.Fprintf(&sb, "\x1b[%dB\r", down)
-	}
+	// The cursor is already on the last row, at the end of the text: writing
+	// the rows above moved it down one line per newline written, so it arrived
+	// here.  All that is left is to place it horizontally, at the end of that
+	// row's prompt and text, which is where the newline that follows should
+	// start.
+	//
+	// It used to move down by countNewlines as well, on the reasoning that the
+	// cursor had been left above the last row.  It had not, and the extra rows
+	// showed: submitting a *multi-line* expression left a blank line between it
+	// and its value, one per newline in the expression, because the cursor was
+	// sent that many rows past the end.  A single-line expression has no
+	// newline, moved down nothing, and looked right — which is why this lasted.
 	col := displayWidth(afterLastNewline(e.line))
 	if countNewlines(e.line) > 0 {
 		col += displayWidth([]rune(continuationPrompt))
 	} else {
 		col += displayWidth([]rune(e.primary))
 	}
+	sb.WriteByte('\r')
 	if col > 0 {
 		fmt.Fprintf(&sb, "\x1b[%dC", col)
 	}
