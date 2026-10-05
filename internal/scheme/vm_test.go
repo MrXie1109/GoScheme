@@ -24,6 +24,17 @@ var vmPrograms = []struct {
 	name string
 	src  string
 }{
+	// A variable holds one value: an initialiser that produces several keeps
+	// the first, in a local, in a set! and in a top-level define.  The
+	// compiler used to store the whole MultipleValues, so x read back as two
+	// values and this program printed (x 1 2) compiled and (x 1) interpreted.
+	{"values-into-a-variable",
+		`(display (let ((x (values 1 2))) (list 'x x))) (newline)
+	  (define y 0)
+	  (set! y (values 3 4))
+	  (display (list 'y y)) (newline)
+	  (define z (values 5 6))
+	  (display (list 'z z)) (newline)`},
 	{"arithmetic", `(display (+ 1 2)) (display (* 3 4)) (newline)`},
 	{"named-let-tail", `(display (let loop ((i 0) (acc 0))
 	                            (if (= i 100000) acc (loop (+ i 1) (+ acc i))))) (newline)`},

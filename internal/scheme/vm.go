@@ -701,15 +701,21 @@ func vmRun(m *Machine, code *Code, ip int, env *vmEnv, globals *Env, vals []Valu
 		case opSetLocal:
 			var v Value
 			v, vals = popValue(vals)
-			env.up(int(in.arg1)).slots[in.arg2] = v
+			// A variable holds one value.  If the expression produced several —
+			// (let ((x (values 1 2))) x) — the first is what goes in, which is
+			// what the interpreter does with single() and what the standard
+			// calls an error either way.  Storing the whole MultipleValues here
+			// made x answer with two values when read back, so the same program
+			// computed one thing compiled and another interpreted.
+			env.up(int(in.arg1)).slots[in.arg2] = single(v)
 		case opSetCell:
 			var v Value
 			v, vals = popValue(vals)
-			cellSet(env.up(int(in.arg1)).slots[in.arg2].(*cell), v)
+			cellSet(env.up(int(in.arg1)).slots[in.arg2].(*cell), single(v))
 		case opNewCell:
 			var v Value
 			v, vals = popValue(vals)
-			env.up(int(in.arg1)).slots[in.arg2] = &cell{v: v}
+			env.up(int(in.arg1)).slots[in.arg2] = &cell{v: single(v)}
 
 		case opGlobal:
 			sym, _ := code.Consts[in.arg1].(*Symbol)
@@ -727,7 +733,8 @@ func vmRun(m *Machine, code *Code, ip int, env *vmEnv, globals *Env, vals []Valu
 			sym, _ := code.Consts[in.arg1].(*Symbol)
 			var v Value
 			v, vals = popValue(vals)
-			if !globals.Set(sym, v) {
+			// One value per variable, as for a local: see opSetLocal.
+			if !globals.Set(sym, single(v)) {
 				m.Raise(NewError("set!: unbound variable", sym))
 				return
 			}
@@ -736,7 +743,7 @@ func vmRun(m *Machine, code *Code, ip int, env *vmEnv, globals *Env, vals []Valu
 			sym, _ := code.Consts[in.arg1].(*Symbol)
 			var v Value
 			v, vals = popValue(vals)
-			globals.Define(sym, v)
+			globals.Define(sym, single(v))
 			vals = append(vals, UnspecifiedValue)
 
 		case opClosure:
