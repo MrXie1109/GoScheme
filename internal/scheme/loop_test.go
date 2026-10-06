@@ -746,3 +746,106 @@ func sortInts(xs []int64) {
 		}
 	}
 }
+
+// TestRecogniseBuild checks the walk whose recursive call is not in tail
+// position — how append, copy-list, map and filter are written.
+func TestRecogniseBuild(t *testing.T) {
+	cases := []struct {
+		name   string
+		src    string
+		ok     bool
+		filter bool
+		mapIt  bool
+	}{
+		{"复制", `(define (f l) (if (null? l) '() (cons (car l) (f (cdr l)))))`, true, false, false},
+		{"追加", `(define (f l rest) (if (null? l) rest (cons (car l) (f (cdr l) rest))))`, true, false, false},
+		{"映射", `(define (f l) (if (null? l) '() (cons (even? (car l)) (f (cdr l)))))`, true, false, true},
+		{"过滤", `(define (f l) (if (null? l) '() (if (even? (car l)) (cons (car l) (f (cdr l))) (f (cdr l)))))`, true, true, false},
+		// 应当拒绝
+		{"尾部不是字面量或参数", `(define (f l) (if (null? l) (car l) (cons (car l) (f (cdr l)))))`, false, false, false},
+		{"递归推进别的", `(define (f l) (if (null? l) '() (cons (car l) (f l))))`, false, false, false},
+		{"映射用用户过程", `(define (f l) (if (null? l) '() (cons (mine? (car l)) (f (cdr l)))))`, false, false, false},
+		{"cons 的不是头", `(define (f l) (if (null? l) '() (cons (cdr l) (f (cdr l)))))`, false, false, false},
+		{"过滤保留的是测试结果", `(define (f l) (if (null? l) '() (if (even? (car l)) (cons (even? (car l)) (f (cdr l))) (f (cdr l)))))`, false, false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			forms, err := NewStringReader(c.src).ReadAll()
+			if err != nil {
+				t.Fatal(err)
+			}
+			name, formals, body, ok := topLevelProcedure(forms[0])
+			if !ok {
+				t.Fatal("不是顶层过程定义")
+			}
+			w, got := recogniseBuild(name, formals, body)
+			if got != c.ok {
+				t.Fatalf("识别=%v 期望=%v", got, c.ok)
+			}
+			// A filter has a predicate too — it is what the filter tests — so
+			// "is a map" means a predicate *and* not a filter.
+			isMap := w.mapPred != predNone && !w.filter
+			if got && (w.filter != c.filter || isMap != c.mapIt) {
+				t.Errorf("filter=%v map=%v，期望 filter=%v map=%v", w.filter, isMap, c.filter, c.mapIt)
+			}
+		})
+	}
+}
+
+// TestRunBuildDistinguishesTheThreeModes checks copy, map and filter against the
+// answers the Scheme versions give.
+//
+// The three are the same shape and mean different things — a copy keeps every
+// element, a map keeps what the test returns, a filter keeps the elements the
+// test accepted — so a runtime that ran one of them for another would quietly
+// produce the wrong list.  `(map even? '(1 2))` is `(#f #t)` and
+// `(filter even? '(1 2))` is `(2)`; nothing about the shape says which.
+func TestRunBuildDistinguishesTheThreeModes(t *testing.T) {
+	lst := List(Int(1), Int(2), Int(3), Int(4))
+	for _, tc := range []struct {
+		mode int
+		want string
+	}{
+		{buildCopy, "(1 2 3 4)"},
+		{buildMap, "(#f #t #f #t)"},
+		{buildFilter, "(2 4)"},
+	} {
+		got := RunBuild(int(predEven), lst, Nil, tc.mode)
+		if WriteToString(got) != tc.want {
+			t.Errorf("mode %d = %s, want %s", tc.mode, WriteToString(got), tc.want)
+		}
+	}
+	// An append's tail has to be the last element's cdr rather than a fresh
+	// list: sharing it is what makes append cheap.
+	tail := List(Int(9))
+	got := RunBuild(int(predEven), List(Int(1), Int(2)), tail, buildCopy)
+	if WriteToString(got) != "(1 2 9)" {
+		t.Errorf("append with a tail = %s", WriteToString(got))
+	}
+}
+
+// TestQuotedEmptyListIsAcceptedAsATail checks that `'()` is readable as the end
+// of a list-building loop.
+//
+// `'()` reads as the pair `(quote ())`, not as the empty list, so it is neither a
+// literal nor a name.  A recogniser that only knew those two refused every
+// append and copy-list ever written — and refused them in a way that looked like
+// a considered decision rather than a gap.
+func TestQuotedEmptyListIsAcceptedAsATail(t *testing.T) {
+	if !isQuoted(mustRead2(t, `'()`)) {
+		t.Error("'() is not recognised as a quoted literal")
+	}
+	if isQuoted(mustRead2(t, `'x`)) {
+		t.Error("a quoted name is being treated as a literal tail")
+	}
+	p, err := CompileToIR(`(define (copy l) (if (null? l) '() (cons (car l) (copy (cdr l)))))`, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Native != 1 {
+		t.Fatalf("a copy-list was refused: %v", p.Refused)
+	}
+	if !strings.Contains(p.IR, "@gs_build(") {
+		t.Errorf("the copy is not emitted as a build walk:\n%s", p.IR)
+	}
+}

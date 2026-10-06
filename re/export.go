@@ -347,6 +347,26 @@ func gs_merge(cmp C.int32_t, a C.gs_val, b C.gs_val) C.gs_val {
 	return tagged(scheme.RunMerge(int(int32(cmp)), untagged(a), untagged(b)))
 }
 
+// gs_build copies a list, maps a builtin over it, or filters it, in one call.
+//
+// The shape whose recursive call is *not* in tail position — `(cons (car a)
+// (f (cdr a)))` — which is how append, copy-list, map and filter are written.
+// A Scheme version recurses once per element and pays a frame for each; the
+// loop here builds the result in one pass.
+//
+// mode says which of the three it is, because they are the same shape and mean
+// different things: copy keeps every element, map keeps what the test returns,
+// filter keeps the elements the test accepts.
+//
+//export gs_build
+func gs_build(pred C.int32_t, args *C.gs_val, mode C.int32_t) C.gs_val {
+	if mach == nil {
+		gs_init(0, nil)
+	}
+	return tagged(scheme.RunBuild(int(int32(pred)),
+		untagged(*argsAt(args, 0)), untagged(*argsAt(args, 1)), int(int32(mode))))
+}
+
 // gs_global reads a top-level binding by name, as a tagged value.
 //
 // A compiled body reads a global where the name appears, not once at entry,
