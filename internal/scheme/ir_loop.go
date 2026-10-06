@@ -2,7 +2,10 @@
 
 package scheme
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Recognising a whole loop, so that it can be run in one call.
 //
@@ -1010,4 +1013,90 @@ func (f *irFunc) emitCountLoop(w countLoop) {
 		out, gsVal, int(w.kind), gsVal, n, gsVal, acc)
 	f.listWalkDone = true
 	f.listWalkVal = f.loadVal(out)
+}
+
+// ---------------------------------------------------------------------------
+// A top-level call
+// ---------------------------------------------------------------------------
+
+// topCall is a top-level form that is a plain call to a compiled procedure with
+// constant arguments.
+//
+//	(loop 200000 0)
+//
+// is the whole of a program's work as often as not, and it used to be handed to
+// the interpreter along with everything else at the top level — so the compiled
+// body was entered once and the loop ran interpreted.  Emitting the call means
+// the loop runs natively from the start, which is the difference between a
+// benchmark reading 0.95× and 4.9×.
+//
+// Only literal arguments are accepted.  A form whose arguments have to be
+// computed is left to the interpreter, because computing them is evaluation and
+// that is the interpreter's job; a literal is a value the compiler already has.
+type topCall struct {
+	name string
+	args []Value
+}
+
+// recogniseTopCall reports whether a top-level form calls a compiled procedure
+// with literal arguments.
+func recogniseTopCall(form Value, compiled map[string]bool) (topCall, bool) {
+	p, ok := form.(*Pair)
+	if !ok {
+		return topCall{}, false
+	}
+	head, ok := p.Car.(*Symbol)
+	if !ok || !compiled[head.Name] {
+		return topCall{}, false
+	}
+	items, ok := ListToSlice(p.Cdr)
+	if !ok {
+		return topCall{}, false
+	}
+	for _, a := range items {
+		switch a.(type) {
+		case *Integer, *Boolean, *String, *Char, *Float, *Rational:
+			// A literal the compiler can place in the module.
+		default:
+			return topCall{}, false
+		}
+	}
+	return topCall{name: head.Name, args: items}, true
+}
+
+// emitTopCall writes the call, with the literals boxed as the callee expects.
+func (g *irGen) emitTopCall(c topCall, formals []*Symbol, body *strings.Builder, reg func() string) {
+	// The callee takes its arguments as (word, tag) pairs; a literal is a
+	// fixnum, a boolean or a boxed value, and the boxing is the same the
+	// ordinary emitter does for a literal in a body.
+	var args []string
+	for _, a := range c.args {
+		switch v := a.(type) {
+		case *Integer:
+			if v.small {
+				args = append(args, fmt.Sprintf("i64 %d, i64 0", v.i))
+			} else {
+				lit := g.module.stringLiteral(v.String(), "toplit")
+				r := reg()
+				fmt.Fprintf(body, "  %s = call i64 @gs_box_literal(i8* %s, i64 %d)\n", r, lit, len(v.String()))
+				args = append(args, fmt.Sprintf("i64 %s, i64 1", r))
+			}
+		case *Boolean:
+			bit := 0
+			if bool(*v) {
+				bit = 1
+			}
+			args = append(args, fmt.Sprintf("i64 %d, i64 2", bit))
+		default:
+			// Anything else is boxed by its source text, which is how a string
+			// or a character literal crosses.
+			text := WriteToString(a)
+			lit := g.module.stringLiteral(text, "toplit")
+			r := reg()
+			fmt.Fprintf(body, "  %s = call i64 @gs_box_literal(i8* %s, i64 %d)\n", r, lit, len(text))
+			args = append(args, fmt.Sprintf("i64 %s, i64 1", r))
+		}
+	}
+	out := reg()
+	fmt.Fprintf(body, "  %s = call %s @%s(%s)\n", out, gsVal, mangle(c.name), strings.Join(args, ", "))
 }

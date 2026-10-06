@@ -1954,3 +1954,66 @@ func TestCompiledListWalkAgreesWithTheInterpreter(t *testing.T) {
 		})
 	}
 }
+
+// TestCompiledTopLevelCallRunsOnce checks that a top-level call to a compiled
+// procedure is emitted as that call and does not *also* run interpreted.
+//
+// The first version added the native call and kept the interpreter's evaluation
+// of the same form, on the reasoning that evaluation is what makes a form's
+// effect happen.  That ran the loop twice, and it showed up in the benchmark as
+// `globals` dropping from 0.99× to 0.60× — a pessimization, which is worse than
+// no optimization because it is invisible in the program's output.
+//
+// The check here is on the count: the form must appear in the module once.
+func TestCompiledTopLevelCallRunsOnce(t *testing.T) {
+	src := `(define (loop i acc) (if (= i 0) acc (loop (- i 1) (+ acc i))))
+(loop 100 0)`
+	p, err := scheme.CompileToIR(src, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The definition is evaluated by the interpreter because that is what binds
+	// the name; the call is not evaluated at all.
+	if got := strings.Count(p.IR, "@gs_eval_source("); got != 2 { // declare + one call
+		t.Errorf("evaluated %d forms through the interpreter, want 1 (the definition):\n%s", got-1, p.IR)
+	}
+	if !strings.Contains(p.IR, "call %gs.val @gs_lam_loop(") {
+		t.Errorf("the top-level call was not emitted natively:\n%s", p.IR)
+	}
+}
+
+// TestCompiledTopLevelCallKeepsLaterForms checks that replacing one form's
+// evaluation does not skip the forms after it.
+//
+// A top-level call is replaced only when it is a call to a compiled procedure
+// with literal arguments; every other form still goes to the interpreter, and a
+// form after the replaced one must still run.
+func TestCompiledTopLevelCallKeepsLaterForms(t *testing.T) {
+	if testing.Short() {
+		t.Skip("compile shells out to opt, llc and cc")
+	}
+	requireToolchain(t)
+
+	dir := t.TempDir()
+	src := filepath.Join(dir, "prog.scm")
+	program := `(define (loop i acc) (if (= i 0) acc (loop (- i 1) (+ acc i))))
+(define before 1)
+(loop 100 0)
+(define after 2)
+(display (list before after))
+(newline)`
+	if err := os.WriteFile(src, []byte(program), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const want = "(1 2)\n"
+	if got := runScriptFile(t, src); got != want {
+		t.Fatalf("the interpreter printed %q, want %q", got, want)
+	}
+	bin := filepath.Join(dir, "prog")
+	if code := compileToNative(src, bin, "2", false, false); code != 0 {
+		t.Fatalf("compiling failed with code %d", code)
+	}
+	if got := runNative(t, bin); got != want {
+		t.Errorf("the compiled program printed %q, want %q", got, want)
+	}
+}

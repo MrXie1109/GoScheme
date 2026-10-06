@@ -427,7 +427,29 @@ func (g *irGen) program(forms []Value) error {
 		fmt.Fprintf(&body, "  call void @gs_register(i8* %s, i64 %d, i8* bitcast (%s (i64, %s*)* @%s to i8*))\n",
 			lit, len(g.pure[name].formals), gsVal, gsVal, adapterName(name))
 	}
+	// A top-level form that calls a compiled procedure with literal arguments is
+	// emitted as that call, so the procedure runs natively from the first
+	// instruction instead of being entered once by the interpreter.  `(loop
+	// 200000 0)` is the whole of a program's work as often as not.
+	//
+	// The call *replaces* the interpreter's evaluation of that form rather than
+	// being added to it.  Doing both is what the first version did, on the
+	// reasoning that the interpreter's evaluation is what makes the form's
+	// effect happen — and that ran the loop twice, which showed up immediately
+	// as `globals` dropping to 0.60×.  Nothing is lost by replacing it: the form
+	// is a call to a compiled procedure with literal arguments, it is in tail
+	// position at the top level so its value is discarded, and the procedure
+	// being called cannot have been redefined between here and there.
+	compiled := map[string]bool{}
+	for _, name := range emitted {
+		compiled[name] = true
+	}
 	for i, form := range forms {
+		if c, ok := recogniseTopCall(form, compiled); ok {
+			m.declare("i64 @gs_box_literal(i8*, i64)")
+			g.emitTopCall(c, g.pure[c.name].formals, &body, m.reg)
+			continue
+		}
 		src := WriteToString(form)
 		lit := m.stringLiteral(src, fmt.Sprintf("form%d", i))
 		// The source of the form, its length, and a name for error messages.
