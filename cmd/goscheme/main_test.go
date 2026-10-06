@@ -1663,6 +1663,45 @@ func TestCompiledProgramAgreesWithTheInterpreter(t *testing.T) {
 (display (positive?2 (* 4000000000 4000000000)))`,
 			want: "#t",
 		},
+		// An `if` with no alternative has an unspecified value, and the compiled
+		// code used to produce the fixnum 0 there.  These are the cases that
+		// caught it: the value of such an `if` was printed through a procedure
+		// the compiler emits, and it printed `0` where the interpreter printed
+		// `#!unspecified`.
+		//
+		// Each body has arithmetic of its own so that it is actually compiled.
+		// `(define (f n) (if (< n 0) 1))` on its own has nothing for machine code
+		// to do and the cost rule declines it, which is how the bug hid: that
+		// program ran in the interpreter and looked right.
+		{
+			name: "the value of an if with no alternative",
+			src: `(define (f n) (if (> (* n n) 100) (* n 2)))
+(display (list (f 5) (f 20)))`,
+			want: "(#!unspecified 40)",
+		},
+		{
+			name: "an if with no alternative inside a recursion",
+			src: `(define (f n acc) (if (< n 0) (* acc 2) (f (- n 1) (+ acc n))))
+(display (f 3 0))`,
+			want: "12",
+		},
+		// A `cond` whose clauses all fail is unspecified too, and rewriting
+		// `cond` into `if` chains put this through the same path.
+		{
+			name: "a cond whose clauses all fail",
+			src: `(define (f n) (cond ((> (* n n) 100) (* n 2))))
+(display (list (f 5) (f 20)))`,
+			want: "(#!unspecified 40)",
+		},
+		// The unspecified value must not be confusable with the values a program
+		// can legitimately produce, which is the whole reason it has a tag of its
+		// own rather than being the fixnum 0 or the empty list.
+		{
+			name: "unspecified is not the fixnum zero",
+			src: `(define (f n) (if (> (* n n) 100) (* n 2)))
+(display (eqv? (f 5) 0))`,
+			want: "#f",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
