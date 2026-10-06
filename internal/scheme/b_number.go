@@ -442,8 +442,8 @@ func installNumbers(m *Machine) {
 		}
 		panic(errf("sqrt", "bad argument"))
 	}, libBase, libInexact)
-	m.defSimple("expt", 2, 2, func(a []Value) (Value, error) {
-		return numExpt(wantNumber("expt", a[0]), wantNumber("expt", a[1])), nil
+	m.def("expt", 2, 2, func(m *Machine, a []Value) {
+		m.Return(numExpt(m, wantNumber("expt", a[0]), wantNumber("expt", a[1])))
 	}, libBase, libR5RS)
 
 	// -------------------------------------------------------------- complex
@@ -737,7 +737,7 @@ func trig(name string, v Value, fn func(float64) float64) (Value, error) {
 	return Float(res), nil
 }
 
-func numExpt(base, exp Value) Value {
+func numExpt(m *Machine, base, exp Value) Value {
 	// Exact integer exponent.
 	if ei, ok := exp.(*Integer); ok {
 		ex, _ := ei.Int64()
@@ -746,15 +746,15 @@ func numExpt(base, exp Value) Value {
 				if IsExact(base) {
 					br, _ := ToBigRat(base)
 					if ex >= 0 {
-						n := new(big.Int).Exp(br.Num(), big.NewInt(ex), nil)
-						d := new(big.Int).Exp(br.Denom(), big.NewInt(ex), nil)
+						n := exptBig(br.Num(), ex, m)
+						d := exptBig(br.Denom(), ex, m)
 						return normRat(new(big.Rat).SetFrac(n, d))
 					}
 					if br.Sign() == 0 {
 						panic(errf("expt", "zero cannot be raised to a negative power"))
 					}
-					n := new(big.Int).Exp(br.Num(), big.NewInt(-ex), nil)
-					d := new(big.Int).Exp(br.Denom(), big.NewInt(-ex), nil)
+					n := exptBig(br.Num(), -ex, m)
+					d := exptBig(br.Denom(), -ex, m)
 					return normRat(new(big.Rat).SetFrac(d, n))
 				}
 				f := asFloat(base)

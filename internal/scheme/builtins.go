@@ -41,6 +41,11 @@ func (m *Machine) def(name string, min, max int, fn func(*Machine, []Value), lib
 					m.RaiseError(e)
 				case *PortError:
 					m.RaiseError(NewFileError(e.Msg))
+				case interruptedPanic:
+					// A computation too long to finish was abandoned.  It is
+					// the same thing as Ctrl-C during a loop, and it is
+					// reported the same way, so the REPL prints ^C and goes on.
+					m.RaiseError(ErrInterrupted)
 				default:
 					panic(r)
 				}

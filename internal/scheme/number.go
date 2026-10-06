@@ -749,3 +749,104 @@ func TruncDivMod(a, b *Integer) (*Integer, *Integer) {
 	q, r := new(big.Int).QuoRem(ab, bb, new(big.Int))
 	return BigInt(q), BigInt(r)
 }
+
+// exptBig raises n to the e'th power, checking for an interrupt between
+// squarings.
+//
+// big.Int.Exp does the same work in one call and cannot be interrupted, so a
+// REPL user who typed (expt 2 10000000) had to wait for it — the promise that
+// anything can be abandoned with Ctrl-C is worth more than the small amount of
+// speed this gives up, and the REPL is the one place where being quick matters
+// least.
+//
+// The exponentiation is the ordinary binary one: square the running power for
+// each bit of the exponent, multiply the result when the bit is set.
+func exptBig(n *big.Int, e int64, m *Machine) *big.Int {
+	if e == 0 {
+		return big.NewInt(1)
+	}
+	if e < 0 {
+		// The callers handle a negative exponent by inverting; reaching here
+		// means something changed, and a positive exponent is what this does.
+		e = -e
+	}
+	base := new(big.Int).Set(n)
+	result := big.NewInt(1)
+	for e > 0 {
+		if m != nil && m.cancel != nil && m.cancelled() {
+			panic(interruptedPanic{})
+		}
+		if e&1 == 1 {
+			mulBig(result, result, base, m)
+		}
+		e >>= 1
+		if e > 0 {
+			mulBig(base, base, base, m)
+		}
+	}
+	return result
+}
+
+// mulBig computes dst = x*y, giving up if the evaluation is abandoned.
+//
+// A single big.Int.Mul of two numbers with a million digits takes tens of
+// milliseconds and there is no way to interrupt it, so a loop that does
+// twenty-four of them — which is what (expt 2 10000000) is — cannot be
+// abandoned at all while it runs.  The check between iterations is not the
+// problem: there are only twenty-four of them.
+//
+// Splitting one operand is not enough either, which is the part worth
+// remembering: with the multiplier in pieces, each piece still meets a
+// million-digit multiplicand, and the slow multiplication is still there.  Both
+// operands are split into limbs and the result accumulated from the partial
+// products, so no single multiplication is of two huge numbers and there is a
+// place to look at the cancel channel between them.  The arithmetic is
+// unchanged: a sum of partial products is the same number, and the tests that
+// check expt against exact values are what says so.
+func mulBig(dst, x, y *big.Int, m *Machine) {
+	if !interruptibleNow(m) {
+		dst.Mul(x, y)
+		return
+	}
+	const limb = 1 << 14 // bits per piece: small enough that one piece is quick
+	if x.BitLen() < limb && y.BitLen() < limb {
+		dst.Mul(x, y)
+		return
+	}
+	acc := new(big.Int)
+	xp := new(big.Int)
+	yp := new(big.Int)
+	tmp := new(big.Int)
+	for xs := uint(0); xs < uint(x.BitLen()); xs += limb {
+		if m.cancelled() {
+			panic(interruptedPanic{})
+		}
+		xp.Rsh(x, xs)
+		xp.And(xp, chunkMask)
+		for ys := uint(0); ys < uint(y.BitLen()); ys += limb {
+			if m.cancelled() {
+				panic(interruptedPanic{})
+			}
+			yp.Rsh(y, ys)
+			yp.And(yp, chunkMask)
+			tmp.Mul(xp, yp)
+			tmp.Lsh(tmp, xs+ys)
+			acc.Add(acc, tmp)
+		}
+	}
+	dst.Set(acc)
+}
+
+// chunkMask is 2^limb - 1, the low bits of one piece.
+var chunkMask = new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 1<<14), big.NewInt(1))
+
+// interruptibleNow reports whether this machine is watching for an interrupt at
+// all, which is what decides between the plain multiplication and the split one.
+func interruptibleNow(m *Machine) bool {
+	return m != nil && m.cancel != nil
+}
+
+// interruptedPanic carries an interruption out of a computation that has no
+// error to return.  It is recovered where the primitive is called, so that a
+// primitive written as a plain function can still be abandoned.
+type interruptedPanic struct{}

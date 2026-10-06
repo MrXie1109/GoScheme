@@ -23,12 +23,17 @@ func installTime(m *Machine) {
 
 	// (sleep ms) suspends the calling interpreter thread.  Zero is legal and
 	// returns immediately; a negative duration does nothing.
-	m.defSimple("sleep", 1, 1, func(a []Value) (Value, error) {
+	// (sleep ms) waits, and Ctrl-C ends the wait.  It is a def rather than a
+	// defSimple because being interruptible needs the machine: a primitive that
+	// cannot see the cancel channel has to sleep to the end, and "anything can
+	// be abandoned with Ctrl-C" is the REPL's promise.
+	m.def("sleep", 1, 1, func(m *Machine, a []Value) {
 		ms := asFloat(wantReal("sleep", a[0]))
-		if ms > 0 {
-			time.Sleep(time.Duration(ms * float64(time.Millisecond)))
+		if ms > 0 && !m.sleepFor(time.Duration(ms*float64(time.Millisecond))) {
+			m.RaiseError(interruptedErr())
+			return
 		}
-		return UnspecifiedValue, nil
+		m.Return(UnspecifiedValue)
 	}, lib)
 
 	// (current-millisecond) is milliseconds since the Unix epoch, UTC.

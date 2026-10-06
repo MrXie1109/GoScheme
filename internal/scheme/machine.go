@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"time"
 )
 
 // Machine is a CEK-style abstract machine.  The control component is either
@@ -288,31 +289,24 @@ func (f *fAppArgs) resume(m *Machine, v Value) {
 // ---------------------------------------------------------------------------
 
 // Run evaluates expr in env until the continuation stack is exhausted.
+// Run evaluates one form in env, with the **tree-walker**.
+//
+// This is the path the REPL takes, and it is deliberately the interpreter and
+// not the VM.  A REPL evaluates one form at a time with no idea what comes
+// next, and the tree-walker is the engine that is complete on its own: every
+// form, every macro, every library, and — because it is what an unfinished
+// form is resumed in — the same engine a `load` from inside the form uses.  A
+// compiled form would be a second engine switching in and out between lines,
+// and the one place it would differ is the one the user is looking at.
+//
+// Being the slower engine is the point rather than a cost: a person typing a
+// line cannot tell 3× on a form that takes a millisecond, and a REPL is where
+// being able to interrupt anything matters more than being quick.
+//
+// Everything else — a script, `-e`, a library being loaded — goes through
+// RunFormsCompiled, which compiles what it can.
 func (m *Machine) Run(expr Value, env *Env) (Value, error) {
-	// A form that teaches the compiler something — a define-syntax, an import —
-	// is evaluated by the tree-walker, because its whole point is its effect on
-	// the environment.  A compiled define-syntax expands its uses where it is
-	// compiled and defines nothing, which is right inside a body and wrong at
-	// the top level: the REPL's `(define-syntax swap! ...)` used to leave no
-	// binding behind, so the next line said "unbound variable swap!".
-	// CompileProgram makes the same distinction; this is the same rule for the
-	// one form at a time path.
-	if teachingForm(expr, m, env) {
-		return m.runInterpreted(expr, env)
-	}
-	return m.guardedRun(func() (Value, error) {
-		// Run may be re-entered while the machine is already evaluating (a
-		// library is loaded, say); the frames below base belong to the outer
-		// evaluation and must survive.
-		baseStack, baseWinds, baseHands := len(m.stack), len(m.winds), len(m.hands)
-		if code, err := m.compile(expr, env); code != nil {
-			m.runCompiledTop(code, env)
-		} else {
-			_ = err
-			m.Eval(expr, env)
-		}
-		return m.runLoop(baseStack, baseWinds, baseHands)
-	})
+	return m.runInterpreted(expr, env)
 }
 
 // runInterpreted evaluates expr in env with the tree-walker, whether or not it
@@ -427,6 +421,38 @@ func (m *Machine) SetCancel(ch <-chan struct{}) {
 	m.cancel = ch
 	m.watchCancel = ch != nil
 }
+
+// sleepFor waits for d, and gives up early when the evaluation is interrupted.
+// It is what every blocking primitive should use instead of time.Sleep: the
+// REPL promises that anything can be abandoned with Ctrl-C, and a primitive
+// that sleeps through it breaks that promise for as long as it sleeps — a
+// (sleep 30000) left the prompt dead for thirty seconds, which is the one thing
+// Ctrl-C is for.
+//
+// It returns true when the wait finished and false when it was cancelled, so
+// that a caller can tell "slept" from "interrupted" and raise accordingly.
+func (m *Machine) sleepFor(d time.Duration) bool {
+	if d <= 0 {
+		return true
+	}
+	if !m.watchCancel {
+		time.Sleep(d)
+		return true
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-m.cancel:
+		return false
+	}
+}
+
+// interruptedErr is what a blocking primitive raises when it is abandoned:
+// the same ErrInterrupted the evaluation loop returns, so that the REPL treats
+// it as the Ctrl-C it was rather than as a program error.
+func interruptedErr() error { return ErrInterrupted }
 
 // interruptible reports whether the evaluation should stop.  It is written to
 // be one load of a bool in the usual case, which is why the flag exists
