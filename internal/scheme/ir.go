@@ -407,8 +407,18 @@ func (g *irGen) program(forms []Value) error {
 		}
 		order = append(order, name)
 	}
-	for name := range g.pure {
-		visit(name)
+	// The roots are visited in the order the definitions appeared in the
+	// source, not in map order.  The topological requirement is met either way
+	// — a procedure is still appended after everything it calls — but Go
+	// randomises map iteration, so visiting in map order made the emitted
+	// module differ between two runs of the same compiler on the same input.
+	// A compiler whose output is not reproducible cannot be checked by
+	// comparing its output, which is exactly how the refactors around this
+	// file are verified.
+	for _, p := range procs {
+		if _, ok := g.pure[p.name]; ok {
+			visit(p.name)
+		}
 	}
 	// Emit, keeping only what was actually emitted.
 	//

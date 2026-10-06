@@ -607,3 +607,35 @@ func bodyOf(t *testing.T, ir, signature string) string {
 	}
 	return rest[:end]
 }
+
+// TestIRTheModuleIsReproducible holds down a property the other tests in this
+// file depend on by comparing generated modules to each other.
+//
+// The emission order is a topological order, which is what LLVM requires, but a
+// topological order is only unique up to procedures that do not call each
+// other.  Visiting the roots in Go map order made those independent procedures
+// come out in a different order on every run, so two runs of the same compiler
+// on the same file produced different modules — and a refactor verified by
+// comparing output would look like a behaviour change when nothing had changed.
+func TestIRTheModuleIsReproducible(t *testing.T) {
+	const src = `
+(define (build i acc) (if (= i 0) acc (build (- i 1) (cons i acc))))
+(define (sum l acc) (if (null? l) acc (sum (cdr l) (+ acc (car l)))))
+(define (times a b) (* a b))
+(display (sum (build 10 '()) 0))
+(display (times 6 7))`
+	first, err := CompileToIR(src, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Map order is randomised per run, so a single repeat would pass by luck.
+	for i := 0; i < 20; i++ {
+		again, err := CompileToIR(src, "test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if again.IR != first.IR {
+			t.Fatalf("run %d emitted a different module; the output is not reproducible", i+1)
+		}
+	}
+}
