@@ -3,8 +3,10 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -12,12 +14,27 @@ import (
 	"github.com/MrXie1109/GoScheme/internal/scheme"
 )
 
-// runCompile implements "goscheme compile script.scm [-o out.scmc]": the script
-// is read, compiled to bytecode, and written out.  The compiled file runs
-// without reading source again — see "goscheme file.scmc".
+// runCompile implements "goscheme compile script.scm [-o out] [--emit-llvm]":
+// the script is compiled to a native program through LLVM.
+//
+// The pipeline is: read the script, generate LLVM IR for it, run the IR through
+// `opt` to optimise it, run that through `llc` to get an object file, and link
+// the object against the GoScheme runtime library.  The result is a program that
+// needs nothing but itself.
+//
+//	goscheme compile prog.scm                 # a.out
+//	goscheme compile prog.scm -o prog         # named
+//	goscheme compile prog.scm --emit-llvm     # prog.ll on stdout, nothing built
+//	goscheme compile prog.scm -O0             # no optimisation
+//
+// The LLVM tools are found on PATH, and their absence is reported rather than
+// worked around: a compiler that cannot find its back end should say so.
 func runCompile(args []string) int {
 	var scriptPath, out string
-	obfuscate := false
+	emitLLVM := false
+	optLevel := "2"
+	keepTemps := false
+
 	for i := 0; i < len(args); i++ {
 		switch a := args[i]; a {
 		case "-o", "--output":
@@ -27,11 +44,22 @@ func runCompile(args []string) int {
 			}
 			i++
 			out = args[i]
-		case "-obfuscate", "--obfuscate":
-			obfuscate = true
+		case "--emit-llvm", "-S":
+			// Write the LLVM IR and stop: no opt, no llc, no link.  It is what
+			// a person who wants to read the generated code asks for, and what
+			// the tests use to check the generator without a toolchain.
+			emitLLVM = true
+		case "--keep-temps":
+			keepTemps = true
+		case "-O0", "-O1", "-O2", "-O3":
+			optLevel = a[2:]
+		case "-h", "--help":
+			compileUsage(os.Stdout)
+			return 0
 		default:
-			if strings.HasPrefix(a, "-") && a != "-" {
+			if len(a) > 1 && a[0] == '-' {
 				fmt.Fprintf(os.Stderr, "goscheme compile: unknown option %s\n", a)
+				compileUsage(os.Stderr)
 				return 2
 			}
 			if scriptPath != "" {
@@ -42,89 +70,132 @@ func runCompile(args []string) int {
 		}
 	}
 	if scriptPath == "" {
-		fmt.Fprintln(os.Stderr, "usage: goscheme compile <script> [-o <output.scmc>] [-obfuscate]")
+		compileUsage(os.Stderr)
 		return 2
 	}
-	if out == "" {
-		base := strings.TrimSuffix(scriptPath, filepath.Ext(scriptPath))
-		out = base + ".scmc"
-	}
+	return compileToNative(scriptPath, out, optLevel, emitLLVM, keepTemps)
+}
+
+func compileUsage(w *os.File) {
+	fmt.Fprintln(w, "usage: goscheme compile <script> [-o <output>] [--emit-llvm] [-O0..-O3]")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "Compiles <script> to a native executable through LLVM: the script is")
+	fmt.Fprintln(w, "translated to LLVM IR, optimised with opt, assembled with llc, and")
+	fmt.Fprintln(w, "linked against the GoScheme runtime.")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "  -o, --output FILE  where to write the executable (default: a.out)")
+	fmt.Fprintln(w, "  --emit-llvm, -S    write the LLVM IR instead of building anything")
+	fmt.Fprintln(w, "  -O0..-O3           optimisation level passed to opt (default: -O2)")
+	fmt.Fprintln(w, "  --keep-temps       keep the intermediate .ll and .o files")
+}
+
+// compileToNative runs the LLVM pipeline over a script.
+func compileToNative(scriptPath, out, optLevel string, emitLLVM, keepTemps bool) int {
 	abs, err := filepath.Abs(scriptPath)
 	if err != nil {
 		abs = scriptPath
 	}
-	data, err := os.ReadFile(abs)
+	source, err := os.ReadFile(abs)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "goscheme compile: %v\n", err)
 		return 1
 	}
-	r := scheme.NewStringReader(string(data))
-	r.Source = abs
-	forms, err := r.ReadAll()
+
+	// The reader runs first, so that a script with a syntax error is reported
+	// as one without invoking a single LLVM tool.
+	prog, err := scheme.CompileToIR(string(source), abs)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "goscheme compile: %v\n", err)
 		return 1
 	}
-	m := scheme.NewMachine()
-	m.Args = append([]string{scriptPath}, args...)
-	m.AddLoadPath(filepath.Dir(abs))
-	prog, err := scheme.CompileProgram(m, forms, m.Global)
-	if err != nil {
+
+	if emitLLVM {
+		if out == "" {
+			_, err := os.Stdout.WriteString(prog.IR)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "goscheme compile: %v\n", err)
+				return 1
+			}
+			return 0
+		}
+		if err := os.WriteFile(out, []byte(prog.IR), 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "goscheme compile: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+
+	if out == "" {
+		out = "a.out"
+		if runtime.GOOS == "windows" {
+			out = "a.exe"
+		}
+	}
+	if err := buildNative(prog, abs, out, optLevel, keepTemps); err != nil {
 		fmt.Fprintf(os.Stderr, "goscheme compile: %v\n", err)
 		return 1
 	}
-	if obfuscate {
-		scheme.Obfuscate(prog)
-		scheme.ObfuscateGlobals(prog, m)
-	}
-	f, err := os.Create(out)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "goscheme compile: %v\n", err)
-		return 1
-	}
-	if err := scheme.WriteBytecode(f, prog); err != nil {
-		f.Close()
-		fmt.Fprintf(os.Stderr, "goscheme compile: %v\n", err)
-		return 1
-	}
-	if err := f.Close(); err != nil {
-		fmt.Fprintf(os.Stderr, "goscheme compile: %v\n", err)
-		return 1
-	}
-	// The file is written executable, because it starts with a shebang and can
-	// be run as it stands:
-	//
-	//	goscheme compile prog.scm -o prog.scmc && ./prog.scmc
-	//
-	// The mode is set explicitly rather than left to the umask, and the file's
-	// existing mode is kept when it has one, so that compiling over a file does
-	// not quietly change permissions the user chose.
-	if err := makeExecutable(out); err != nil {
-		fmt.Fprintf(os.Stderr, "goscheme compile: %v\n", err)
-		return 1
-	}
-	// Nothing is printed on success: no news is the good news, and the file
-	// that was written is the evidence.  A form the compiler declined is not
-	// news either — it is in the file as source and runs interpreted.
 	return 0
 }
 
-// makeExecutable adds the execute bits that match the read bits, leaving the
-// rest of the mode alone.  It does nothing on Windows, where the concept does
-// not apply and the call would fail.
-func makeExecutable(path string) error {
-	if runtime.GOOS == "windows" {
-		return nil
-	}
-	st, err := os.Stat(path)
+// buildNative takes generated IR the rest of the way: opt, llc, and the link
+// against the runtime library.
+func buildNative(prog *scheme.IRProgram, scriptPath, out, optLevel string, keepTemps bool) error {
+	dir, err := os.MkdirTemp("", "goscheme-compile-")
 	if err != nil {
 		return err
 	}
-	mode := st.Mode().Perm()
-	// Read implies execute, bit for bit: rw-r--r-- becomes rwxr-xr-x.
-	exec := (mode & 0444) >> 2
-	if mode&exec == exec {
-		return nil
+	if !keepTemps {
+		defer os.RemoveAll(dir)
 	}
-	return os.Chmod(path, mode|exec)
+
+	llPath := filepath.Join(dir, "prog.ll")
+	if err := os.WriteFile(llPath, []byte(prog.IR), 0o644); err != nil {
+		return err
+	}
+
+	// opt: the IR in, optimised IR out.  -O<n> may be given as a level rather
+	// than as the passes, which is what a user expects from a -O flag.
+	optPath := filepath.Join(dir, "prog.opt.ll")
+	if err := runTool("opt", "-O"+optLevel, "-S", llPath, "-o", optPath); err != nil {
+		return err
+	}
+
+	objPath := filepath.Join(dir, "prog.o")
+	if err := runTool("llc", "-filetype=obj", optPath, "-o", objPath); err != nil {
+		return err
+	}
+
+	// The link: the object, then the runtime library, then whatever the
+	// platform needs beside it.
+	lib, err := scheme.RuntimeLibraryPath()
+	if err != nil {
+		return err
+	}
+	linkArgs := append([]string{objPath, lib, "-o", out}, scheme.RuntimeLinkFlags()...)
+	if err := runTool(scheme.RuntimeLinker(), linkArgs...); err != nil {
+		return err
+	}
+	return os.Chmod(out, 0o755)
+}
+
+// runTool runs one of the toolchain programs, reporting what it said when it
+// fails.  A missing tool is a plain error rather than a panic: the toolchain is
+// not part of the interpreter and its absence is a normal thing to hit.
+func runTool(name string, args ...string) error {
+	path, err := exec.LookPath(name)
+	if err != nil {
+		return fmt.Errorf("%s not found on PATH; the LLVM toolchain is needed to compile (apt install llvm)", name)
+	}
+	cmd := exec.Command(path, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("%s: %s", name, msg)
+	}
+	return nil
 }

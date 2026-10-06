@@ -3,17 +3,15 @@
 package scheme
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
 // The bytecode VM must be indistinguishable from the tree-walker.  These tests
-// are the evidence: every program below runs three ways — compiled, compiled
-// and written to bytes and read back, and in the tree-walker — and the three
-// have to print the same thing.
+// are the evidence: every program below runs compiled and interpreted, and the
+// two have to print the same thing.  They are also packed and run again, since
+// packing is what `goscheme pack` does to a program before binding it.
 
 // vmPrograms is the corpus.  It deliberately mixes what the compiler handles
 // (if, let, lambda, closures, set!, the derived forms, tail calls) with what it
@@ -376,89 +374,6 @@ func runProgramText(t *testing.T, src string, interpret bool) string {
 	return out.OutputString()
 }
 
-// compileAndRun compiles src, serialises it, reads it back and runs that.
-func compileAndRun(t *testing.T, src string) string {
-	t.Helper()
-	out := NewOutputStringPort()
-	m := NewMachine()
-	m.CurOut = out
-	m.OutParam.values[0] = out
-	r := NewStringReader(src)
-	forms, err := r.ReadAll()
-	if err != nil {
-		t.Fatalf("reading: %v", err)
-	}
-	prog, err := CompileProgram(m, forms, m.Global)
-	if err != nil {
-		t.Fatalf("compiling: %v", err)
-	}
-	var buf bytes.Buffer
-	if err := WriteBytecode(&buf, prog); err != nil {
-		t.Fatalf("writing bytecode: %v", err)
-	}
-	loaded, err := ReadBytecode(bytes.NewReader(buf.Bytes()))
-	if err != nil {
-		t.Fatalf("reading bytecode: %v", err)
-	}
-	m2 := NewMachine()
-	m2.CurOut = out
-	m2.OutParam.values[0] = out
-	if _, err := m2.RunProgram(loaded, m2.Global); err != nil {
-		t.Fatalf("running bytecode: %v", err)
-	}
-	return out.OutputString()
-}
-
-// compileAndRunObfuscated is compileAndRun with Obfuscate in the middle, so that
-// every program in the corpus is also a test that obfuscation changes nothing
-// but the names.
-func compileAndRunObfuscated(t *testing.T, src string) string {
-	t.Helper()
-	out := NewOutputStringPort()
-	m := NewMachine()
-	m.CurOut = out
-	m.OutParam.values[0] = out
-	forms, err := NewStringReader(src).ReadAll()
-	if err != nil {
-		t.Fatalf("reading: %v", err)
-	}
-	prog, err := CompileProgram(m, forms, m.Global)
-	if err != nil {
-		t.Fatalf("compiling: %v", err)
-	}
-	Obfuscate(prog)
-	ObfuscateGlobals(prog, m)
-	var buf bytes.Buffer
-	if err := WriteBytecode(&buf, prog); err != nil {
-		t.Fatalf("writing bytecode: %v", err)
-	}
-	loaded, err := ReadBytecode(bytes.NewReader(buf.Bytes()))
-	if err != nil {
-		t.Fatalf("reading bytecode: %v", err)
-	}
-	m2 := NewMachine()
-	m2.CurOut = out
-	m2.OutParam.values[0] = out
-	if _, err := m2.RunProgram(loaded, m2.Global); err != nil {
-		t.Fatalf("running obfuscated bytecode: %v", err)
-	}
-	return out.OutputString()
-}
-
-// stripErrorLabels removes the "name: " prefix of each error line, which is the
-// part obfuscation is allowed to change.
-func stripErrorLabels(s string) string {
-	var b strings.Builder
-	for _, line := range strings.Split(s, "\n") {
-		if i := strings.Index(line, ": "); i > 0 && !strings.Contains(line[:i], " ") {
-			line = line[i+2:]
-		}
-		b.WriteString(line)
-		b.WriteByte('\n')
-	}
-	return b.String()
-}
-
 // TestVMDifferential is the contract: the same program prints the same thing
 // compiled, compiled-and-reloaded, interpreted, and obfuscated.
 func TestVMDifferential(t *testing.T) {
@@ -466,30 +381,29 @@ func TestVMDifferential(t *testing.T) {
 		p := p
 		t.Run(p.name, func(t *testing.T) {
 			compiled := runProgramText(t, p.src, false)
-			reloaded := compileAndRun(t, p.src)
 			interpreted := runProgramText(t, p.src, true)
 			if compiled != interpreted {
 				t.Errorf("compiled and interpreted differ:\n compiled: %q\ninterpreted: %q",
 					compiled, interpreted)
 			}
-			if reloaded != interpreted {
-				t.Errorf("bytecode file and interpreted differ:\n reloaded: %q\ninterpreted: %q",
-					reloaded, interpreted)
-			}
-			// The same program again, obfuscated.  What is compared is the
-			// program's output with the *names* taken out of it: an error
-			// message that names the procedure it happened in is renamed along
-			// with it — "b3: wrong number of arguments" where the plain build
-			// says "procedure: ..." — so the comparison ignores the label
-			// before the colon and nothing else.  Everything a program computes
-			// has to be identical.
-			obfuscated := compileAndRunObfuscated(t, p.src)
-			if stripErrorLabels(obfuscated) != stripErrorLabels(interpreted) {
-				t.Errorf("obfuscated and interpreted differ:\nobfuscated: %q\ninterpreted: %q",
-					obfuscated, interpreted)
-			}
 			if compiled == "" {
 				t.Errorf("the program printed nothing, so the test proves nothing")
+			}
+			// The same program packed: the source is read, written back without
+			// its comments and layout, and run again.  Packing is what
+			// `goscheme pack` does, so a program that survives it is a program
+			// whose packed form still means what it meant.
+			packed, err := PackSource(p.src, p.name)
+			if err != nil {
+				t.Fatalf("packing: %v", err)
+			}
+			if err := UnpackCheck(p.src, string(packed), p.name); err != nil {
+				t.Errorf("the packed source is not the same program: %v", err)
+			}
+			repacked := runProgramText(t, string(packed), false)
+			if repacked != compiled {
+				t.Errorf("the packed program differs:\n packed: %q\noriginal: %q",
+					repacked, compiled)
 			}
 		})
 	}
@@ -546,26 +460,23 @@ func TestVMReallyCompiles(t *testing.T) {
 		}
 	}
 
-	// A group the compiler can only take form by form becomes a chunk of
-	// steps, which run in one extent.  Nothing in the language forces that any
-	// more, so the chunk is built here rather than found in a program.
-	stepCode, err := compileTop(m, mustRead(t, `(display "a")`), m.Global)
-	if err != nil {
-		t.Fatalf("step: %v", err)
-	}
+	// A file whose forms mix compiler-understood and compiler-declined runs
+	// them in one extent, which is what makes a continuation captured in one
+	// top-level form span the rest of the file.
 	out := NewOutputStringPort()
 	run := NewMachine()
 	run.CurOut = out
 	run.OutParam.values[0] = out
-	prog := &Program{Chunks: []Chunk{{Steps: []Chunk{
-		{Code: stepCode},
-		{Form: mustRead(t, `(display "b")`)},
-	}}}}
-	if _, err := run.RunProgram(prog, run.Global); err != nil {
-		t.Fatalf("running steps: %v", err)
+	forms := []Value{
+		mustRead(t, `(display "a")`),
+		mustRead(t, `(eval '(display "b") (interaction-environment))`),
+		mustRead(t, `(display "c")`),
 	}
-	if got := out.OutputString(); got != "ab" {
-		t.Errorf("the steps printed %q, want %q", got, "ab")
+	if _, err := run.RunFormsCompiled(forms, run.Global); err != nil {
+		t.Fatalf("running the mixed group: %v", err)
+	}
+	if got := out.OutputString(); got != "abc" {
+		t.Errorf("the mixed group printed %q, want %q", got, "abc")
 	}
 	// Compiled code must not be produced when the machine is asked to
 	// interpret everything.
@@ -619,45 +530,6 @@ func mustRead(t *testing.T, src string) Value {
 }
 
 // TestBytecodeFormat pins the parts of the format that a program may rely on:
-// the magic number, the version, and a refusal to read anything else.
-func TestBytecodeFormat(t *testing.T) {
-	m := NewMachine()
-	prog, err := CompileProgram(m, []Value{mustRead(t, `(display 1)`)}, m.Global)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var buf bytes.Buffer
-	if err := WriteBytecode(&buf, prog); err != nil {
-		t.Fatal(err)
-	}
-	// The file starts with a shebang so that it can be executed directly; the
-	// magic follows it, and the reader skips it.
-	if !strings.HasPrefix(buf.String(), bytecodeShebang) {
-		t.Errorf("the file does not start with a shebang")
-	}
-	if !strings.HasPrefix(strings.TrimPrefix(buf.String(), bytecodeShebang), bytecodeMagic) {
-		t.Errorf("the file does not start with %q after the shebang", bytecodeMagic)
-	}
-	// A reader that is handed the file without its shebang — an older compiler
-	// wrote one — still reads it.
-	if _, err := ReadBytecode(strings.NewReader(
-		strings.TrimPrefix(buf.String(), bytecodeShebang))); err != nil {
-		t.Errorf("a file with no shebang was not read: %v", err)
-	}
-	if _, err := ReadBytecode(strings.NewReader("not bytecode at all")); err == nil {
-		t.Errorf("reading a non-bytecode file should fail")
-	}
-	// A future version must be refused rather than misread.
-	bad := append([]byte(bytecodeMagic), bytecodeVersion+1)
-	if _, err := ReadBytecode(bytes.NewReader(bad)); err == nil {
-		t.Errorf("a file from another version should be refused")
-	}
-	// And a program with a literal structure must round trip exactly.
-	src := `(define d '(1 (2 . 3) #(4 "five" #\x) #u8(1 2) 3/4 1.5 123456789012345678901234567890)) (display d)`
-	if got, want := compileAndRun(t, src), runProgramText(t, src, true); got != want {
-		t.Errorf("literals did not survive the round trip: %q vs %q", got, want)
-	}
-}
 
 // TestVMTailCallsAreProper checks the VM's own tail-call path, which is what
 // keeps a loop from growing the stack.

@@ -3,7 +3,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -175,15 +174,15 @@ func writeBundle(interpreter, out, name string, kind byte, payload []byte) error
 	return os.Chmod(out, st.Mode().Perm()|0o111)
 }
 
-// runBuild implements "goscheme build script.scm [-o output] [-i interpreter]".
-func runBuild(args []string) int {
+// runPack implements "goscheme pack script.scm [-o output] [-i interpreter]".
+func runPack(args []string) int {
 	var scriptPath, out, interpreter string
 	static := false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		need := func(what string) (string, bool) {
 			if i+1 >= len(args) {
-				fmt.Fprintf(os.Stderr, "goscheme build: %s requires an argument\n", what)
+				fmt.Fprintf(os.Stderr, "goscheme pack: %s requires an argument\n", what)
 				return "", false
 			}
 			i++
@@ -205,55 +204,55 @@ func runBuild(args []string) int {
 		case "-static", "--static":
 			static = true
 		case "-h", "--help":
-			buildUsage(os.Stdout)
+			packUsage(os.Stdout)
 			return 0
 		default:
 			if strings.HasPrefix(a, "-") && a != "-" {
-				fmt.Fprintf(os.Stderr, "goscheme build: unknown option %s\n", a)
-				buildUsage(os.Stderr)
+				fmt.Fprintf(os.Stderr, "goscheme pack: unknown option %s\n", a)
+				packUsage(os.Stderr)
 				return 2
 			}
 			if scriptPath != "" {
-				fmt.Fprintf(os.Stderr, "goscheme build: only one script may be given\n")
+				fmt.Fprintf(os.Stderr, "goscheme pack: only one script may be given\n")
 				return 2
 			}
 			scriptPath = a
 		}
 	}
 	if scriptPath == "" {
-		buildUsage(os.Stderr)
+		packUsage(os.Stderr)
 		return 2
 	}
 	if interpreter == "" {
 		exe, err := os.Executable()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "goscheme build: cannot find the interpreter: %v\n", err)
+			fmt.Fprintf(os.Stderr, "goscheme pack: cannot find the interpreter: %v\n", err)
 			return 1
 		}
 		interpreter = exe
 	}
 	script, err := os.ReadFile(scriptPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "goscheme build: %v\n", err)
+		fmt.Fprintf(os.Stderr, "goscheme pack: %v\n", err)
 		return 1
 	}
 	if out == "" {
 		out = defaultOutput(interpreter)
 	}
 	if same, err := sameFile(scriptPath, out); err == nil && same {
-		fmt.Fprintf(os.Stderr, "goscheme build: refusing to overwrite the script %s\n", scriptPath)
+		fmt.Fprintf(os.Stderr, "goscheme pack: refusing to overwrite the script %s\n", scriptPath)
 		return 1
 	}
 	if static {
 		script, err = resolveStatic(scriptPath, script, staticSearchPath(scriptPath))
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "goscheme build: %v\n", err)
+			fmt.Fprintf(os.Stderr, "goscheme pack: %v\n", err)
 			return 1
 		}
 	}
 	payload, kind, note := payloadFor(scriptPath, script)
 	if err := writeBundle(interpreter, out, filepath.Base(scriptPath), kind, payload); err != nil {
-		fmt.Fprintf(os.Stderr, "goscheme build: %v\n", err)
+		fmt.Fprintf(os.Stderr, "goscheme pack: %v\n", err)
 		return 1
 	}
 	// Silent when the program compiled, because that is the expected case;
@@ -282,28 +281,12 @@ func payloadFor(scriptPath string, script []byte) (payload []byte, kind byte, no
 	if err != nil {
 		abs = scriptPath
 	}
-	source := func(why error) ([]byte, byte, string) {
+	packed, err := scheme.PackSource(string(script), abs)
+	if err != nil {
 		return script, kindSource,
-			fmt.Sprintf("compiling here failed (%v), so the script is bound as source", why)
+			fmt.Sprintf("packing failed (%v), so the script is bound as it was written", err)
 	}
-	r := scheme.NewStringReader(string(script))
-	r.Source = abs
-	forms, err := r.ReadAll()
-	if err != nil {
-		return source(err)
-	}
-	m := scheme.NewMachine()
-	m.Args = []string{scriptPath}
-	m.AddLoadPath(filepath.Dir(abs))
-	prog, err := scheme.CompileProgram(m, forms, m.Global)
-	if err != nil {
-		return source(err)
-	}
-	var buf bytes.Buffer
-	if err := scheme.WriteBytecode(&buf, prog); err != nil {
-		return source(err)
-	}
-	return buf.Bytes(), kindBytecode, ""
+	return packed, kindSource, ""
 }
 
 // defaultOutput is the name used when -o is omitted: a.out, or a.exe when
@@ -343,14 +326,13 @@ func sameFile(a, b string) (bool, error) {
 	return os.SameFile(sa, sb), nil
 }
 
-func buildUsage(w io.Writer) {
-	fmt.Fprintln(w, "usage: goscheme build <script> [-o <output>] [-i <interpreter>] [-static]")
+func packUsage(w io.Writer) {
+	fmt.Fprintln(w, "usage: goscheme pack <script> [-o <output>] [-i <interpreter>] [-static]")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Writes a standalone executable that runs <script>: a copy of the")
-	fmt.Fprintln(w, "interpreter with the compiled script bound to it.  The result needs")
-	fmt.Fprintln(w, "nothing else on the machine that runs it, and it starts without")
-	fmt.Fprintln(w, "reading source.  A script the compiler cannot translate — because it")
-	fmt.Fprintln(w, "imports a library that is not on this machine — is bound as source")
+	fmt.Fprintln(w, "interpreter with the script bound to it, packed as source — comments")
+	fmt.Fprintln(w, "and layout removed, the program kept.  The result needs nothing else on")
+	fmt.Fprintln(w, "the machine that runs it.")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "  -o, --output FILE       name of the executable (default: a.out, or")
 	fmt.Fprintln(w, "                          a.exe when binding a Windows interpreter)")

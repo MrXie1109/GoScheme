@@ -19,7 +19,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -72,8 +71,8 @@ func run() int {
 	}
 
 	args := os.Args[1:]
-	if len(args) > 0 && args[0] == "build" {
-		return runBuild(args[1:])
+	if len(args) > 0 && args[0] == "pack" {
+		return runPack(args[1:])
 	}
 	if len(args) > 0 && args[0] == "compile" {
 		return runCompile(args[1:])
@@ -187,16 +186,6 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  -obfuscate     remove the names from the file")
 }
 
-// isBytecodeFile reports whether path holds a compiled program.  A file that
-// cannot be opened is not one, and is left for the source path to report.
-func isBytecodeFile(path string) bool {
-	f, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	return scheme.IsBytecode(f)
-}
 
 // commandLine builds the (command-line) list: the script (or, for a bundled
 // executable, the program as it was invoked) followed by the user's arguments.
@@ -225,20 +214,11 @@ func runBundled(exe string, info *bundleInfo) int {
 	return runPayload(m, info)
 }
 
-// runPayload runs what a bundle carries: a compiled program, or the source of
-// a script the build machine could not compile.
+// runPayload runs what a bundle carries: the program's source, packed by
+// `goscheme pack`.  There is one kind of payload now that there is no compiled
+// file format — a packed program is its source, read and run the same way a
+// script is.
 func runPayload(m *scheme.Machine, info *bundleInfo) int {
-	if info.Kind == kindBytecode {
-		p, err := scheme.ReadBytecode(bytes.NewReader(info.Payload))
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s: %v\n", info.Name, err)
-			return 1
-		}
-		if _, err := m.RunProgram(p, m.Global); err != nil {
-			return reportError(err)
-		}
-		return 0
-	}
 	r := scheme.NewStringReader(string(info.Payload))
 	r.Source = info.Name
 	forms, err := r.ReadAll()
@@ -272,27 +252,6 @@ func loadFile(m *scheme.Machine, path string) int {
 		abs = path
 	}
 	// A compiled file is loaded and run, never read as source.  The file is
-	// asked what it is rather than told by its name: a compiled program is
-	// written executable and may be installed under a name with no extension,
-	// which is what a command is called.
-	if isBytecodeFile(abs) {
-		f, err := os.Open(abs)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "goscheme: %v\n", err)
-			return 1
-		}
-		defer f.Close()
-		prog, err := scheme.ReadBytecode(f)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "goscheme: %v\n", err)
-			return 1
-		}
-		m.AddLoadPath(filepath.Dir(abs))
-		if _, err := m.RunProgram(prog, m.Global); err != nil {
-			return reportError(err)
-		}
-		return 0
-	}
 	data, err := os.ReadFile(abs)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "goscheme: %v\n", err)
@@ -306,9 +265,10 @@ func loadFile(m *scheme.Machine, path string) int {
 		return 1
 	}
 	m.AddLoadPath(filepath.Dir(abs))
-	// Compiled where possible, exactly as a .scmc file holding the same
-	// program would be: this is what "the VM is the default" has to mean for
-	// the most ordinary thing anyone does, which is run a script.
+	// Compiled where possible, form by form as the file is read: this is what
+	// "the VM is the default" has to mean for the most ordinary thing anyone
+	// does, which is run a script.  There is no intermediate file — a script is
+	// read, compiled in memory and run.
 	if _, err := m.RunFormsCompiled(forms, m.Global); err != nil {
 		return reportError(err)
 	}

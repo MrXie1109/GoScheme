@@ -3,10 +3,8 @@
 package main
 
 import (
-	"bytes"
 	"io"
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/MrXie1109/GoScheme/internal/scheme"
@@ -43,114 +41,4 @@ func runScriptFile(t *testing.T, path string) string {
 		t.Fatalf("running %s failed with code %d", path, code)
 	}
 	return out.OutputString()
-}
-
-// TestCompileAndRunBytecode is the end-to-end promise of the bytecode work: a
-// script is compiled by "goscheme compile", the .scmc file it writes runs
-// without being parsed, and it does what the script did.
-func TestCompileAndRunBytecode(t *testing.T) {
-	dir := t.TempDir()
-	src := filepath.Join(dir, "prog.scm")
-	program := `(import (scheme base) (scheme write))
-(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))
-(display (fact 10)) (newline)
-(define (counter) (let ((n 0)) (lambda () (set! n (+ n 1)) n)))
-(define c (counter))
-(c)
-(display (c)) (newline)
-(display (let loop ((i 0) (acc '())) (if (= i 3) (reverse acc) (loop (+ i 1) (cons i acc)))))
-(newline)
-`
-	if err := os.WriteFile(src, []byte(program), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	out := filepath.Join(dir, "prog.scmc")
-	report := captureStdout(t, func() {
-		if code := runCompile([]string{src, "-o", out}); code != 0 {
-			t.Errorf("compile returned %d", code)
-		}
-	})
-	if report != "" {
-		t.Errorf("compile printed %q; a successful compile says nothing", report)
-	}
-	if _, err := os.Stat(out); err != nil {
-		t.Fatalf("no bytecode file: %v", err)
-	}
-	fromSource := runScriptFile(t, src)
-	fromBytecode := runScriptFile(t, out)
-	if fromSource == "" {
-		t.Fatalf("the script printed nothing")
-	}
-	if fromSource != fromBytecode {
-		t.Errorf("bytecode and source differ:\n source: %q\nbytecode: %q", fromSource, fromBytecode)
-	}
-}
-
-// TestBytecodeFileIsNotSource checks that the two kinds of file take two
-// different paths: bytecode with a mangled header is refused rather than read
-// as Scheme, and a source file is not accepted as bytecode.
-func TestBytecodeFileIsNotSource(t *testing.T) {
-	dir := t.TempDir()
-	src := filepath.Join(dir, "p.scm")
-	if err := os.WriteFile(src, []byte("(display 7)(newline)"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	out := filepath.Join(dir, "p.scmc")
-	captureStdout(t, func() {
-		if code := runCompile([]string{src, "-o", out}); code != 0 {
-			t.Fatalf("compile returned %d", code)
-		}
-	})
-	data, err := os.ReadFile(out)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// A compiled file begins with a shebang so it can be made executable; the
-	// bytecode magic follows it.
-	if !bytes.HasPrefix(data, []byte("#!")) {
-		t.Fatalf("the file does not start with a shebang: %q", data[:12])
-	}
-	if !bytes.Contains(data[:128], []byte("GSCM")) {
-		t.Fatalf("the file does not contain the bytecode magic")
-	}
-	if got := runScriptFile(t, out); got != "7\n" {
-		t.Errorf("running the bytecode printed %q", got)
-	}
-	// A source file is not bytecode.
-	source, err := os.ReadFile(src)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := scheme.ReadBytecode(bytes.NewReader(source)); err == nil {
-		t.Errorf("a source file was accepted as bytecode")
-	}
-	// Neither is a file whose magic has been mangled: the loader refuses it
-	// instead of falling back to reading it as Scheme.
-	mangled := filepath.Join(dir, "bad.scmc")
-	bad := append([]byte("XSCM"), data[4:]...)
-	if err := os.WriteFile(mangled, bad, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	m := scheme.NewMachine()
-	if code := loadFile(m, mangled); code == 0 {
-		t.Errorf("a bytecode file with a bad header was accepted")
-	}
-}
-
-// 一个编译后的文件装成没有扩展名的命令也要能跑：它写成可执行，而命令就是
-// 没有扩展名的。按扩展名判断字节码时，它会被当成源码读，报出第二行的
-// "unexpected character"。
-func TestCompiledFileWithoutExtensionRuns(t *testing.T) {
-	dir := t.TempDir()
-	script := filepath.Join(dir, "prog.scm")
-	if err := os.WriteFile(script, []byte(`(display (+ 20 22)) (newline)`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	out := filepath.Join(dir, "prog") // 没有扩展名
-	if code := runCompile([]string{script, "-o", out}); code != 0 {
-		t.Fatalf("compile returned %d", code)
-	}
-	if got := runScriptFile(t, out); got != "42\n" {
-		t.Errorf("running the compiled file printed %q, want %q", got, "42\n")
-	}
 }

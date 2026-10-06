@@ -599,25 +599,42 @@ func TestBundleRejectsCorruptTrailer(t *testing.T) {
 	}
 }
 
-// A bundle carries the compiled script when the build machine can compile it,
-// and running it must not need the source — so the source file is deleted
-// before the payload runs.  A form the compiler declines goes into the payload
-// as source, which is how a mixed program still runs.
-func TestBundleBytecodePayload(t *testing.T) {
+// A packed program carries its source with the comments and layout removed,
+// and running it must not need the source file — so the script is deleted
+// before the payload runs.
+func TestPackPayloadIsPackedSource(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := filepath.Join(dir, "prog.scm")
-	src := `(define (square x) (* x x))
+	src := `;;; a comment that should not survive
+(define (square x) (* x x))          ; nor this one
 (define (sum-to n)
   (let loop ((i 0) (acc 0))
     (if (= i n) acc (loop (+ i 1) (+ acc (square i))))))
+#| a block comment
+   over two lines |#
 (display (list (sum-to 5) (do ((i 0 (+ i 1)) (acc '() (cons i acc))) ((= i 3) acc))))
 (newline)`
 	if err := os.WriteFile(scriptPath, []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	payload, kind, note := payloadFor(scriptPath, []byte(src))
-	if kind != kindBytecode {
-		t.Fatalf("kind = %d (%s), want bytecode", kind, note)
+	if kind != kindSource {
+		t.Fatalf("kind = %d (%s), want source", kind, note)
+	}
+	// The comments are gone and the program is not.
+	for _, gone := range []string{"a comment that should not survive", "nor this one", "a block comment"} {
+		if strings.Contains(string(payload), gone) {
+			t.Errorf("the packed payload still contains %q", gone)
+		}
+	}
+	for _, kept := range []string{"define", "square", "sum-to", "display"} {
+		if !strings.Contains(string(payload), kept) {
+			t.Errorf("the packed payload lost %q: %s", kept, payload)
+		}
+	}
+	// And it is the same program: packing checks the round trip itself.
+	if err := scheme.UnpackCheck(src, string(payload), "prog.scm"); err != nil {
+		t.Errorf("the packed source does not read as the original: %v", err)
 	}
 
 	interp := filepath.Join(dir, "interp")
@@ -632,31 +649,24 @@ func TestBundleBytecodePayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readBundle: %v", err)
 	}
-	if info.Kind != kindBytecode {
-		t.Fatalf("the bundle carries kind %d, want bytecode", info.Kind)
-	}
 
 	// The source is gone: whatever runs now comes from the payload.
 	if err := os.Remove(scriptPath); err != nil {
 		t.Fatal(err)
 	}
 	got := runPayloadOnStringPort(t, info)
-
-	want := runPayloadOnStringPort(t, &bundleInfo{Payload: []byte(src), Name: "prog.scm", Kind: kindSource})
-	if got != want {
-		t.Errorf("bytecode payload printed %q, source printed %q", got, want)
-	}
-	if !strings.Contains(want, "(30 (2 1 0))") {
-		t.Fatalf("the program itself is wrong: %q", want)
+	if !strings.Contains(got, "(30 (2 1 0))") {
+		t.Errorf("the packed program printed %q", got)
 	}
 }
 
-// A script that imports a library this machine cannot find cannot be compiled
-// here, so the bundle carries the source instead of failing the build.
-func TestBundlePayloadFallsBackToSource(t *testing.T) {
+// A script that does not read cannot be packed, so the bundle carries it as it
+// was written: a script whose problem is a syntax error should report that when
+// it runs, not fail the packing.
+func TestPackKeepsUnreadableSource(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := filepath.Join(dir, "prog.scm")
-	src := "(import (no such lib))\n(display 1)\n"
+	src := "(display 1\n" // an unclosed paren
 	if err := os.WriteFile(scriptPath, []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -665,10 +675,10 @@ func TestBundlePayloadFallsBackToSource(t *testing.T) {
 		t.Fatalf("kind = %d, want source", kind)
 	}
 	if string(payload) != src {
-		t.Errorf("payload = %q, want the script", payload)
+		t.Errorf("payload = %q, want the script as written", payload)
 	}
-	if !strings.Contains(note, "source") {
-		t.Errorf("note = %q, want it to say the script was embedded", note)
+	if !strings.Contains(note, "packing failed") {
+		t.Errorf("note = %q, want it to say packing failed", note)
 	}
 }
 
@@ -1299,10 +1309,21 @@ func TestUsageLinesMentionEveryOption(t *testing.T) {
 }
 
 // goscheme compile 自己的 usage 也要提到它的选项。
-func TestCompileUsageMentionsObfuscate(t *testing.T) {
+// goscheme compile turns a script into a native program through LLVM, and the
+// usage has to say so — including the option that stops before the tools run,
+// which is the one a person asks for when they want to read the generated IR.
+func TestCompileUsageMentionsItsOptions(t *testing.T) {
 	got := captureStderr(t, func() { runCompile(nil) })
-	if !strings.Contains(got, "-obfuscate") {
-		t.Errorf("goscheme compile 的 usage 没提到 -obfuscate：\n%s", got)
+	for _, want := range []string{"--emit-llvm", "-o", "-O", "LLVM"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("goscheme compile 的 usage 没提到 %s：\n%s", want, got)
+		}
+	}
+	// The old format is gone, and the usage must not still offer it.
+	for _, gone := range []string{"-obfuscate", ".scmc"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("goscheme compile 的 usage 仍然提到 %s：\n%s", gone, got)
+		}
 	}
 }
 
