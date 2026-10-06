@@ -82,17 +82,21 @@ func TestACompiledBuildDoesNotWarn(t *testing.T) {
 }
 
 func TestExplainNamesWhatWasLeftBehind(t *testing.T) {
-	// A `delay-force` is one of the constructs the generator has no rule for
-	// yet, so it is refused with a reason — which is what --explain is for.  (A
-	// `set!` was the example here until it started compiling, then a `lambda`,
-	// then a nested `define`, then a `guard`; the test needs a refusal, and what
-	// it is about is the reporting rather than which construct is refused.)
-	prog, err := scheme.CompileToIR(`(define (f x) (delay-force (+ x 1)))`, "test")
+	// Internal definitions that call each other are a `letrec*` with a forward
+	// reference, which is the one shape the rewrite cannot take and so a real
+	// refusal — which is what --explain is for.  (A `set!` was the example here
+	// until it started compiling, then a `lambda`, a nested `define`, a `guard`
+	// and a `delay-force`; the test needs a refusal, and what it is about is the
+	// reporting rather than which construct is refused.)
+	prog, err := scheme.CompileToIR(`(define (f x)
+  (define (a k) (if (= k 0) (+ x 1) (b (- k 1))))
+  (define (b k) (if (= k 0) (* x 2) (a (- k 1))))
+  (+ (* x x) (a x)))`, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(prog.Refused) == 0 {
-		t.Fatal("a body holding a delay-force should be refused, with a reason")
+		t.Fatal("a body with mutually recursive internal definitions should be refused, with a reason")
 	}
 	var buf bytes.Buffer
 	reportSplit(&buf, prog, true)

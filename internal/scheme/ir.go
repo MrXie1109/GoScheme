@@ -52,9 +52,28 @@ type IRProgram struct {
 	// from Native, which counts procedures, because a form that runs natively
 	// is not a procedure and the two numbers answer different questions.
 	TopNative int
-	// Refused is one line per procedure that was not compiled natively, saying
-	// what stopped it.
+	// Refused is one line per procedure the generator could not emit, saying what
+	// stopped it.  These are gaps.
 	Refused []string
+	// Declined is one line per procedure the cost rule left to the interpreter
+	// deliberately: it could have been emitted and measurement says emitting it
+	// would be slower.  These are choices, and they are not reported by default
+	// because there is nothing for a user to act on — the compiler already made
+	// the decision that keeps the program fast, and saying so reads as a defect.
+	Declined []string
+}
+
+// NotCompiled lists every procedure that was not emitted, with its reason,
+// whichever kind of reason it was.
+//
+// A caller that only wants "what did not compile" wants this; the split between
+// Refused and Declined matters to a *report*, which is why they are separate
+// fields, but not to a test asking whether a reason was given.
+func (p *IRProgram) NotCompiled() []string {
+	out := make([]string, 0, len(p.Refused)+len(p.Declined))
+	out = append(out, p.Refused...)
+	out = append(out, p.Declined...)
+	return out
 }
 
 // CompiledAnything reports whether any of the program became machine code.
@@ -111,6 +130,7 @@ func CompileToIRWith(source, name string, opts Options) (*IRProgram, error) {
 		Runtime:   g.runtime,
 		TopNative: g.topNative,
 		Refused:   g.refused,
+		Declined:  g.declined,
 	}, nil
 }
 
@@ -129,6 +149,11 @@ type irGen struct {
 	pure map[string]*pureProc
 	// compileEverything turns off the cost rule; see Options.
 	compileEverything bool
+	// declined records the procedures the cost rule left to the interpreter.
+	// They are kept apart from refused because the two are different things: a
+	// refusal is something the generator cannot emit, and a decline is something
+	// it chose not to.  Only the first is worth telling a user about.
+	declined []string
 	// refused records the procedures that were not compiled natively, and why.
 	// It is what `--emit-llvm` explains and what a user asking "why is this
 	// slow" needs.
@@ -349,7 +374,13 @@ func (g *irGen) program(forms []Value) error {
 			continue
 		}
 		if why := notWorthCompiling(r); why != "" && !g.compileEverything {
-			g.refused = append(g.refused, p.name+": "+why)
+			// A refusal for cost is a *choice*, not a gap, and it is kept apart
+			// from the ones that are gaps so that a caller can report the two
+			// differently.  Telling a user that a procedure was "left to the
+			// interpreter" when the compiler deliberately declined it — because
+			// compiling it measured 2.5 times slower — reads as a defect and
+			// sends them looking for one.
+			g.declined = append(g.declined, p.name+": "+why)
 			continue
 		}
 		g.pure[p.name] = &pureProc{name: p.name, formals: p.formals, body: p.body, calls: r.calls}

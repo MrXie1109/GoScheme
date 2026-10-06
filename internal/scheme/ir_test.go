@@ -88,7 +88,7 @@ func TestIRRefusesWhatItCannotEmit(t *testing.T) {
 			if p.Native != 0 {
 				t.Errorf("%s was compiled natively, but it should have been refused", tc.name)
 			}
-			if len(p.Refused) == 0 {
+			if len(p.NotCompiled()) == 0 {
 				t.Errorf("%s was refused without a reason", tc.name)
 			}
 		})
@@ -110,7 +110,7 @@ func TestIRGlobalReadsHappenWhereTheyAppear(t *testing.T) {
 		t.Fatal(err)
 	}
 	if p.Native != 1 {
-		t.Fatalf("a body reading a global was not compiled: %v", p.Refused)
+		t.Fatalf("a body reading a global was not compiled: %v", p.NotCompiled())
 	}
 	// One read per use: two uses of k, so two calls.
 	if got := strings.Count(p.IR, "call %gs.val @gs_global("); got != 2 {
@@ -174,7 +174,7 @@ func TestIRPartiallyCompilableBodies(t *testing.T) {
 				t.Fatalf("compiling %q: %v", tc.src, err)
 			}
 			if p.Native != 1 {
-				t.Fatalf("%s was not compiled: %v", tc.name, p.Refused)
+				t.Fatalf("%s was not compiled: %v", tc.name, p.NotCompiled())
 			}
 			for _, want := range tc.want {
 				if !strings.Contains(p.IR, want) {
@@ -223,7 +223,7 @@ func TestIRABodyThatIsOnlyACallIsNotCompiled(t *testing.T) {
 			if p.Native != 0 {
 				t.Errorf("%s was compiled, but there is nothing in it for machine code to do", tc.name)
 			}
-			if len(p.Refused) == 0 {
+			if len(p.NotCompiled()) == 0 {
 				t.Errorf("%s was declined without a reason", tc.name)
 			}
 		})
@@ -247,7 +247,7 @@ func TestIRABodyThatIsOnlyACallIsNotCompiled(t *testing.T) {
 				t.Fatalf("compiling %q: %v", tc.src, err)
 			}
 			if p.Native != 1 {
-				t.Errorf("%s was not compiled, though it does work of its own: %v", tc.name, p.Refused)
+				t.Errorf("%s was not compiled, though it does work of its own: %v", tc.name, p.NotCompiled())
 			}
 		})
 	}
@@ -269,8 +269,8 @@ func TestIRIgnoresWhatIsNotAProcedure(t *testing.T) {
 		if err != nil {
 			t.Fatalf("compiling %q: %v", src, err)
 		}
-		if p.Native != 0 || len(p.Refused) != 0 {
-			t.Errorf("%q: native=%d refused=%v, want neither", src, p.Native, p.Refused)
+		if p.Native != 0 || len(p.NotCompiled()) != 0 {
+			t.Errorf("%q: native=%d refused=%v, want neither", src, p.Native, p.NotCompiled())
 		}
 	}
 }
@@ -418,17 +418,17 @@ func TestIRCyclesAreRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	if p.Native != 0 {
-		t.Fatalf("a mutual recursion was compiled natively; the refusal reasons were %v", p.Refused)
+		t.Fatalf("a mutual recursion was compiled natively; the refusal reasons were %v", p.NotCompiled())
 	}
 	// Both members are refused, not just the one the walk happened to enter
 	// first: leaving one behind would emit a body calling a function that is
 	// no longer in the module.
-	if len(p.Refused) != 2 {
-		t.Errorf("refused %d procedures, want both: %v", len(p.Refused), p.Refused)
+	if len(p.NotCompiled()) != 2 {
+		t.Errorf("refused %d procedures, want both: %v", len(p.NotCompiled()), p.NotCompiled())
 	}
-	joined := strings.Join(p.Refused, "\n")
+	joined := strings.Join(p.NotCompiled(), "\n")
 	if !strings.Contains(joined, "cycle") {
-		t.Errorf("the refusal does not mention the cycle: %v", p.Refused)
+		t.Errorf("the refusal does not mention the cycle: %v", p.NotCompiled())
 	}
 }
 
@@ -462,22 +462,22 @@ func TestIRRefusedIsReported(t *testing.T) {
 	// A global read is compiled, and so is an assignment to a local; the
 	// delay-force is not.
 	if p.Native != 3 {
-		t.Errorf("compiled %d procedures natively, want 3: %v", p.Native, p.Refused)
+		t.Errorf("compiled %d procedures natively, want 3: %v", p.Native, p.NotCompiled())
 	}
-	if len(p.Refused) != 1 {
-		t.Fatalf("refusals = %v, want one per refused procedure", p.Refused)
+	if len(p.NotCompiled()) != 1 {
+		t.Fatalf("refusals = %v, want one per refused procedure", p.NotCompiled())
 	}
-	joined := strings.Join(p.Refused, "\n")
+	joined := strings.Join(p.NotCompiled(), "\n")
 	for _, want := range []string{"deferred"} {
 		if !strings.Contains(joined, want) {
-			t.Errorf("no refusal names %s: %v", want, p.Refused)
+			t.Errorf("no refusal names %s: %v", want, p.NotCompiled())
 		}
 	}
 	// A `set!` that used to be refused must not be reported as refused, which is
 	// the other half of moving it: a stale refusal would tell a user their
 	// program did not compile when it did.
 	if strings.Contains(joined, "setter") {
-		t.Errorf("a compiled set! is still reported as refused: %v", p.Refused)
+		t.Errorf("a compiled set! is still reported as refused: %v", p.NotCompiled())
 	}
 }
 
@@ -610,7 +610,7 @@ func TestIRTailCallsBetweenDifferentAritiesAreNotMusttail(t *testing.T) {
 		t.Fatal(err)
 	}
 	if p.Native != 2 {
-		t.Fatalf("not both procedures compiled: %v", p.Refused)
+		t.Fatalf("not both procedures compiled: %v", p.NotCompiled())
 	}
 	// The definitions are extracted by searching for the exact signature, since
 	// `@gs_lam_fib(` is also a prefix of `@gs_lam_fib_entry(`.
@@ -702,7 +702,7 @@ func TestIRAVectorWalkIsActuallyEmitted(t *testing.T) {
 				t.Fatal(err)
 			}
 			if p.Native != 1 {
-				t.Fatalf("the walk was not compiled: %v", p.Refused)
+				t.Fatalf("the walk was not compiled: %v", p.NotCompiled())
 			}
 			if !strings.Contains(p.IR, "call %gs.val @gs_vecwalk") {
 				t.Error("the walk was recognised but no gs_vecwalk call was emitted")

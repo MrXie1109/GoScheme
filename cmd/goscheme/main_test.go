@@ -2352,7 +2352,7 @@ func TestALetrecStarWithAForwardReferenceIsNotAReverseLet(t *testing.T) {
 		t.Fatal(err)
 	}
 	if p.Native == 0 {
-		t.Errorf("a letrec* that refers only backwards was not compiled: %v", p.Refused)
+		t.Errorf("a letrec* that refers only backwards was not compiled: %v", p.NotCompiled())
 	}
 }
 

@@ -137,34 +137,42 @@ func compileUsage(w *os.File) {
 // build that compiled nothing therefore says so out loud.  Everything printed
 // here was already computed for this purpose and was previously discarded.
 func reportSplit(w io.Writer, prog *scheme.IRProgram, explain bool) {
-	// Silence is right when the program compiled and the interpreter kept
-	// nothing: that is the good case, and a line on every build would train the
-	// reader to skip it.
-	if !prog.CompiledAnything() {
+	// A program where everything compiled has nothing to say, and neither has one
+	// where the only procedures left behind are ones the cost rule declined: the
+	// compiler already made the choice that keeps the program fast, and announcing
+	// it would read as a defect and send the reader looking for one.
+	//
+	// What is worth saying is a *gap* — a procedure the generator could not emit —
+	// because that is something a person can act on, by rewriting the procedure or
+	// by reporting the missing rule.
+	if len(prog.Refused) == 0 && prog.CompiledAnything() {
+		if !explain || len(prog.Declined) == 0 {
+			return
+		}
+	} else if !prog.CompiledAnything() {
 		fmt.Fprintf(w, "goscheme compile: warning: nothing was compiled to native code\n")
 		fmt.Fprintf(w, "  This program will run in the interpreter, at the speed it would have\n")
 		fmt.Fprintf(w, "  had without compiling.  The binary is large because the runtime is\n")
 		fmt.Fprintf(w, "  linked into it, not because any of the program is machine code.\n")
 	} else {
-		if prog.Runtime == 0 {
-			// Everything compiled: no news, which is the good case, unless the
-			// caller asked for the details.
-			if !explain || len(prog.Refused) == 0 {
-				return
-			}
-		} else {
-			fmt.Fprintf(w, "goscheme compile: %d compiled to native code, %d left to the interpreter\n",
-				prog.Native+prog.TopNative, prog.Runtime)
-		}
+		fmt.Fprintf(w, "goscheme compile: %d compiled to native code, %d left to the interpreter\n",
+			prog.Native+prog.TopNative, prog.Runtime)
 	}
 	switch {
 	case explain && len(prog.Refused) > 0:
-		fmt.Fprintf(w, "  left to the interpreter:\n")
+		fmt.Fprintf(w, "  could not be emitted:\n")
 		for _, line := range prog.Refused {
 			fmt.Fprintf(w, "    %s\n", line)
 		}
 	case len(prog.Refused) > 0:
-		fmt.Fprintf(w, "  run with --explain to list what was left behind, and why\n")
+		fmt.Fprintf(w, "  %d could not be emitted; run with --explain to see which, and why\n",
+			len(prog.Refused))
+	}
+	if explain && len(prog.Declined) > 0 {
+		fmt.Fprintf(w, "  declined as slower to compile, which is a choice and not a gap:\n")
+		for _, line := range prog.Declined {
+			fmt.Fprintf(w, "    %s\n", line)
+		}
 	}
 }
 

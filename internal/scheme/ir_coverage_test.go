@@ -88,10 +88,13 @@ func TestEveryPureConstructCompilesOrSaysWhyNot(t *testing.T) {
 			// not understand.  "is a form, not a call this can compile" means a
 			// derived form reached the emitter unexpanded, which is the defect
 			// this test is for.
-			if len(p.Refused) == 0 {
+			// The reason may be either kind: the two are reported apart because
+			// one is a gap and the other a choice, but this test cares about the
+			// *content* of the reason rather than which list it landed in.
+			if len(p.NotCompiled()) == 0 {
 				t.Fatalf("%s neither compiled nor said why", tc.body)
 			}
-			reason := strings.Join(p.Refused, " ")
+			reason := strings.Join(p.NotCompiled(), " ")
 			if strings.Contains(reason, "is a form, not a call this can compile") {
 				t.Errorf("the generator has no rule for %s, which is derived syntax: %s", tc.body, reason)
 			}
@@ -107,7 +110,7 @@ func TestEveryEffectfulConstructSaysWhyWhenRefused(t *testing.T) {
 			if err != nil {
 				t.Fatalf("compiling %s: %v", tc.body, err)
 			}
-			if p.Native == 0 && len(p.Refused) == 0 {
+			if p.Native == 0 && len(p.NotCompiled()) == 0 {
 				t.Fatalf("%s neither compiled nor said why", tc.body)
 			}
 		})
@@ -131,7 +134,7 @@ func TestDerivedSyntaxIsExpandedAtEveryDepth(t *testing.T) {
 			t.Fatalf("compiling %q: %v", src, err)
 		}
 		if p.Native == 0 {
-			t.Errorf("nested derived syntax stopped the body compiling: %v", p.Refused)
+			t.Errorf("nested derived syntax stopped the body compiling: %v", p.NotCompiled())
 		}
 	}
 }
@@ -227,7 +230,7 @@ func TestTheFormerGapsNowCompile(t *testing.T) {
 				t.Fatal(err)
 			}
 			if p.Native == 0 {
-				t.Errorf("%s stopped compiling: %v", tc.name, p.Refused)
+				t.Errorf("%s stopped compiling: %v", tc.name, p.NotCompiled())
 			}
 		})
 	}
@@ -271,7 +274,7 @@ func TestEveryLiteralKindIsRecognised(t *testing.T) {
 				t.Fatalf("compiling %s: %v", tc.expr, err)
 			}
 			if p.Native == 0 {
-				t.Errorf("%s stopped the body compiling: %v", tc.expr, p.Refused)
+				t.Errorf("%s stopped the body compiling: %v", tc.expr, p.NotCompiled())
 			}
 		})
 	}
@@ -294,7 +297,7 @@ func TestEveryLiteralKindIsRecognisedInALoop(t *testing.T) {
 				t.Fatal(err)
 			}
 			if p.Native == 0 {
-				t.Errorf("%s in a loop stopped the body compiling: %v", tc.expr, p.Refused)
+				t.Errorf("%s in a loop stopped the body compiling: %v", tc.expr, p.NotCompiled())
 			}
 		})
 	}
