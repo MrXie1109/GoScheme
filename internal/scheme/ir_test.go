@@ -78,9 +78,7 @@ func TestIRRefusesWhatItCannotEmit(t *testing.T) {
 		name string
 		src  string
 	}{
-		{"set!", `(define (f x) (set! x 1))`},
 		{"a nested define", `(define (f x) (define y 1) (+ x y))`},
-		{"set! of a global", `(define (f x) (begin (set! k x) k))`},
 		{"a lambda", `(define (f x) (lambda (y) (+ x y)))`},
 		{"do", `(define (f n) (do ((i 0 (+ i 1))) ((= i n) i)))`},
 	} {
@@ -154,6 +152,22 @@ func TestIRPartiallyCompilableBodies(t *testing.T) {
 			name: "a literal beside a call",
 			src:  `(define (f n) (begin (display "hello") (* n n)))`,
 			want: []string{"@gs_lam_f", "@gs_box_literal", "@gs_call"},
+		},
+		{
+			// An assignment to a local is emitted, not called: the name is an
+			// SSA value and rebinding it is what the assignment means.  Nothing
+			// crosses the boundary, so there is no @gs_call and no @gs_set_global.
+			name: "an assignment to a local",
+			src:  `(define (f n) (let ((x n)) (set! x (+ x 1)) (* x 2)))`,
+			want: []string{"@gs_lam_f", "@llvm.sadd.with.overflow.i64"},
+		},
+		{
+			// An assignment to a global goes through the runtime, which owns the
+			// global environment: the name crosses as text and the value tagged,
+			// and the body around the assignment stays native.
+			name: "an assignment to a global",
+			src:  `(define (f n) (begin (set! k n) (* n n)))`,
+			want: []string{"@gs_lam_f", "@gs_set_global", "@llvm.smul.with.overflow.i64"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -447,18 +461,25 @@ func TestIRRefusedIsReported(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A global read is compiled; the two forms are not.
-	if p.Native != 2 {
-		t.Errorf("compiled %d procedures natively, want 2: %v", p.Native, p.Refused)
+	// A global read is compiled, and so is an assignment to a local; the nested
+	// define is not.
+	if p.Native != 3 {
+		t.Errorf("compiled %d procedures natively, want 3: %v", p.Native, p.Refused)
 	}
-	if len(p.Refused) != 2 {
+	if len(p.Refused) != 1 {
 		t.Fatalf("refusals = %v, want one per refused procedure", p.Refused)
 	}
 	joined := strings.Join(p.Refused, "\n")
-	for _, want := range []string{"setter", "nested"} {
+	for _, want := range []string{"nested"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("no refusal names %s: %v", want, p.Refused)
 		}
+	}
+	// A `set!` that used to be refused must not be reported as refused, which is
+	// the other half of moving it: a stale refusal would tell a user their
+	// program did not compile when it did.
+	if strings.Contains(joined, "setter") {
+		t.Errorf("a compiled set! is still reported as refused: %v", p.Refused)
 	}
 }
 

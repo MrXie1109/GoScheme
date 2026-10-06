@@ -417,6 +417,8 @@ func (f *irFunc) emitForm(x *Pair) (irVal, error) {
 			return irVal{}, fmt.Errorf("ir: quote takes one part")
 		}
 		return f.emitQuoted(args[0])
+	case "set!":
+		return f.emitSet(args)
 	}
 	// Anything else is a call — unless it is a form rather than a procedure.
 	// `set!`, `lambda`, `define` and the rest are syntax, not values, so
@@ -677,6 +679,77 @@ func (f *irFunc) emitLet(args []Value, sequential bool) (irVal, error) {
 	}
 	f.locals = saved
 	return last, nil
+}
+
+// emitSet emits `(set! NAME VALUE)`.
+//
+// A local that is assigned is still an SSA value: rebinding the name to the new
+// value is what an assignment *is* here, and every later read of the name in the
+// same block then sees it.  That is correct for straight-line code and for a
+// loop body, which is where an assignment to a local almost always appears.
+//
+// The check is the local map, and what it gives is the scope: a name that is not
+// there is not a local of this procedure, so the assignment is to a global and
+// belongs to the runtime — which owns the global environment and may have to
+// create the binding.  That is the same division the reads use, and it means a
+// `set!` of a global still compiles the body around it rather than stopping it.
+//
+// What is *not* handled is a captured variable: if NAME is a local that some
+// `lambda` in this body closes over, then a `set!` has to be visible through the
+// closure, and an SSA rebinding is not.  A `lambda` in an expression position is
+// not emitted at all yet, so no such body reaches here — and when closures are
+// emitted this has to be revisited rather than extended, because the
+// representation of a mutable captured variable is the thing that changes.
+func (f *irFunc) emitSet(args []Value) (irVal, error) {
+	if len(args) != 2 {
+		return irVal{}, fmt.Errorf("ir: set! takes a name and a value")
+	}
+	name, ok := args[0].(*Symbol)
+	if !ok {
+		return irVal{}, fmt.Errorf("ir: set! needs a name")
+	}
+	val, err := f.emitExpr(args[1])
+	if err != nil {
+		return irVal{}, err
+	}
+	if _, local := f.locals[name.Name]; local {
+		f.locals[name.Name] = val
+		return unspecifiedVal(), nil
+	}
+	// A global: the runtime owns the global environment and does the assignment,
+	// because the binding may not exist yet and creating it is the runtime's
+	// business.  The name goes over as text, which is the same form every other
+	// by-name entry point uses.
+	if err := f.emitGlobalSet(name.Name, val); err != nil {
+		return irVal{}, err
+	}
+	return unspecifiedVal(), nil
+}
+
+// emitGlobalSet assigns a top-level binding by name.
+//
+// The value crosses tagged like any other, and the name crosses as a string:
+// the runtime looks the binding up in the global environment, which is what has
+// to happen for a name this procedure does not own.
+func (f *irFunc) emitGlobalSet(name string, val irVal) error {
+	f.want("void @gs_set_global(i8*, i64, " + gsVal + ")")
+	lit := f.mod.stringLiteral(name, "set"+name)
+	agg := f.toAggregate(val)
+	fmt.Fprintf(&f.body, "  call void @gs_set_global(i8* %s, i64 %d, %s %s)\n",
+		lit, len(name), gsVal, agg)
+	return nil
+}
+
+// toAggregate packs a (word, tag) pair into the %gs.val struct an entry point
+// takes by value.  Callers that pass an argument array use storeArg instead,
+// which writes the two words into the array directly and skips the intermediate
+// aggregate.
+func (f *irFunc) toAggregate(v irVal) string {
+	first := f.reg()
+	fmt.Fprintf(&f.body, "  %s = insertvalue %s undef, i64 %s, 0\n", first, gsVal, v.bits)
+	second := f.reg()
+	fmt.Fprintf(&f.body, "  %s = insertvalue %s %s, i64 %s, 1\n", second, gsVal, first, v.tag)
+	return second
 }
 
 // emitQuoted emits a quoted literal.

@@ -431,6 +431,19 @@ func (r *pureReport) scanCombination(x *Pair, local map[string]bool, keep bool) 
 					}
 				}
 			}
+			// A `set!` is scanned rather than refused: its value expression is
+			// kept, and the assignment itself is emitted — as a rebinding for a
+			// local and as a call into the runtime for a global.  See emitSet.
+			// Nothing is accumulated by it, so it does not make a body worth
+			// compiling on its own; it stops making one *uncompilable*, which is
+			// the difference between a body that assigns in passing and a body
+			// the compiler will not touch.
+			if head.Name == "set!" {
+				if len(args) == 2 {
+					r.scanKeep(args[1], local, false)
+				}
+				return
+			}
 			r.stop("%s is a form, not a call this can compile", head.Name)
 			return
 		}

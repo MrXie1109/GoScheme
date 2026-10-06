@@ -82,12 +82,17 @@ func TestACompiledBuildDoesNotWarn(t *testing.T) {
 }
 
 func TestExplainNamesWhatWasLeftBehind(t *testing.T) {
-	prog, err := scheme.CompileToIR(`(define (f x) (set! x (+ x 1)) x)`, "test")
+	// A `lambda` in an expression position is one of the constructs the
+	// generator has no rule for yet, so it is refused with a reason — which is
+	// what --explain is for.  (A `set!` was the example here until it started
+	// compiling; the test needs a refusal, and the point of the test is the
+	// reporting rather than which construct is refused.)
+	prog, err := scheme.CompileToIR(`(define (f x) (lambda (y) (+ x y)))`, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(prog.Refused) == 0 {
-		t.Fatal("a body using set! should be refused, with a reason")
+		t.Fatal("a body holding a lambda should be refused, with a reason")
 	}
 	var buf bytes.Buffer
 	reportSplit(&buf, prog, true)

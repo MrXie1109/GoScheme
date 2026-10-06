@@ -96,10 +96,12 @@ func RuntimeSharedLibraryDir() (string, error) { return runtimeCacheDir(RuntimeS
 // person looking — an archive built before a flag was added stayed, and a
 // program compiled afterwards was silently linked against the older runtime.
 //
-// Stamping the build makes the cache honest about the flags.  It does not make
-// it react to a source change, which needs the module rebuilt rather than
-// relinked; `goscheme compile` after editing the interpreter is the case to
-// keep in mind, and the answer there is to remove the directory.
+// runtimeCacheDir is the directory a built runtime library is cached in: under
+// the user's cache directory, so that two checkouts do not fight over one file
+// and a read-only installation still works.
+//
+// The name carries a stamp for how the library is built and what it is built
+// from; see runtimeCacheStamp.
 func runtimeCacheDir(kind RuntimeKind) (string, error) {
 	base, err := os.UserCacheDir()
 	if err != nil {
@@ -112,13 +114,70 @@ func runtimeCacheDir(kind RuntimeKind) (string, error) {
 	return dir, nil
 }
 
-// runtimeCacheStamp identifies the way a library of this kind is built, so that
-// changing the flags produces a different cache directory rather than a stale
-// library.
+// The stamp covers two things: how the library is built, and **what it is built
+// from**.  The flag half was there first and the source half was missing, which
+// is the same class of mistake one level down — the cache was honest about the
+// command and silent about the code.  A change to the runtime environment
+// therefore kept the library built before it, and a program compiled afterwards
+// was linked against the older interpreter.
+//
+// That is not hypothetical: it happened while adding a `set!` that assigns
+// global variables, and it looked like the fix had not worked. The write was
+// going to the right place and the *library doing the writing* was the one from
+// before the change.
+//
+// The fingerprint is over the sources the runtime is built from — the `re`
+// package and the interpreter package it imports.  Reading them costs a few
+// milliseconds once per compile and is what makes the cache correct rather than
+// merely convenient.
 func runtimeCacheStamp(kind RuntimeKind) string {
 	args := strings.Join(runtimeBuildArgs(kind), "\x00")
-	sum := sha256.Sum256([]byte(args))
+	sum := sha256.Sum256([]byte(args + "\x00" + runtimeSourceFingerprint()))
 	return hex.EncodeToString(sum[:6])
+}
+
+// runtimeSourceFingerprint hashes the runtime's own source files.
+//
+// It walks the two packages rather than the whole module, because those are what
+// the library is built from: a change to `cmd/goscheme` does not alter the
+// runtime and should not force a rebuild of it.
+//
+// An unreadable directory or file contributes its name and nothing else, so a
+// fingerprint that cannot be computed is still stable within one run rather than
+// changing between two calls.  Getting it wrong the other way — a fingerprint
+// that varies — would rebuild the library on every compile, which is slow but
+// correct; the failure to avoid is a fingerprint that never varies.
+func runtimeSourceFingerprint() string {
+	h := sha256.New()
+	for _, dir := range runtimeSourceDirs() {
+		_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+			if err != nil || info == nil || info.IsDir() {
+				return nil
+			}
+			if !strings.HasSuffix(path, ".go") {
+				return nil
+			}
+			fmt.Fprintf(h, "%s\x00", path)
+			if b, err := os.ReadFile(path); err == nil {
+				h.Write(b)
+			}
+			return nil
+		})
+	}
+	return hex.EncodeToString(h.Sum(nil)[:8])
+}
+
+// runtimeSourceDirs are the directories the runtime library is compiled from:
+// the C ABI package, and the interpreter it links.
+func runtimeSourceDirs() []string {
+	pkgDir, err := runtimePackageDir()
+	if err != nil {
+		return nil
+	}
+	// pkgDir is the `re` package at the module root; internal/scheme is its
+	// sibling under internal/.
+	root := filepath.Dir(pkgDir)
+	return []string{pkgDir, filepath.Join(root, "internal", "scheme"), filepath.Join(root, "internal", "re")}
 }
 
 // runtimeBuildArgs is the command a runtime library is built with, in one place

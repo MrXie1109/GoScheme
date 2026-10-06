@@ -400,6 +400,26 @@ func gs_global(name *C.char) C.gs_val {
 	return tagged(v)
 }
 
+// gs_set_global assigns a top-level binding by name.
+//
+// The counterpart of gs_global: a compiled body reads a global through the
+// runtime and writes one through the runtime, for the same reason.  The global
+// environment is the runtime's, the binding may not exist yet, and creating it
+// is not something generated code can do.
+//
+// It returns nothing, because a `set!` evaluates to the unspecified value and
+// the compiler emits that itself rather than passing it back across the
+// boundary.
+//
+//export gs_set_global
+func gs_set_global(name *C.char, n C.int64_t, v C.gs_val) {
+	if mach == nil {
+		gs_init(0, nil)
+	}
+	sym := re.Intern(goString(name, int64(n)))
+	mach.Global.SetGlobal(sym, untagged(v))
+}
+
 // gs_call applies a Scheme procedure by name, with tagged arguments.
 //
 // This is how a compiled body reaches a procedure the compiler could not emit:

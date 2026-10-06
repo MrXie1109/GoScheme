@@ -1693,6 +1693,33 @@ func TestCompiledProgramAgreesWithTheInterpreter(t *testing.T) {
 (display (list (f 5) (f 20)))`,
 			want: "(#!unspecified 40)",
 		},
+		// An assignment has to be visible where the value is read afterwards,
+		// and the compiled form of that is not the obvious one: a local is
+		// rebound as an SSA value, while a global goes through the runtime,
+		// which owns the global environment.  The second case is the one that
+		// caught a real bug — the write went to a different environment frame
+		// than the read, so a compiled program answered 0 where the interpreter
+		// answered 99.
+		{
+			name: "set! of a global is seen by the next read",
+			src: `(define g 0)
+(define (f n) (if (= n 0) g (begin (set! g 99) (f 0))))
+(display (list (f 1) g))`,
+			want: "(99 99)",
+		},
+		{
+			name: "set! of a global inside a loop",
+			src: `(define g 0)
+(define (bump n acc) (if (= n 0) acc (begin (set! g (+ g 1)) (bump (- n 1) (+ acc g)))))
+(display (list (bump 4 0) g))`,
+			want: "(10 4)",
+		},
+		{
+			name: "set! of a local",
+			src: `(define (f n) (let ((x n)) (set! x (+ x 1)) (* x 2)))
+(display (f 5))`,
+			want: "12",
+		},
 		// The unspecified value must not be confusable with the values a program
 		// can legitimately produce, which is the whole reason it has a tag of its
 		// own rather than being the fixnum 0 or the empty list.

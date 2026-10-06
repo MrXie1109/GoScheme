@@ -225,9 +225,28 @@ func (e *Env) Set(sym *Symbol, v Value) bool {
 	return false
 }
 
-// SetGlobal binds sym in the global frame, creating it when needed.
+// SetGlobal binds sym where the top level keeps it, creating it when needed.
+//
+// It assigns through Set first, so a name that is already bound is assigned
+// where it actually lives rather than in some other frame.  That distinction is
+// the whole of a bug this function had: it wrote to `Global()`, which walks to
+// the root of the environment chain, while the top level's own bindings live in
+// the *interaction* frame — `m.Global`, whose parent is the builtins frame.  So
+// `(define g 0)` put g in the interaction frame, a compiled `(set! g 99)` wrote
+// 99 into the builtins frame, and every later read found the 0 first.  A
+// compiled program answered 0 where the interpreter answered 99.
+//
+// The write went to a frame the read would never reach, and nothing caught it
+// because SetGlobal had no callers: it was written for this purpose and the
+// compiled `set!` that needs it did not exist yet.
 func (e *Env) SetGlobal(sym *Symbol, v Value) {
-	e.Global().Define(sym, v)
+	if e.Set(sym, v) {
+		return
+	}
+	// Not bound anywhere yet, so this call creates the binding.  It goes in the
+	// frame the caller stands in rather than the root, because that is the frame
+	// a later lookup from the same place will reach first.
+	e.Define(sym, v)
 }
 
 // Lookup finds the value bound to sym.  Marked identifiers that are not bound

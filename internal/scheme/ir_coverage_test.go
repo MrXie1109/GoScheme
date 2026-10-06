@@ -158,3 +158,64 @@ func TestQuotedDerivedSyntaxIsLeftAlone(t *testing.T) {
 		t.Error("the quoted cond was rewritten into an if")
 	}
 }
+
+// knownGaps are constructs the generator has no rule for yet.
+//
+// They are listed rather than omitted so the gap is written down where the test
+// can be read, and so that fixing one is a matter of moving its line into
+// pureConstructs above — the test fails as soon as one of them starts
+// compiling, so the list cannot go stale in either direction.
+//
+// Each is a *rule* that is missing rather than a limit of the design.  Nothing
+// about a `lambda` in an expression position needs the interpreter: the runtime
+// environment is callable from generated code, so what is missing is an emit
+// rule — a closure representation, which is what these two have in common.
+// `letrec` and `set!` were on this list and have left it, which is the list
+// working as intended.
+var knownGaps = []struct{ name, body string }{
+	{"lambda in an expression position", `(lambda (x) (+ x n))`},
+	{"a call to a computed procedure", `((lambda (x) (+ x n)) 1)`},
+	{"a nested define", `(define y 1) (+ n y)`},
+}
+
+func TestTheKnownGapsAreStillGaps(t *testing.T) {
+	for _, tc := range knownGaps {
+		t.Run(tc.name, func(t *testing.T) {
+			src := `(define (probe n) ` + tc.body + `)`
+			p, err := CompileToIR(src, "test")
+			if err != nil {
+				t.Fatalf("compiling %s: %v", tc.body, err)
+			}
+			if p.Native > 0 {
+				t.Errorf("%s now compiles: move it from knownGaps to pureConstructs", tc.name)
+			}
+		})
+	}
+}
+
+// The constructs that used to be on the gap list and are not any more.  They are
+// checked here rather than only in pureConstructs so that a regression says
+// which one came back.
+func TestTheFormerGapsNowCompile(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"letrec binding a procedure", `(letrec ((loop (lambda (i acc) (if (= i 0) acc (loop (- i 1) (+ acc i)))))) (loop n 0))`},
+		{"set! of a local", `(let ((x n)) (set! x (+ x 1)) (* x 2))`},
+		{"set! of a global", `(begin (set! k n) (* n n))`},
+		{"cond", `(cond ((< n 0) (+ n 1)) (else (* n 2)))`},
+		{"case", `(case n ((1 2) (* n 10)) (else (* n n)))`},
+		{"when", `(when (< n 10) (* n 2))`},
+		{"unless", `(unless (< n 0) (* n 2))`},
+		{"a quoted string", `(+ (* n n) (string-length "hello"))`},
+		{"a quoted list", `(+ (* n n) (length '(a b c)))`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := CompileToIR(`(define (probe n) `+tc.body+`)`, "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p.Native == 0 {
+				t.Errorf("%s stopped compiling: %v", tc.name, p.Refused)
+			}
+		})
+	}
+}

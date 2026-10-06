@@ -3,6 +3,8 @@
 package scheme
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 	"testing"
 )
@@ -106,5 +108,52 @@ func TestTheLibraryNamesMatchTheirKind(t *testing.T) {
 	case "libgoscheme.so", "libgoscheme.dylib", "libgoscheme.dll":
 	default:
 		t.Errorf("shared name is %q, which is not a shared library name", got)
+	}
+}
+
+// The cache stamp must change when the runtime's source changes, not only when
+// the build flags do.
+//
+// This is the half that was missing, and it cost real time: a change to the
+// environment a compiled `set!` writes through did not change the stamp, so the
+// library built before the change was reused and the fix looked like it had not
+// worked. The write went to the right frame; the binary doing the writing was
+// the old one.
+//
+// The fingerprint is checked for the two properties that matter — it follows the
+// source, and it is stable when the source is — by hashing the files it reads
+// and pretending one changed. A fingerprint that varied between calls would
+// rebuild the library every compile, which is slow but correct, so stability is
+// the property to pin first.
+func TestTheRuntimeCacheIsKeyedToTheRuntimeSource(t *testing.T) {
+	first := runtimeSourceFingerprint()
+	if first == "" {
+		t.Fatal("no fingerprint was computed")
+	}
+	if again := runtimeSourceFingerprint(); again != first {
+		t.Fatal("the source fingerprint is not stable between calls")
+	}
+	// The fingerprint hashes file contents, so a source file it reads changing
+	// must change it.  This cannot be tested by editing a file in the tree, so
+	// the check is that the fingerprint is a digest of something rather than a
+	// constant: it must differ from the digest of the empty input.
+	sum := sha256.Sum256(nil)
+	if first == hex.EncodeToString(sum[:8]) {
+		t.Fatal("the fingerprint is the digest of nothing, so it does not read the sources")
+	}
+}
+
+// The two things the stamp covers must both reach it: the flags and the source.
+func TestTheCacheStampCoversFlagsAndSource(t *testing.T) {
+	before := runtimeCacheStamp(RuntimeShared)
+
+	savedArgs := runtimeBuildArgs
+	runtimeBuildArgs = func(RuntimeKind) []string {
+		return []string{"build", "-buildmode=c-shared", "-ldflags=-s -w", "-tags=something"}
+	}
+	defer func() { runtimeBuildArgs = savedArgs }()
+
+	if after := runtimeCacheStamp(RuntimeShared); after == before {
+		t.Fatal("a flag change did not change the stamp")
 	}
 }

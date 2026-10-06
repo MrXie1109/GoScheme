@@ -78,6 +78,11 @@ func expandDerived(form Value) Value {
 				return expandedChildren(rewritten)
 			}
 			return form
+		case "letrec", "letrec*":
+			if rewritten, ok := expandLetrecToNamedLet(p); ok {
+				return expandedChildren(rewritten)
+			}
+			return form
 		case "when":
 			if rewritten, ok := expandWhenUnless(p, false); ok {
 				return expandedChildren(rewritten)
@@ -310,4 +315,151 @@ func expandCase(form *Pair) (Value, bool) {
 	}
 	inner := Cons(Intern("cond"), listFromSlice(condClauses))
 	return List(Intern("let"), List(List(keyVar, key)), inner), true
+}
+
+// expandLetrecToNamedLet rewrites a `letrec` that binds exactly one procedure
+// into a named `let`, which is the same thing written the way the loop
+// recognisers read it.
+//
+// R7RS defines a named `let` *as* a `letrec`:
+//
+//	(let loop ((i 0)) BODY)  =  ((letrec ((loop (lambda (i) BODY))) loop) 0)
+//
+// so going the other way is not a trick, it is reading the definition
+// backwards.  It is worth doing because every loop recogniser in ir_loop*.go
+// understands a named `let` and none of them understands a `letrec` — that is
+// what makes the loop forms worth recognising at all, since a loop is what a
+// named `let` usually is.
+//
+// The shape accepted is narrow on purpose, and each part of it is required:
+//
+//		(letrec ((NAME (lambda (FORMALS) BODY ...))) CALL ...)
+//
+//	  - exactly one binding, because a named let binds one name;
+//	  - that binding is a `lambda`, because that is what the name is bound to in
+//	    the definition above.  A `letrec` binding a number is a different form
+//	    and is left alone;
+//	  - the body is a call to NAME, which is what makes it a loop.  A `letrec`
+//	    whose body calls something else is left alone as well — rewriting it
+//	    would produce a named let with no recursive call, which is legal but is
+//	    not what this is for, and leaving it costs nothing because the scan
+//	    understands `letrec` bindings well enough to refuse it with a reason.
+//
+// Recursion is not required to be *direct* for the rewrite to be correct, only
+// for it to help: a body that does not call NAME becomes a named let that the
+// recognisers decline, and it compiles or not exactly as it would have.
+func expandLetrecToNamedLet(form *Pair) (Value, bool) {
+	items, _ := ListToSlice(form.Cdr)
+	if len(items) < 2 {
+		return nil, false
+	}
+	binds, ok := ListToSlice(items[0])
+	if !ok || len(binds) != 1 {
+		return nil, false
+	}
+	b, ok := binds[0].(*Pair)
+	if !ok {
+		return nil, false
+	}
+	parts, _ := ListToSlice(b)
+	if len(parts) != 2 {
+		return nil, false
+	}
+	name, ok := parts[0].(*Symbol)
+	if !ok {
+		return nil, false
+	}
+	lam, ok := parts[1].(*Pair)
+	if !ok || !isForm(lam, "lambda") {
+		return nil, false
+	}
+	lamParts, _ := ListToSlice(lam.Cdr)
+	if len(lamParts) < 1 {
+		return nil, false
+	}
+	// The body must call the name, or this is not a loop and the rewrite would
+	// only rename a form the recognisers were going to decline anyway.
+	if !callsName(items[1:], name.Name) {
+		return nil, false
+	}
+	// (let NAME ((v init) ...) BODY ...) — the lambda's formals become the
+	// named let's variables with no initial values, and the call the letrec's
+	// body performs supplies them.  That is the whole of the difference: a
+	// named let's initialisers are part of the source, and here they are the
+	// arguments of the call that would have followed.
+	//
+	// A lambda with a rest parameter or with formals that are not all symbols
+	// is left alone: the recognisers do not read those shapes either.
+	formals, ok := ListToSlice(lamParts[0])
+	if !ok {
+		return nil, false
+	}
+	vars := make([]Value, 0, len(formals))
+	for _, f := range formals {
+		s, ok := f.(*Symbol)
+		if !ok {
+			return nil, false
+		}
+		vars = append(vars, List(s))
+	}
+	// The call that opened the loop: `(NAME ARG ...)`, whose arguments are the
+	// initial values in the named let's spelling.
+	callForm, ok := items[1].(*Pair)
+	if !ok {
+		return nil, false
+	}
+	callArgs, _ := ListToSlice(callForm.Cdr)
+	if len(callArgs) != len(vars) {
+		return nil, false
+	}
+	inits := make([]Value, len(vars))
+	for i := range vars {
+		v, ok := vars[i].(*Pair)
+		if !ok {
+			return nil, false
+		}
+		inits[i] = List(v.Car, callArgs[i])
+	}
+	namedLet := make([]Value, 0, len(items))
+	namedLet = append(namedLet, name, listFromSlice(inits))
+	namedLet = append(namedLet, lamParts[1:]...)
+	return Cons(Intern("let"), listFromSlice(namedLet)), true
+}
+
+// callsName reports whether any of the forms calls a procedure by this name.
+//
+// It looks through the structure rather than at the head only, because the call
+// that opens a loop is often inside an `if` — that is what a loop test is.
+func callsName(forms []Value, name string) bool {
+	for _, f := range forms {
+		if callsNameIn(f, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func callsNameIn(v Value, name string) bool {
+	switch x := v.(type) {
+	case *Pair:
+		if s, ok := x.Car.(*Symbol); ok && s.Name == name {
+			return true
+		}
+		if isForm(x, "quote") {
+			return false
+		}
+		items, _ := ListToSlice(x)
+		for _, a := range items {
+			if callsNameIn(a, name) {
+				return true
+			}
+		}
+	case *Vector:
+		for _, a := range x.Items {
+			if callsNameIn(a, name) {
+				return true
+			}
+		}
+	}
+	return false
 }
