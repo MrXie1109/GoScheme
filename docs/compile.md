@@ -37,6 +37,9 @@ its constants and its globals:
 | `quote` of a literal | the literal itself |
 | a call to another compiled procedure | a direct machine call |
 | self-recursion | a direct machine call |
+| a recognised list or vector walk | one runtime call for the whole loop |
+| a recognised counting loop | one runtime call for the whole loop |
+| a top-level call to a compiled procedure, with literal arguments | a direct machine call |
 | a call to anything else | a call into the runtime |
 | a global read | a read from the runtime, at the point of use |
 
@@ -146,16 +149,20 @@ Written down because a limit that is not documented is a bug report waiting to
 happen.
 
 - **It is a hybrid.** Part of the program is machine code and part is the
-  interpreter. This is by design, but it means the speedup depends on the
-  program, and the honest breakdown is narrower than "compiled is faster":
-  tree recursion whose results feed arithmetic (the shape of `fib`) is **3.7×**
-  faster; a **tail loop is a wash**, because the bytecode VM's dispatch is
-  already a tight loop over pre-decoded instructions and there is nothing in a
-  counting loop for the compiler to remove; and a procedure whose body is mostly
-  library calls would be **slower**, which is why the compiler now declines to
-  compile one — a body whose only work is a call into the runtime, or whose every
-  accumulated value comes from one, is left to the interpreter.
-  [docs/performance.md](performance.md) has the tables.
+  interpreter, so the speedup depends on the program.  What it is good at is
+  arithmetic and loops: tree recursion whose results feed arithmetic (the shape
+  of `fib`) is **4.3×**, a tail loop **4.1×**, and a list or vector walk between
+  4 and 10× depending on the size.  A procedure whose body is mostly library
+  calls would be *slower*, which is why the compiler declines to compile one — a
+  body whose only work is a call into the runtime, or whose every accumulated
+  value comes from one, is left to the interpreter.  [docs/performance.md](performance.md)
+  has the tables and the reasons.
+- **A loop has to be *recognised* to be fast.**  A walk over a list or a vector,
+  or a loop that counts down, is compiled as one call that runs the whole loop in
+  the runtime.  A loop of a shape the recogniser does not accept still compiles
+  and still runs correctly, but it crosses the boundary once per element and will
+  be no faster than the interpreter — which is why the set of accepted shapes is
+  documented one by one in [docs/performance.md](performance.md#doing-the-loop-in-one-call-which-is-where-the-speed-comes-from).
 - **Tail calls are jumps, and that is a correctness requirement rather than an
   optimization.** `musttail` is emitted for a call in tail position, so a loop
   written as recursion runs in constant stack as R7RS requires. Without it the

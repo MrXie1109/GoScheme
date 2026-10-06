@@ -369,26 +369,91 @@ cost rather than speed.
 
 | workload | interpreted | compiled | ratio | native procs |
 |---|---|---|---|---|
-| `fib` | 9.08 ms | 2.48 ms | **3.66×** | 2 |
-| `sort` | 13.17 ms | 11.52 ms | 1.14× | 2 |
-| `locals` | 61.62 ms | 60.48 ms | 1.02× | 0 |
-| `mini-eval` | 23.08 ms | 22.54 ms | 1.02× | 0 |
-| `callcc` | 11.68 ms | 11.51 ms | 1.02× | 0 |
-| `globals` | 60.84 ms | 60.65 ms | 1.00× | 2 |
-| `closures` | 18.39 ms | 18.69 ms | 0.98× | 0 |
-| `tail-loop` | 51.56 ms | 53.25 ms | 0.97× | 2 |
-| `vectors` | 31.34 ms | 32.56 ms | 0.96× | 0 |
-| `higher-order` | 20.83 ms | 22.15 ms | 0.94× | 0 |
-| `strings` | 10.65 ms | 11.61 ms | 0.92× | 0 |
-| `lists` | 67.88 ms | 76.66 ms | 0.89× | 0 |
+| `fib` | 13.82 ms | 3.23 ms | **4.28×** | 2 |
+| `tail-loop` | 52.32 ms | 12.66 ms | **4.13×** | 2 |
+| `globals` | 58.57 ms | 46.24 ms | 1.27× | 2 |
+| `higher-order` | 24.73 ms | 19.41 ms | 1.27× | 2 |
+| `lists` | 72.27 ms | 56.42 ms | 1.28× | 4 |
+| `vectors` | 36.79 ms | 35.10 ms | 1.05× | 0 |
+| `closures` | 19.94 ms | 20.07 ms | 0.99× | 0 |
+| `mini-eval` | 22.67 ms | 23.28 ms | 0.97× | 0 |
+| `locals` | 57.55 ms | 64.14 ms | 0.90× | 0 |
+| `callcc` | 11.24 ms | 12.43 ms | 0.90× | 0 |
+| `strings` | 14.84 ms | 16.51 ms | 0.90× | 0 |
+| `sort` | 11.50 ms | 13.05 ms | 0.88× | 2 |
 
-**There is no pessimization left in that table.**  The worst row is 0.89×, and
-the rows near 1.0× are workloads of a few milliseconds where process startup is
-most of what is being measured.  This was not true before: `strings` was 0.40×
-and `vectors` 0.70×, because compiling a body whose only work is a call into the
-runtime adds a box, a crossing and an unbox around work the interpreter was
-already doing efficiently.  Those bodies are now declined — see the `native`
-column, which reads 0 for them and is the number to look at first.
+**The two rows that are the point of the compiler are now 4× and 4.1×**, and the
+rest sit within a few percent of the interpreter either way.  The rows near 1.0×
+are workloads of a few milliseconds where process startup is most of what is
+measured, and the rows below it are programs the compiler has nothing to take
+from — the `native` column, which counts the procedures actually emitted, is the
+number to read first.
+
+### Doing the loop in one call, which is where the speed comes from
+
+A loop written in Scheme over a list or a vector was the case the compiler was
+*worst* at, and it is the case most programs are made of:
+
+```scheme
+(define (sum-list lst acc)
+  (if (null? lst) acc (sum-list (cdr lst) (+ acc (car lst)))))
+```
+
+Compiled naively this crosses into the runtime four times per element — for
+`null?`, `car`, `cdr` and `+` — and a crossing costs more than the element's
+work.  Measured over a million elements: **260 ms element by element against
+3.6 ms for the loop run in Go**.  The compiled version was slower than the
+interpreter, and a 300000-element walk took 0.22 s interpreted and 0.23 s
+compiled.
+
+The loop is now recognised and emitted as **one call**.  Four shapes are accepted:
+
+| shape | example | what it does |
+|---|---|---|
+| list walk | `(if (null? lst) acc (f (cdr lst) (+ acc (car lst))))` | sums, counts or reverses a list |
+| vector walk | `(if (= i n) acc (f v (+ i 1) n (+ acc (vector-ref v i))))` | the same over a vector |
+| counting loop | `(if (= n 0) acc (f (- n 1) (cons n acc)))` | counts down and folds the counter in |
+| either, with a filter | `(if (even? (car lst)) (+ 1 n) n)` | folds only the elements a builtin accepts |
+
+Measured: a million-element list walk 0.33 s interpreted against **0.07 s**; the
+same for a vector, 0.31 s against 0.03 s; a two-million element counting loop
+0.67 s against 0.21 s.
+
+The shape is checked part by part rather than matched loosely, and that is not
+fussiness: a body that merely *looks* like a walk would compute something else if
+it were run this way.  The tests cover a walk that tests the wrong parameter,
+advances the wrong one, returns something other than the accumulator in its base
+case, combines with `-` instead of `+`, is not tail recursive, calls a procedure
+that is not itself, or takes the wrong number of arguments.  Every one is
+refused, and a refused walk takes the ordinary path and stays correct.
+
+The filter's predicate must be a **builtin**, which is a consequence of the idea
+rather than a limitation of it: a builtin is one the loop can apply itself, while
+a predicate written by the programmer would have to be called back into Scheme
+for every element — the crossing the whole arrangement exists to remove.
+
+This is the idea `(goscheme fast)` already used, applied to a loop the
+*programmer* wrote instead of one of the library's procedures.
+
+### Why not let the generated code read the data directly
+
+Because it cannot.  The obvious next step is to have the compiled code inline
+`car` and `cdr` — read the pair's fields itself instead of calling anything — and
+three properties of Go make it impossible:
+
+- **A pair lives on the Go heap as an interface**, `{type, data}`, where the type
+  word is a *runtime address*.  The generated code cannot know it at compile
+  time.
+- **cgo forbids handing a Go pointer to C**, for the same reason: C code holding
+  a pointer into the Go heap defeats the collector.  A prototype panicked with
+  "cgo argument has Go pointer to unpinned Go pointer".
+- **The collector moves objects.**  Storing an absolute address in a node avoids
+  the cgo rule and works until the first collection, after which it is a dangling
+  pointer.  A prototype walked a list correctly and then segfaulted on the second
+  `runtime.GC()`.
+
+Keeping the walk in Go sidesteps all three, because there is no pointer to hand
+over: the loop and the data are on the same side.
 
 ### What the compiler does with a loop, and why it took work
 
