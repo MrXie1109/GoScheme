@@ -78,9 +78,11 @@ func TestIRRefusesWhatItCannotEmit(t *testing.T) {
 		name string
 		src  string
 	}{
-		{"a global read", `(define (f x) (+ x y))`},
 		{"set!", `(define (f x) (set! x 1))`},
-		{"an operator used as a value", `(define (f x) (map + x))`},
+		{"a nested define", `(define (f x) (define y 1) (+ x y))`},
+		{"set! of a global", `(define (f x) (begin (set! k x) k))`},
+		{"a lambda", `(define (f x) (lambda (y) (+ x y)))`},
+		{"do", `(define (f n) (do ((i 0 (+ i 1))) ((= i n) i)))`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p, err := CompileToIR(tc.src, "test")
@@ -94,6 +96,29 @@ func TestIRRefusesWhatItCannotEmit(t *testing.T) {
 				t.Errorf("%s was refused without a reason", tc.name)
 			}
 		})
+	}
+}
+
+// TestIRGlobalReadsHappenWhereTheyAppear checks that a global is read at the
+// point of use rather than once at entry.
+//
+// A global is mutable, so anything the body calls may assign it.  A value read
+// once at entry and reused would be the value from before the call, which is
+// what the interpreter would not see — and getting this wrong produces a
+// program that is right until something assigns a global, which is the hardest
+// kind of wrong to notice.
+func TestIRGlobalReadsHappenWhereTheyAppear(t *testing.T) {
+	p, err := CompileToIR(`(define k 10)
+(define (f n) (+ (* n k) k))`, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Native != 1 {
+		t.Fatalf("a body reading a global was not compiled: %v", p.Refused)
+	}
+	// One read per use: two uses of k, so two calls.
+	if got := strings.Count(p.IR, "call %gs.val @gs_global("); got != 2 {
+		t.Errorf("emitted %d global reads for two uses of k:\n%s", got, p.IR)
 	}
 }
 
@@ -319,19 +344,21 @@ func TestIRACycleIsRefusedEvenWhenTheBodiesAreOtherwiseFine(t *testing.T) {
 // a silent refusal is the one answer that cannot be acted on.
 func TestIRRefusedIsReported(t *testing.T) {
 	p, err := CompileToIR(`(define (pure x) (+ x 1))
-(define (global-reader x) (+ x y))
-(define (setter x) (set! x 1))`, "test")
+(define (reader x) (+ x global))
+(define (setter x) (set! x 1))
+(define (nested x) (define y 1) (+ x y))`, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Native != 1 {
-		t.Errorf("compiled %d procedures natively, want 1: %v", p.Native, p.Refused)
+	// A global read is compiled; the two forms are not.
+	if p.Native != 2 {
+		t.Errorf("compiled %d procedures natively, want 2: %v", p.Native, p.Refused)
 	}
 	if len(p.Refused) != 2 {
 		t.Fatalf("refusals = %v, want one per refused procedure", p.Refused)
 	}
 	joined := strings.Join(p.Refused, "\n")
-	for _, want := range []string{"global-reader", "setter"} {
+	for _, want := range []string{"setter", "nested"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("no refusal names %s: %v", want, p.Refused)
 		}

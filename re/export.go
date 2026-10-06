@@ -233,6 +233,31 @@ func gs_box_literal(text *C.char, n C.int64_t) C.int64_t {
 	return C.int64_t(store(forms[0]))
 }
 
+// gs_global reads a top-level binding by name, as a tagged value.
+//
+// A compiled body reads a global where the name appears, not once at entry,
+// because a global is mutable: anything the body calls may assign it, and a
+// value cached at entry would be the value from before the call.
+//
+// An unbound name is reported through the runtime's own error path rather than
+// here, so that it reads the same as it would interpreted — including the case
+// where the name is defined by a later form, which the interpreter allows and a
+// compiler that resolved names eagerly would not.
+//
+//export gs_global
+func gs_global(name *C.char) C.gs_val {
+	if mach == nil {
+		gs_init(0, nil)
+	}
+	n := C.GoString(name)
+	v, ok := mach.Global.Lookup(scheme.Intern(n))
+	if !ok {
+		report(fmt.Errorf("%s: undefined", n))
+		return handle(store(scheme.UnspecifiedValue))
+	}
+	return tagged(v)
+}
+
 // gs_call applies a Scheme procedure by name, with tagged arguments.
 //
 // This is how a compiled body reaches a procedure the compiler could not emit:

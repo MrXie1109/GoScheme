@@ -94,6 +94,9 @@ type pureReport struct {
 	// run rather than this generator's to emit.  They are recorded so that a
 	// report can say what a compiled procedure reaches outside itself.
 	runtimeCalls []string
+	// globals are the names this body reads that are not its parameters, and so
+	// have to be read from the runtime.
+	globals []string
 	// known is the set of other procedures in the program that are candidates
 	// for native compilation.  A call to one of them is allowed — whether it
 	// ends up native is settled later, when the call graph is closed — while a
@@ -142,9 +145,22 @@ func (r *pureReport) scan(e Value, local map[string]bool) {
 	case *Pair:
 		r.scanCombination(x, local)
 	case *Symbol:
-		if !local[x.Name] {
-			r.stop("%s is not a parameter", x.Name)
+		if local[x.Name] {
+			return
 		}
+		// A name that is not a parameter is a global, and reading one is not a
+		// refusal: it becomes a read at the point of use.
+		//
+		// At the point of use, not once at entry.  A global may be `set!` by
+		// anything the body calls, so a value cached at entry would be the value
+		// from before the call — a compiled program disagreeing with the
+		// interpreter, which is the one thing this must not do.  A name that is
+		// syntax is refused rather than read, since there is no binding to read.
+		if isSyntax(x.Name) {
+			r.stop("%s is a form, not a value this can compile", x.Name)
+			return
+		}
+		r.globals = append(r.globals, x.Name)
 	case *Integer, *Float, *Rational, *String, *Boolean, *Char, Empty:
 		// A literal: it computes nothing.
 	default:
@@ -477,11 +493,13 @@ func (f *irFunc) emitExpr(e Value) (irVal, error) {
 	case *Boolean:
 		return boolVal(bool(*x)), nil
 	case *Symbol:
-		v, ok := f.locals[x.Name]
-		if !ok {
-			return irVal{}, fmt.Errorf("ir: %s is not bound", x.Name)
+		if v, ok := f.locals[x.Name]; ok {
+			return v, nil
 		}
-		return v, nil
+		// Not a parameter or a let binding, so it is a global: read it now,
+		// where it is used, because anything between here and the last read may
+		// have assigned it.
+		return f.emitGlobalRead(x.Name)
 	case Empty:
 		return irVal{bits: "0", tag: tagFixnum}, nil
 	case *Pair:
@@ -913,6 +931,24 @@ func (f *irFunc) emitRuntimeCall(op string, vals []irVal) (irVal, error) {
 	out := f.reg()
 	fmt.Fprintf(&f.body, "  %s = call %s @gs_call(i8* %s, i64 %d, %s* %s)\n",
 		out, gsVal, name, len(vals), gsVal, slot)
+	return f.loadVal(out), nil
+}
+
+// emitGlobalRead reads a top-level binding by name.
+//
+// The read happens where the name appears rather than once at entry, because a
+// global is mutable and the body may call something that assigns it.  Caching it
+// would make a compiled procedure see the value from before the call, which the
+// interpreter would not.
+//
+// An unbound name is the runtime's to report: it may be defined later, or by a
+// library the program loads, and refusing to compile a body over a name that is
+// not yet bound would reject a program that runs perfectly well.
+func (f *irFunc) emitGlobalRead(name string) (irVal, error) {
+	f.want(gsVal + " @gs_global(i8*)")
+	lit := f.mod.stringLiteral(name, "global"+name)
+	out := f.reg()
+	fmt.Fprintf(&f.body, "  %s = call %s @gs_global(i8* %s)\n", out, gsVal, lit)
 	return f.loadVal(out), nil
 }
 
