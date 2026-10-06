@@ -292,7 +292,8 @@ func (g *irGen) program(forms []Value) error {
 		// and a walk crosses once for the whole list.
 		_, isListWalk := recogniseListWalk(p.name, p.formals, p.body)
 		_, isVecWalk := recogniseVecWalk(p.name, p.formals, p.body)
-		if isListWalk || isVecWalk {
+		_, isCountLoop := recogniseCountLoop(p.name, p.formals, p.body)
+		if isListWalk || isVecWalk || isCountLoop {
 			g.pure[p.name] = &pureProc{name: p.name, formals: p.formals, body: p.body, calls: r.calls}
 			continue
 		}

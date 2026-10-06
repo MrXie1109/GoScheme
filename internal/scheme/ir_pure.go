@@ -68,6 +68,13 @@ const (
 	// `1` — so a comparison result carried as a fixnum would print the wrong
 	// thing the moment it left the compiled code.
 	tagBoolean = "2"
+	// The empty list needs a tag of its own as soon as a compiled body stores
+	// one.  It used to travel as the fixnum 0, which is indistinguishable from
+	// zero while every value only flows back to the interpreter — `0` and `()`
+	// are both false, and neither is arithmetic.  A walk *keeps* its
+	// accumulator, though, so `(build 5 '())` consed onto the number zero and
+	// produced the improper list `(1 2 3 4 5 . 0)`.
+	tagNull = "3"
 )
 
 // gsValType declares the value type in the module, which has to happen before
@@ -646,6 +653,9 @@ func (g *irGen) emitPureFunction(name string, formals []*Symbol, body []Value, c
 	if w, ok := recogniseVecWalk(name, formals, body); ok {
 		f.emitVecWalk(w, formals)
 	}
+	if w, ok := recogniseCountLoop(name, formals, body); ok {
+		f.emitCountLoop(w)
+	}
 
 	// The body is in tail position: whatever it evaluates to is what the
 	// function returns, so a call at the end of it can be a jump.
@@ -782,7 +792,7 @@ func (f *irFunc) emitExpr(e Value) (irVal, error) {
 		// have assigned it.
 		return f.emitGlobalRead(x.Name)
 	case Empty:
-		return irVal{bits: "0", tag: tagFixnum}, nil
+		return irVal{bits: "0", tag: tagNull}, nil
 	case *Pair:
 		return f.emitForm(x)
 	default:
@@ -1121,7 +1131,7 @@ func (f *irFunc) emitQuoted(v Value) (irVal, error) {
 	case *Boolean:
 		return boolVal(bool(*x)), nil
 	case Empty:
-		return fixnumVal(0), nil
+		return irVal{bits: "0", tag: tagNull}, nil
 	}
 	return irVal{}, fmt.Errorf("ir: a quoted value that is not a number")
 }

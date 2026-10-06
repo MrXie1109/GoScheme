@@ -502,7 +502,11 @@ func TestIRProgramKeepsEveryForm(t *testing.T) {
 // the interpreter returned the right answer, so a program that worked
 // interpreted crashed when compiled.
 func TestIRTailCallsAreJumps(t *testing.T) {
-	ir := irFor(t, `(define (loop i acc) (if (= i 0) acc (loop (- i 1) (+ acc i))))`)
+	// A tail-recursive loop that is *not* one of the recognised walks, so that
+	// what is being tested here is the tail call and not the walk: the walk
+	// recogniser replaces a matching body with a single call, and then there is
+	// no recursive call left to be a tail call.
+	ir := irFor(t, `(define (loop i a b) (if (= i 0) a (loop (- i 1) b (+ a b))))`)
 	if !strings.Contains(ir, "musttail call %gs.val @gs_lam_loop(") {
 		t.Errorf("the recursive call is not a tail call:\n%s", ir)
 	}
@@ -565,8 +569,8 @@ func TestIRTailCallsBetweenDifferentAritiesAreNotMusttail(t *testing.T) {
 	// `loop` calls itself in tail position; `main` takes no arguments and calls
 	// `loop`, which takes one — so one call may be musttail and the other may
 	// not, in the same module.
-	p, err := CompileToIR(`(define (loop n acc) (if (= n 0) acc (loop (- n 1) (+ acc n))))
-(define (main) (loop 32 0))`, "test")
+	p, err := CompileToIR(`(define (loop n a b) (if (= n 0) a (loop (- n 1) b (+ a b))))
+(define (main) (loop 32 0 1))`, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -576,14 +580,14 @@ func TestIRTailCallsBetweenDifferentAritiesAreNotMusttail(t *testing.T) {
 	// The definitions are extracted by searching for the exact signature, since
 	// `@gs_lam_fib(` is also a prefix of `@gs_lam_fib_entry(`.
 	//
-	// `main` takes no arguments and calls a two-argument procedure, so its call
-	// cannot be musttail.
+	// `main` takes no arguments and calls a three-argument procedure, so its
+	// call cannot be musttail.
 	main := bodyOf(t, p.IR, "define %gs.val @gs_lam_main()")
 	if strings.Contains(main, "musttail") {
 		t.Errorf("a call between different arities was emitted as musttail:\n%s", main)
 	}
 	// The self-recursive call inside loop still is, because the arities match.
-	loop := bodyOf(t, p.IR, "define %gs.val @gs_lam_loop(i64 %p_n.bits, i64 %p_n.tag, i64 %p_acc.bits, i64 %p_acc.tag)")
+	loop := bodyOf(t, p.IR, "define %gs.val @gs_lam_loop(i64 %p_n.bits, i64 %p_n.tag, i64 %p_a.bits, i64 %p_a.tag, i64 %p_b.bits, i64 %p_b.tag)")
 	if !strings.Contains(loop, "musttail") {
 		t.Errorf("the self-recursive call lost its musttail:\n%s", loop)
 	}

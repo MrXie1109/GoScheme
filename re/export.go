@@ -20,6 +20,7 @@ typedef struct { int64_t bits; int64_t tag; } gs_val;
 #define GS_FIXNUM 0
 #define GS_HANDLE 1
 #define GS_BOOLEAN 2
+#define GS_NULL 3
 
 // The operations gs_arith knows, matching arithCode in the generator.
 #define GS_ADD 0
@@ -148,6 +149,9 @@ func tagged(v scheme.Value) C.gs_val {
 	if b, ok := v.(scheme.Boolean); ok {
 		return boolean(bool(b))
 	}
+	if v == scheme.Value(scheme.Nil) {
+		return C.gs_val{bits: 0, tag: C.GS_NULL}
+	}
 	return handle(store(v))
 }
 
@@ -158,6 +162,8 @@ func untagged(v C.gs_val) scheme.Value {
 		return load(int64(v.bits))
 	case int64(C.GS_BOOLEAN):
 		return scheme.BooleanOf(int64(v.bits) != 0)
+	case int64(C.GS_NULL):
+		return scheme.Nil
 	}
 	return scheme.Value(scheme.Int(int64(v.bits)))
 }
@@ -271,6 +277,21 @@ func gs_vecwalk(kind C.int32_t, pred C.int32_t, args *C.gs_val) C.gs_val {
 	return tagged(scheme.RunVecWalkPred(int(int32(kind)), int(int32(pred)),
 		untagged(*argsAt(args, 0)), untagged(*argsAt(args, 1)),
 		untagged(*argsAt(args, 2)), untagged(*argsAt(args, 3))))
+}
+
+// gs_countloop runs a counting loop in one call.
+//
+// The shape `(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc))))`
+// — count down, fold the counter in — which is how make-list, iota and range
+// are written.  There is no sequence to walk, so only the count and the
+// accumulator are handed over.
+//
+//export gs_countloop
+func gs_countloop(kind C.int32_t, n C.gs_val, acc C.gs_val) C.gs_val {
+	if mach == nil {
+		gs_init(0, nil)
+	}
+	return tagged(scheme.RunCountLoop(int(int32(kind)), untagged(n), untagged(acc)))
 }
 
 // gs_global reads a top-level binding by name, as a tagged value.

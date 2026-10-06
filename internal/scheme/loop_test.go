@@ -300,3 +300,81 @@ func TestConditionalWalkAgreesWithTheSchemePredicate(t *testing.T) {
 		}
 	}
 }
+
+// TestRecogniseCountLoop checks the loop that counts down instead of walking.
+//
+//	(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc))))
+//
+// This is how make-list, iota and range are written, and there is no sequence
+// to walk: the counter is the element.
+func TestRecogniseCountLoop(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want loopKind
+	}{
+		{"收集", `(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc))))`, loopCollect},
+		{"累加", `(define (s n acc) (if (= n 0) acc (s (- n 1) (+ acc n))))`, loopSum},
+		{"累加反序", `(define (s n acc) (if (= n 0) acc (s (- n 1) (+ n acc))))`, loopSum},
+		{"计数", `(define (c n acc) (if (= n 0) acc (c (- n 1) (+ acc 1))))`, loopCount},
+		{"零在左边", `(define (c n acc) (if (= 0 n) acc (c (- n 1) (+ acc 1))))`, loopCount},
+		// 应当拒绝
+		{"递减的不是同一个", `(define (f n acc) (if (= n 0) acc (f (- acc 1) (cons n acc))))`, loopNone},
+		{"不是减一", `(define (f n acc) (if (= n 0) acc (f (- n 2) (cons n acc))))`, loopNone},
+		{"测试的不是零", `(define (f n acc) (if (= n 1) acc (f (- n 1) (cons n acc))))`, loopNone},
+		{"折叠的是别的", `(define (f n acc) (if (= n 0) acc (f (- n 1) (cons acc acc))))`, loopNone},
+		{"不是尾递归", `(define (f n acc) (if (= n 0) acc (cons 1 (f (- n 1) acc))))`, loopNone},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			forms, err := NewStringReader(c.src).ReadAll()
+			if err != nil {
+				t.Fatal(err)
+			}
+			name, formals, body, ok := topLevelProcedure(forms[0])
+			if !ok {
+				t.Fatal("不是顶层过程定义")
+			}
+			w, got := recogniseCountLoop(name, formals, body)
+			if got != (c.want != loopNone) {
+				t.Fatalf("识别=%v 期望=%v", got, c.want != loopNone)
+			}
+			if got && w.kind != c.want {
+				t.Errorf("kind=%v 期望=%v", w.kind, c.want)
+			}
+		})
+	}
+}
+
+// TestEmptyListHasItsOwnTag checks that the empty list is not carried as the
+// number zero.
+//
+// It used to be, and that was harmless while every value only flowed back to the
+// interpreter: `0` and `()` are both false and neither is arithmetic.  A walk
+// *keeps* its accumulator, so `(build 5 '())` consed onto the number zero and
+// produced the improper list `(1 2 3 4 5 . 0)` — a wrong answer with no error,
+// and one that only appears when the empty list reaches a compiled body that
+// stores it.
+func TestEmptyListHasItsOwnTag(t *testing.T) {
+	p, err := CompileToIR(`(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc))))
+(define (go) (build 3 '()))`, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Native != 2 {
+		t.Fatalf("not both compiled: %v", p.Refused)
+	}
+	// The quoted empty list has to arrive as null, not as a fixnum zero: the
+	// call passes (bits, tag) and the tag is what says which it is.
+	if !strings.Contains(p.IR, ", i64 "+tagNull+")") {
+		t.Errorf("the empty list is not passed with the null tag:\n%s", p.IR)
+	}
+	// The tag has to be distinct from every other, or the emitter could choose
+	// it for something else and the runtime would read the wrong value back.
+	seen := map[string]string{
+		tagFixnum: "fixnum", tagHandle: "handle", tagBoolean: "boolean", tagNull: "null",
+	}
+	if len(seen) != 4 {
+		t.Errorf("two tags share a value: %v", seen)
+	}
+}

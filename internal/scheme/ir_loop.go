@@ -820,3 +820,194 @@ func recogniseFoldArm(e Value, accSym *Symbol, element Value) (loopKind, bool) {
 func sameExpr(a, b Value) bool {
 	return WriteToString(a) == WriteToString(b)
 }
+
+// ---------------------------------------------------------------------------
+// A counting loop
+// ---------------------------------------------------------------------------
+
+// countLoop is a loop that counts a parameter down to zero instead of walking a
+// sequence.  It is the shape `build`, `iota` and `make-list` are written in:
+//
+//	(define (build n acc)
+//	  (if (= n 0) acc (build (- n 1) (cons n acc))))
+//
+// There is no list to walk and no vector to index, so the runtime needs only
+// the counter and the accumulator.  The element folded in is the counter
+// itself, which is why the fold expressions below mention it rather than an
+// element expression.
+type countLoop struct {
+	name string
+	// count is the parameter counted down; acc is folded as the count falls.
+	count *Symbol
+	acc   *Symbol
+	kind  loopKind
+}
+
+// recogniseCountLoop reports whether a procedure counts a parameter down to
+// zero while folding.
+//
+// The accepted body is exactly
+//
+//	(if (= N 0) ACC (NAME (- N 1) FOLD))
+//
+// where FOLD is `(cons N ACC)`, `(+ ACC N)` or `(+ ACC 1)`.  The counter is the
+// value folded, so `(- N 1)` in the recursive call has to be the same N the
+// fold uses — a loop that folded a different number would be a different
+// program and is not recognised.
+func recogniseCountLoop(name string, formals []*Symbol, body []Value) (countLoop, bool) {
+	var none countLoop
+	if len(formals) != 2 || len(body) != 1 {
+		return none, false
+	}
+	ifForm, ok := body[0].(*Pair)
+	if !ok || !isForm(ifForm, "if") {
+		return none, false
+	}
+	parts, _ := ListToSlice(ifForm.Cdr)
+	if len(parts) != 3 {
+		return none, false
+	}
+	test, then, alt := parts[0], parts[1], parts[2]
+
+	// (if (= N 0) ...) — the test compares a parameter with zero.
+	testForm, ok := test.(*Pair)
+	if !ok || !isForm(testForm, "=") {
+		return none, false
+	}
+	testArgs, _ := ListToSlice(testForm.Cdr)
+	if len(testArgs) != 2 {
+		return none, false
+	}
+	var countSym *Symbol
+	if s, ok := testArgs[0].(*Symbol); ok && isZeroLiteral(testArgs[1]) {
+		countSym = s
+	} else if s, ok := testArgs[1].(*Symbol); ok && isZeroLiteral(testArgs[0]) {
+		countSym = s
+	} else {
+		return none, false
+	}
+
+	accSym, ok := then.(*Symbol)
+	if !ok || accSym.Name == countSym.Name {
+		return none, false
+	}
+
+	// (NAME (- N 1) FOLD)
+	callForm, ok := alt.(*Pair)
+	if !ok {
+		return none, false
+	}
+	head, ok := callForm.Car.(*Symbol)
+	if !ok || head.Name != name {
+		return none, false
+	}
+	callArgs, _ := ListToSlice(callForm.Cdr)
+	if len(callArgs) != 2 {
+		return none, false
+	}
+	if !isMinusOne(callArgs[0], countSym) {
+		return none, false
+	}
+	kind, ok := recogniseCountFold(callArgs[1], accSym, countSym)
+	if !ok {
+		return none, false
+	}
+	if !hasParam(formals, countSym) || !hasParam(formals, accSym) {
+		return none, false
+	}
+	return countLoop{name: name, count: countSym, acc: accSym, kind: kind}, true
+}
+
+// isZeroLiteral reports whether a value is the literal 0.
+func isZeroLiteral(v Value) bool {
+	n, ok := v.(*Integer)
+	return ok && n.small && n.i == 0
+}
+
+// isMinusOne reports whether a value is (- N 1).
+func isMinusOne(v Value, n *Symbol) bool {
+	p, ok := v.(*Pair)
+	if !ok || !isForm(p, "-") {
+		return false
+	}
+	args, _ := ListToSlice(p.Cdr)
+	return len(args) == 2 && isSameSymbol(args[0], n) && isOne(args[1])
+}
+
+// recogniseCountFold classifies what a counting loop does with the counter.
+func recogniseCountFold(e Value, accSym, countSym *Symbol) (loopKind, bool) {
+	form, ok := e.(*Pair)
+	if !ok {
+		return loopNone, false
+	}
+	head, ok := form.Car.(*Symbol)
+	if !ok {
+		return loopNone, false
+	}
+	args, _ := ListToSlice(form.Cdr)
+	switch head.Name {
+	case "cons":
+		if len(args) == 2 && isSameSymbol(args[0], countSym) && isSameSymbol(args[1], accSym) {
+			return loopCollect, true
+		}
+	case "+":
+		if len(args) != 2 {
+			return loopNone, false
+		}
+		if isSameSymbol(args[0], accSym) && isSameSymbol(args[1], countSym) {
+			return loopSum, true
+		}
+		if isSameSymbol(args[0], countSym) && isSameSymbol(args[1], accSym) {
+			return loopSum, true
+		}
+		if isSameSymbol(args[0], accSym) && isOne(args[1]) {
+			return loopCount, true
+		}
+		if isOne(args[0]) && isSameSymbol(args[1], accSym) {
+			return loopCount, true
+		}
+	}
+	return loopNone, false
+}
+
+// RunCountLoop performs a recognised counting loop.
+//
+// The count is an exact integer, and anything else is left to the interpreter:
+// a loop whose counter is not a number is not the shape that was recognised, and
+// guessing would be a compiled program computing something else.
+func RunCountLoop(kind int, n, acc Value) Value {
+	i, ok := n.(*Integer)
+	if !ok || !i.small || i.i < 0 {
+		return acc
+	}
+	for k := i.i; k > 0; k-- {
+		switch kind {
+		case walkSum:
+			acc = NumAdd(acc, Int(k))
+		case walkCount:
+			acc = NumAdd(acc, Int(1))
+		case walkCollect:
+			acc = Cons(Int(k), acc)
+		}
+	}
+	return acc
+}
+
+// emitCountLoop writes a recognised counting loop as one call into the runtime.
+func (f *irFunc) emitCountLoop(w countLoop) {
+	pack := func(sym *Symbol) string {
+		a := f.reg()
+		fmt.Fprintf(&f.body, "  %s = insertvalue %s undef, i64 %%p_%s.bits, 0\n", a, gsVal, sym.Name)
+		b := f.reg()
+		fmt.Fprintf(&f.body, "  %s = insertvalue %s %s, i64 %%p_%s.tag, 1\n", b, gsVal, a, sym.Name)
+		return b
+	}
+	f.want(gsVal + " @gs_countloop(i32, " + gsVal + ", " + gsVal + ")")
+	n := pack(w.count)
+	acc := pack(w.acc)
+	out := f.reg()
+	fmt.Fprintf(&f.body, "  %s = call %s @gs_countloop(i32 %d, %s %s, %s %s)\n",
+		out, gsVal, int(w.kind), gsVal, n, gsVal, acc)
+	f.listWalkDone = true
+	f.listWalkVal = f.loadVal(out)
+}
