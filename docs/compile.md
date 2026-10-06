@@ -148,12 +148,14 @@ happen.
 - **It is a hybrid.** Part of the program is machine code and part is the
   interpreter. This is by design, but it means the speedup depends on the
   program, and the honest breakdown is narrower than "compiled is faster":
-  tree recursion whose results feed arithmetic (the shape of `fib`) is 3.4×
-  faster; a **tail loop is a wash**, because each iteration is still a call with
-  its argument array rebuilt, which costs about what the bytecode VM's dispatch
-  costs; and a procedure whose body is mostly library calls is **slower**,
-  because it pays the boundary crossing and gains nothing. [docs/performance.md](performance.md)
-  has the tables.
+  tree recursion whose results feed arithmetic (the shape of `fib`) is **3.7×**
+  faster; a **tail loop is a wash**, because the bytecode VM's dispatch is
+  already a tight loop over pre-decoded instructions and there is nothing in a
+  counting loop for the compiler to remove; and a procedure whose body is mostly
+  library calls would be **slower**, which is why the compiler now declines to
+  compile one — a body whose only work is a call into the runtime, or whose every
+  accumulated value comes from one, is left to the interpreter.
+  [docs/performance.md](performance.md) has the tables.
 - **Tail calls are jumps, and that is a correctness requirement rather than an
   optimization.** `musttail` is emitted for a call in tail position, so a loop
   written as recursion runs in constant stack as R7RS requires. Without it the

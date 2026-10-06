@@ -542,6 +542,9 @@ type irFunc struct {
 	// its own name, which a recursive call names.
 	calls []string
 	self  string
+	// arity is how many arguments this function takes, which `musttail` has to
+	// match.
+	arity int
 	// tail is true while the expression being emitted is in tail position: its
 	// value is the value of the whole function, so a call there can be a jump
 	// rather than a call.
@@ -576,6 +579,7 @@ func (g *irGen) emitPureFunction(name string, formals []*Symbol, body []Value, c
 		name:         name,
 		mod:          g.module,
 		self:         name,
+		arity:        len(formals),
 		locals:       map[string]irVal{},
 		calls:        calls,
 		currentBlock: "entry",
@@ -1341,7 +1345,15 @@ func (f *irFunc) emitNativeCall(op string, vals []irVal) (irVal, error) {
 	//
 	// `tail` alone would be a hint LLVM may ignore, and a hint is not a
 	// guarantee: the loop that motivated this overflowed the stack with `tail`.
-	if f.tail {
+	// `musttail` is only available when the caller and the callee have the same
+	// parameter count: LLVM reuses the frame, and it cannot when the two frames
+	// are different shapes.  It says so rather than dropping the requirement —
+	// "cannot guarantee tail call due to mismatched parameter counts" — so a
+	// tail call between procedures of different arity is emitted as an ordinary
+	// call.  That is correct and only loses the frame reuse; the arity that
+	// matters for the language is the self-recursive one, and a procedure
+	// calling itself always matches.
+	if f.tail && len(vals) == f.arity {
 		// `musttail` has to be followed immediately by the `ret` that gives its
 		// value back — LLVM is strict about this, and a branch in between is an
 		// error rather than a missed optimization.  So the return is written

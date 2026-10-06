@@ -369,79 +369,52 @@ cost rather than speed.
 
 | workload | interpreted | compiled | ratio | native procs |
 |---|---|---|---|---|
-| `fib` | 8.14 ms | 3.52 ms | **2.31×** | 1 |
-| `tail-loop` | 46.32 ms | 47.09 ms | 0.98× | 1 |
-| `locals` | 51.60 ms | 52.98 ms | 0.97× | 0 |
-| `globals` | 53.61 ms | 55.42 ms | 0.97× | 1 |
-| `closures` | 16.54 ms | 17.14 ms | 0.96× | 0 |
-| `callcc` | 10.77 ms | 11.24 ms | 0.96× | 0 |
-| `sort` | 10.55 ms | 11.15 ms | 0.95× | 1 |
-| `higher-order` | 19.49 ms | 20.78 ms | 0.94× | 2 |
-| `lists` | 66.56 ms | 71.70 ms | 0.93× | 2 |
-| `mini-eval` | 20.21 ms | 20.34 ms | 0.99× | 0 |
-| `vectors` | 28.12 ms | 47.86 ms | **0.59×** | 1 |
-| `strings` | 8.24 ms | 18.09 ms | **0.46×** | 1 |
+| `fib` | 9.08 ms | 2.48 ms | **3.66×** | 2 |
+| `sort` | 13.17 ms | 11.52 ms | 1.14× | 2 |
+| `locals` | 61.62 ms | 60.48 ms | 1.02× | 0 |
+| `mini-eval` | 23.08 ms | 22.54 ms | 1.02× | 0 |
+| `callcc` | 11.68 ms | 11.51 ms | 1.02× | 0 |
+| `globals` | 60.84 ms | 60.65 ms | 1.00× | 2 |
+| `closures` | 18.39 ms | 18.69 ms | 0.98× | 0 |
+| `tail-loop` | 51.56 ms | 53.25 ms | 0.97× | 2 |
+| `vectors` | 31.34 ms | 32.56 ms | 0.96× | 0 |
+| `higher-order` | 20.83 ms | 22.15 ms | 0.94× | 0 |
+| `strings` | 10.65 ms | 11.61 ms | 0.92× | 0 |
+| `lists` | 67.88 ms | 76.66 ms | 0.89× | 0 |
 
-The workloads here are small — a few milliseconds each — so this panel measures
-process startup as much as it measures the code, and startup for a compiled
-program is a 19 MB image that links a copy of the Go runtime.  That is worth
-knowing on its own, and it is not the same question as whether the generated code
-is fast.
+**There is no pessimization left in that table.**  The worst row is 0.89×, and
+the rows near 1.0× are workloads of a few milliseconds where process startup is
+most of what is being measured.  This was not true before: `strings` was 0.40×
+and `vectors` 0.70×, because compiling a body whose only work is a call into the
+runtime adds a box, a crossing and an unbox around work the interpreter was
+already doing efficiently.  Those bodies are now declined — see the `native`
+column, which reads 0 for them and is the number to look at first.
 
-### The steady-state measurement, which is a different answer
+### What the compiler does with a loop, and why it took work
 
-To separate the two, the same loop run for long enough that startup disappears:
+The first version of the native path was *slower than the interpreter* on a
+tail loop, and the reason was worth recording because nothing about the generated
+module looked wrong.
 
-| iterations of `(loop i acc)` | interpreted | compiled |
-|---|---|---|
-| 200,000 | 0.061 s | 0.050 s |
-| 2,000,000 | 0.448 s | 0.450 s |
-| 20,000,000 | 4.481 s | 4.552 s |
+A value crossing the boundary is a tagged struct, `%gs.val = { i64, i64 }`.  That
+is the right way to carry a value and the wrong way to *pass* one: a struct hides
+the tag from the optimizer, so the callee loaded a tag it could prove nothing
+about, and every operation kept the runtime check it would have needed if the
+value might have been a bignum.  `(= i 0)` called `gs_num_eq`, and the result of
+that comparison went through `gs_truthy`, on every iteration — two real function
+calls to answer a question already answered.
 
-At 20 million iterations the compiled loop is **not faster** — 4.55 s against
-4.48 s, within noise of each other.  The generated code is good: `opt -O2` folds
-the eighteen basic blocks the emitter produces down to two and removes every
-alloca, leaving a tight loop.  What it cannot remove is the call itself.  Each
-iteration is a `musttail call` with its argument array rebuilt in the caller's
-frame, and that costs about what the bytecode VM's dispatch costs — the VM is a
-tight loop over a pre-decoded instruction array, which is a hard thing to beat
-with a call.
+Passing each argument as its own `(word, tag)` pair fixed it, because a tag that
+is a literal zero is then visible across the call.  The loop's assembly went from
+four runtime calls per iteration to none, and the loop itself to an add, a
+decrement, and a jump.  The function-pointer type is per arity as a result, which
+`gs_register` absorbs with a small generated adapter.
 
-So the honest summary of the two engines is narrower than "compiled is faster":
+Three further checks became free once the tags were visible: a comparison of two
+known fixnums, `(= x 0)` against a literal (false for a handle, because a handle
+is never a value that would fit a machine word), and the truth of a boolean.
 
-- **Tree recursion whose results feed arithmetic is much faster**: `fib 30` is
-  0.17 s compiled against 0.60 s interpreted, consistently, and that is where the
-  3.4× figure quoted at the top of this section comes from.
-- **A tail loop is a wash.**  The interpreter's dispatch is already near-optimal
-  for it, and the compiler does not get to remove the call.
-- **A procedure whose body is mostly library calls is slower**, because it pays
-  the crossing and the startup and gains nothing.
-
-`fib` is the case the compiler was built for and it delivers there.  Quoting it
-alone would be misleading, which is why the panel and the steady-state table are
-both here.
-
-Two things in that table deserve to be said plainly rather than left in the
-numbers.
-
-**Most rows are ~1.0×, and that is the hybrid working as designed, not a
-failure.**  `closures` has nothing the compiler can take: its one procedure
-returns a `lambda`, which is a refused form.  `locals` has a body whose only
-computation is wrapped around a *named* `let` — a `letrec`-shaped form the scan
-does not accept — so nothing in it compiles either.  Both are therefore entirely
-interpreted while *appearing* to be compiled — and a compiled program whose
-procedures were all refused is an interpreter with a 19 MB runtime attached,
-which is why the `native` column is in the table at all.
-
-**Two rows are genuinely slower, and the reason is worth writing down.**
-`strings` (0.46×) and `vectors` (0.59×) do their real work in library calls —
-`string-append`, `vector-ref`, `vector-set!` — which are not compiled; what
-compiling bought them is a native stub around an interpreted body, and what it
-cost them is the startup of a 19 MB program that links a copy of the Go runtime.
-These are per-run times on workloads of a few milliseconds, so startup is visible
-in them.  The general lesson is the one `docs/compile.md` states in its
-limitations: **a hybrid's speedup depends on the program**, and a compiler that
-does not compile the part you are timing cannot make it faster.
+### Where the compiler's number would have to come from
 
 ### Why compile at all, then
 

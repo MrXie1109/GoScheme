@@ -547,3 +547,59 @@ func TestIRTailCallArgumentsAreNotTailCalls(t *testing.T) {
 		t.Errorf("the inner call was emitted as a tail call, so it never returns:\n%s", body)
 	}
 }
+
+// TestIRTailCallsBetweenDifferentAritiesAreNotMusttail checks the one case where
+// `musttail` is unavailable.
+//
+// LLVM reuses the frame only when the caller and callee have the same parameter
+// count, and it refuses the module rather than dropping the requirement.  A
+// self-recursive call always matches, which is the case the language needs; a
+// tail call from a procedure of one arity to a procedure of another is emitted
+// as an ordinary call, which is correct and merely loses the frame reuse.
+//
+// This was a real bug: `(define (main) (fib 32))` failed to compile with
+// "cannot guarantee tail call due to mismatched parameter counts", so a program
+// with a zero-argument procedure tail-calling a one-argument one was rejected
+// outright.
+func TestIRTailCallsBetweenDifferentAritiesAreNotMusttail(t *testing.T) {
+	// `loop` calls itself in tail position; `main` takes no arguments and calls
+	// `loop`, which takes one — so one call may be musttail and the other may
+	// not, in the same module.
+	p, err := CompileToIR(`(define (loop n acc) (if (= n 0) acc (loop (- n 1) (+ acc n))))
+(define (main) (loop 32 0))`, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Native != 2 {
+		t.Fatalf("not both procedures compiled: %v", p.Refused)
+	}
+	// The definitions are extracted by searching for the exact signature, since
+	// `@gs_lam_fib(` is also a prefix of `@gs_lam_fib_entry(`.
+	//
+	// `main` takes no arguments and calls a two-argument procedure, so its call
+	// cannot be musttail.
+	main := bodyOf(t, p.IR, "define %gs.val @gs_lam_main()")
+	if strings.Contains(main, "musttail") {
+		t.Errorf("a call between different arities was emitted as musttail:\n%s", main)
+	}
+	// The self-recursive call inside loop still is, because the arities match.
+	loop := bodyOf(t, p.IR, "define %gs.val @gs_lam_loop(i64 %p_n.bits, i64 %p_n.tag, i64 %p_acc.bits, i64 %p_acc.tag)")
+	if !strings.Contains(loop, "musttail") {
+		t.Errorf("the self-recursive call lost its musttail:\n%s", loop)
+	}
+}
+
+// bodyOf returns one function definition from a module, up to its closing brace.
+func bodyOf(t *testing.T, ir, signature string) string {
+	t.Helper()
+	i := strings.Index(ir, signature)
+	if i < 0 {
+		t.Fatalf("%q is not in the module:\n%s", signature, ir)
+	}
+	rest := ir[i:]
+	end := strings.Index(rest, "\n}\n")
+	if end < 0 {
+		t.Fatalf("the definition of %q is unterminated", signature)
+	}
+	return rest[:end]
+}
