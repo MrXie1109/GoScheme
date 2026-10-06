@@ -244,11 +244,11 @@ func gs_box_literal(text *C.char, n C.int64_t) C.int64_t {
 // nothing crosses per element.
 //
 //export gs_walk
-func gs_walk(kind C.int32_t, list C.gs_val, acc C.gs_val) C.gs_val {
+func gs_walk(kind C.int32_t, pred C.int32_t, list C.gs_val, acc C.gs_val) C.gs_val {
 	if mach == nil {
 		gs_init(0, nil)
 	}
-	return tagged(scheme.RunListWalk(int(int32(kind)), untagged(list), untagged(acc)))
+	return tagged(scheme.RunListWalkPred(int(int32(kind)), int(int32(pred)), untagged(list), untagged(acc)))
 }
 
 // gs_vecwalk runs a whole vector walk in one call.
@@ -264,11 +264,11 @@ func gs_walk(kind C.int32_t, list C.gs_val, acc C.gs_val) C.gs_val {
 // reason the compiled bodies take their arguments that way.
 //
 //export gs_vecwalk
-func gs_vecwalk(kind C.int32_t, args *C.gs_val) C.gs_val {
+func gs_vecwalk(kind C.int32_t, pred C.int32_t, args *C.gs_val) C.gs_val {
 	if mach == nil {
 		gs_init(0, nil)
 	}
-	return tagged(scheme.RunVecWalk(int(int32(kind)),
+	return tagged(scheme.RunVecWalkPred(int(int32(kind)), int(int32(pred)),
 		untagged(*argsAt(args, 0)), untagged(*argsAt(args, 1)),
 		untagged(*argsAt(args, 2)), untagged(*argsAt(args, 3))))
 }

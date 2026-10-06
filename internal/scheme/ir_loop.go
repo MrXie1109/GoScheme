@@ -50,6 +50,9 @@ type listWalk struct {
 	listParam *Symbol
 	accParam  *Symbol
 	kind      loopKind
+	// pred, when not predNone, means the fold happens only for elements the test
+	// accepts; the others leave the accumulator alone.
+	pred predKind
 }
 
 // vecWalk is a recognised vector walk: the same idea as a list walk, with an
@@ -68,6 +71,7 @@ type vecWalk struct {
 	endParm *Symbol
 	accParm *Symbol
 	kind    loopKind
+	pred    predKind
 }
 
 // recogniseListWalk reports whether a procedure is a list walk this can run in
@@ -145,7 +149,7 @@ func recogniseListWalk(name string, formals []*Symbol, body []Value) (listWalk, 
 		return none, false
 	}
 
-	kind, ok := recogniseCombine(callArgs[1], accSym, listSym)
+	kind, pred, ok := classifyFold(callArgs[1], accSym, listSym)
 	if !ok {
 		return none, false
 	}
@@ -159,6 +163,7 @@ func recogniseListWalk(name string, formals []*Symbol, body []Value) (listWalk, 
 		listParam: listSym,
 		accParam:  accSym,
 		kind:      kind,
+		pred:      pred,
 	}, true
 }
 
@@ -175,6 +180,9 @@ func recogniseListWalk(name string, formals []*Symbol, body []Value) (listWalk, 
 // Anything else — a predicate, a nested lambda, a call to another procedure —
 // is not recognised, because running it here would be running something else.
 func recogniseCombine(e Value, accSym, listSym *Symbol) (loopKind, bool) {
+	if accSym == nil {
+		return loopNone, false
+	}
 	form, ok := e.(*Pair)
 	if !ok {
 		return loopNone, false
@@ -218,8 +226,13 @@ func isForm(p *Pair, head string) bool {
 	return ok && s.Name == head
 }
 
-// isSameSymbol reports whether a value is the given symbol.
+// isSameSymbol reports whether a value is the given symbol.  A nil symbol
+// matches nothing, which keeps the callers that pass an optional name from
+// having to check first.
 func isSameSymbol(v Value, s *Symbol) bool {
+	if s == nil {
+		return false
+	}
 	got, ok := v.(*Symbol)
 	return ok && got.Name == s.Name
 }
@@ -283,64 +296,54 @@ const (
 // RunListWalk performs a recognised loop.  kind is loopKind as an integer and
 // comes from the generated code, which is the only caller.
 func RunListWalk(kind int, list, acc Value) Value {
-	switch kind {
-	case walkSum:
-		return walkSumInto(list, acc)
-	case walkCount:
-		return walkCountInto(list, acc)
-	case walkCollect:
-		return walkCollectInto(list, acc)
-	}
-	return acc
+	return runListWalk(kind, predNone, list, acc)
 }
 
-// walkSumInto adds every element of list to acc.
-//
-// The accumulator is carried through NumAdd rather than added as a machine
-// integer, so an element that is not a fixnum — a bignum, a rational, a float —
-// is handled the way the interpreter would handle it.  The loop is fast because
-// it does not cross a boundary per element, not because it assumes anything
-// about the numbers.
-func walkSumInto(list, acc Value) Value {
+// RunListWalkPred is the entry point the generated code uses: it carries the
+// element test as well as the fold.
+func RunListWalkPred(kind, pred int, list, acc Value) Value {
+	return runListWalk(kind, predKind(pred), list, acc)
+}
+
+// RunVecWalkPred is the vector counterpart.
+func RunVecWalkPred(kind, pred int, vec, from, end, acc Value) Value {
+	return runVecWalk(kind, predKind(pred), vec, from, end, acc)
+}
+
+// runListWalk is RunListWalk with the element test, which the generated code
+// passes and the plain entry point does not.
+func runListWalk(kind int, pred predKind, list, acc Value) Value {
 	cur := list
 	for {
 		p, ok := cur.(*Pair)
 		if !ok {
 			// () ends the walk; anything else is not a list, and the
-			// interpreter's own car would report it.  Raising here would mean
+			// interpreter's own cdr would report it.  Raising here would mean
 			// the compiler had changed what the program does.
 			return acc
 		}
-		acc = NumAdd(acc, p.Car)
+		if pred.holds(p.Car) {
+			acc = foldOne(kind, p.Car, acc)
+		}
 		cur = p.Cdr
 	}
 }
 
-// walkCountInto adds one for each element.
-func walkCountInto(list, acc Value) Value {
-	cur := list
-	for {
-		p, ok := cur.(*Pair)
-		if !ok {
-			return acc
-		}
-		acc = NumAdd(acc, Int(1))
-		cur = p.Cdr
+// foldOne applies one element.
+func foldOne(kind int, elem, acc Value) Value {
+	switch kind {
+	case walkSum:
+		// Through the runtime's own arithmetic, so an element that is not a
+		// fixnum — a bignum, a rational, a float — is handled the way the
+		// interpreter handles it.  The speed comes from not crossing the
+		// boundary per element, not from assuming anything about the numbers.
+		return NumAdd(acc, elem)
+	case walkCount:
+		return NumAdd(acc, Int(1))
+	case walkCollect:
+		return Cons(elem, acc)
 	}
-}
-
-// walkCollectInto conses each element onto acc, which reverses the list — the
-// same thing the Scheme loop does.
-func walkCollectInto(list, acc Value) Value {
-	cur := list
-	for {
-		p, ok := cur.(*Pair)
-		if !ok {
-			return acc
-		}
-		acc = Cons(p.Car, acc)
-		cur = p.Cdr
-	}
+	return acc
 }
 
 // ---------------------------------------------------------------------------
@@ -369,7 +372,7 @@ func (f *irFunc) emitListWalk(w listWalk, formals []*Symbol) {
 	if w.listParam.Name == w.accParam.Name {
 		return // impossible, but a miscompile is worse than a missed one
 	}
-	f.want(gsVal + " @gs_walk(i32, " + gsVal + ", " + gsVal + ")")
+	f.want(gsVal + " @gs_walk(i32, i32, " + gsVal + ", " + gsVal + ")")
 	// The two tagged arguments are packed and handed over.
 	listV := f.reg()
 	fmt.Fprintf(&f.body, "  %s = insertvalue %s undef, i64 %s, 0\n", listV, gsVal, listArg)
@@ -380,8 +383,8 @@ func (f *irFunc) emitListWalk(w listWalk, formals []*Symbol) {
 	accV2 := f.reg()
 	fmt.Fprintf(&f.body, "  %s = insertvalue %s %s, i64 %s, 1\n", accV2, gsVal, accV, accTag)
 	out := f.reg()
-	fmt.Fprintf(&f.body, "  %s = call %s @gs_walk(i32 %d, %s %s, %s %s)\n",
-		out, gsVal, int(w.kind), gsVal, listV2, gsVal, accV2)
+	fmt.Fprintf(&f.body, "  %s = call %s @gs_walk(i32 %d, i32 %d, %s %s, %s %s)\n",
+		out, gsVal, int(w.kind), int(w.pred), gsVal, listV2, gsVal, accV2)
 	bits := f.reg()
 	fmt.Fprintf(&f.body, "  %s = extractvalue %s %s, 0\n", bits, gsVal, out)
 	tag := f.reg()
@@ -471,7 +474,7 @@ func recogniseVecWalk(name string, formals []*Symbol, body []Value) (vecWalk, bo
 	if !isSameSymbol(callArgs[2], endSym) {
 		return none, false
 	}
-	kind, ok := recogniseVecCombine(callArgs[3], accSym, vecSym, idxSym)
+	kind, pred, ok := classifyVecFold(callArgs[3], accSym, vecSym, idxSym)
 	if !ok {
 		return none, false
 	}
@@ -480,7 +483,33 @@ func recogniseVecWalk(name string, formals []*Symbol, body []Value) (vecWalk, bo
 			return none, false
 		}
 	}
-	return vecWalk{name: name, vecParm: vecSym, idxParm: idxSym, endParm: endSym, accParm: accSym, kind: kind}, true
+	return vecWalk{name: name, vecParm: vecSym, idxParm: idxSym, endParm: endSym, accParm: accSym, kind: kind, pred: pred}, true
+}
+
+// listCar is the expression (car LIST), which is the element a list walk folds.
+func listCar(listSym *Symbol) Value {
+	return List(Intern("car"), listSym)
+}
+
+// vecRef is the expression (vector-ref VEC IDX), the element a vector walk folds.
+func vecRef(vecSym, idxSym *Symbol) Value {
+	return List(Intern("vector-ref"), vecSym, idxSym)
+}
+
+// classifyFold accepts either a plain fold or a conditional one, for a list.
+func classifyFold(e Value, accSym, listSym *Symbol) (loopKind, predKind, bool) {
+	if k, ok := recogniseCombine(e, accSym, listSym); ok {
+		return k, predNone, true
+	}
+	return recogniseConditionalFold(e, accSym, listCar(listSym))
+}
+
+// classifyVecFold is classifyFold for a vector walk.
+func classifyVecFold(e Value, accSym, vecSym, idxSym *Symbol) (loopKind, predKind, bool) {
+	if k, ok := recogniseVecCombine(e, accSym, vecSym, idxSym); ok {
+		return k, predNone, true
+	}
+	return recogniseConditionalFold(e, accSym, vecRef(vecSym, idxSym))
 }
 
 // isPlusOne reports whether a value is (+ IDX 1).
@@ -552,6 +581,11 @@ func recogniseVecCombine(e Value, accSym, vecSym, idxSym *Symbol) (loopKind, boo
 // the runtime's own vector access, so an index the caller got wrong raises the
 // same error the interpreted loop would raise rather than reading past the end.
 func RunVecWalk(kind int, vec, from, end, acc Value) Value {
+	return runVecWalk(kind, predNone, vec, from, end, acc)
+}
+
+// runVecWalk is RunVecWalk with the element test.
+func runVecWalk(kind int, pred predKind, vec, from, end, acc Value) Value {
 	v, ok := vec.(*Vector)
 	if !ok {
 		return acc
@@ -568,13 +602,8 @@ func RunVecWalk(kind int, vec, from, end, acc Value) Value {
 			// so this must too rather than quietly stopping.
 			panic(errf("vector-ref", "index %d out of range for vector of length %d", i, len(v.Items)))
 		}
-		switch kind {
-		case walkSum:
-			acc = NumAdd(acc, v.Items[i])
-		case walkCount:
-			acc = NumAdd(acc, Int(1))
-		case walkCollect:
-			acc = Cons(v.Items[i], acc)
+		if pred.holds(v.Items[i]) {
+			acc = foldOne(kind, v.Items[i], acc)
 		}
 	}
 	return acc
@@ -585,7 +614,7 @@ func RunVecWalk(kind int, vec, from, end, acc Value) Value {
 // The four arguments and the kind are handed over together; RunVecWalk does the
 // counting, so nothing crosses per element.
 func (f *irFunc) emitVecWalk(w vecWalk, formals []*Symbol) {
-	f.want(gsVal + " @gs_vecwalk(i32, " + gsVal + "*)")
+	f.want(gsVal + " @gs_vecwalk(i32, i32, " + gsVal + "*)")
 	slot := f.allocaArray(4)
 	params := []*Symbol{w.vecParm, w.idxParm, w.endParm, w.accParm}
 	for i, p := range params {
@@ -595,8 +624,199 @@ func (f *irFunc) emitVecWalk(w vecWalk, formals []*Symbol) {
 		})
 	}
 	out := f.reg()
-	fmt.Fprintf(&f.body, "  %s = call %s @gs_vecwalk(i32 %d, %s* %s)\n",
-		out, gsVal, int(w.kind), gsVal, slot)
+	fmt.Fprintf(&f.body, "  %s = call %s @gs_vecwalk(i32 %d, i32 %d, %s* %s)\n",
+		out, gsVal, int(w.kind), int(w.pred), gsVal, slot)
 	f.listWalkDone = true
 	f.listWalkVal = f.loadVal(out)
+}
+
+// ---------------------------------------------------------------------------
+// A walk whose fold is conditional
+// ---------------------------------------------------------------------------
+
+// predKind is a builtin test the walk can apply to each element.
+//
+// Only builtins are accepted, and that is the point: a predicate the walk could
+// apply itself costs nothing extra, while a predicate written by the programmer
+// would have to be called back into Scheme once per element — which is exactly
+// the crossing the walk exists to avoid.  A walk whose predicate is not a
+// builtin is simply not recognised.
+type predKind int
+
+const (
+	predNone predKind = iota
+	predEven
+	predOdd
+	predPositive
+	predNegative
+	predZero
+	predPair
+	predNull
+	predNumber
+	predString
+	predSymbol
+	predVector
+)
+
+// predName maps a Scheme name to the test it denotes, or predNone.
+func predName(name string) predKind {
+	switch name {
+	case "even?":
+		return predEven
+	case "odd?":
+		return predOdd
+	case "positive?":
+		return predPositive
+	case "negative?":
+		return predNegative
+	case "zero?":
+		return predZero
+	case "pair?":
+		return predPair
+	case "null?":
+		return predNull
+	case "number?":
+		return predNumber
+	case "string?":
+		return predString
+	case "symbol?":
+		return predSymbol
+	case "vector?":
+		return predVector
+	}
+	return predNone
+}
+
+// holds reports whether the test accepts a value.  It is the same question the
+// Scheme predicate answers, asked here so that the walk does not have to call
+// back for it.
+func (p predKind) holds(v Value) bool {
+	switch p {
+	case predEven:
+		n, ok := v.(*Integer)
+		return ok && n.Big().Bit(0) == 0
+	case predOdd:
+		n, ok := v.(*Integer)
+		return ok && n.Big().Bit(0) == 1
+	case predPositive:
+		// wantReal raises for a non-number, which is what the Scheme predicate
+		// does; testing IsNumber first and answering false would be a compiled
+		// program that quietly disagreed with the interpreter about an error.
+		return NumSign(wantReal("positive?", v)) == 1
+	case predNegative:
+		return NumSign(wantReal("negative?", v)) == -1
+	case predZero:
+		return NumSign(wantReal("zero?", v)) == 0
+	case predPair:
+		_, ok := v.(*Pair)
+		return ok
+	case predNull:
+		return v == Value(Nil)
+	case predNumber:
+		return IsNumber(v)
+	case predString:
+		_, ok := v.(*String)
+		return ok
+	case predSymbol:
+		_, ok := v.(*Symbol)
+		return ok
+	case predVector:
+		_, ok := v.(*Vector)
+		return ok
+	}
+	return true
+}
+
+// recogniseConditionalFold classifies an accumulator expression that is a
+// conditional on the element.
+//
+//	(if (PRED ELEMENT) FOLD ACC)    or    (if (PRED ELEMENT) ACC FOLD)
+//
+// PRED has to be a builtin, because a predicate written in Scheme would have to
+// be called per element and that call is the cost the walk exists to avoid.  A
+// walk whose predicate is not recognised takes the ordinary path.
+func recogniseConditionalFold(e Value, accSym *Symbol, element Value) (loopKind, predKind, bool) {
+	form, ok := e.(*Pair)
+	if !ok || !isForm(form, "if") {
+		return loopNone, predNone, false
+	}
+	parts, _ := ListToSlice(form.Cdr)
+	if len(parts) != 3 {
+		return loopNone, predNone, false
+	}
+	predForm, ok := parts[0].(*Pair)
+	if !ok {
+		return loopNone, predNone, false
+	}
+	predHead, ok := predForm.Car.(*Symbol)
+	if !ok {
+		return loopNone, predNone, false
+	}
+	pred := predName(predHead.Name)
+	if pred == predNone {
+		return loopNone, predNone, false
+	}
+	pargs, _ := ListToSlice(predForm.Cdr)
+	if len(pargs) != 1 || !sameExpr(pargs[0], element) {
+		return loopNone, predNone, false
+	}
+	// One arm folds, the other leaves the accumulator as it is.
+	kind, ok := recogniseFoldArm(parts[1], accSym, element)
+	if ok && isSameSymbol(parts[2], accSym) {
+		return kind, pred, true
+	}
+	kind, ok = recogniseFoldArm(parts[2], accSym, element)
+	if ok && isSameSymbol(parts[1], accSym) {
+		return kind, pred, true
+	}
+	return loopNone, predNone, false
+}
+
+// recogniseFoldArm classifies one arm of a conditional fold, where the element
+// is an expression such as `(car LIST)` rather than a bare symbol.
+//
+// The three accepted arms are `(+ ACC ELEM)`, `(+ ACC 1)` and
+// `(cons ELEM ACC)`, compared by structure because the element on both sides is
+// the same written form.  Anything else is not this shape.
+func recogniseFoldArm(e Value, accSym *Symbol, element Value) (loopKind, bool) {
+	form, ok := e.(*Pair)
+	if !ok {
+		return loopNone, false
+	}
+	head, ok := form.Car.(*Symbol)
+	if !ok {
+		return loopNone, false
+	}
+	args, _ := ListToSlice(form.Cdr)
+	switch head.Name {
+	case "+":
+		if len(args) != 2 {
+			return loopNone, false
+		}
+		if isSameSymbol(args[0], accSym) && sameExpr(args[1], element) {
+			return loopSum, true
+		}
+		if isSameSymbol(args[0], accSym) && isOne(args[1]) {
+			return loopCount, true
+		}
+		if isOne(args[0]) && isSameSymbol(args[1], accSym) {
+			return loopCount, true
+		}
+	case "cons":
+		if len(args) != 2 {
+			return loopNone, false
+		}
+		if sameExpr(args[0], element) && isSameSymbol(args[1], accSym) {
+			return loopCollect, true
+		}
+	}
+	return loopNone, false
+}
+
+// sameExpr reports whether two expressions are the same written form.  It is
+// used to check that a predicate tests the very element the fold uses, which
+// comparing by structure is enough for: the element is either `(car LIST)` or
+// `(vector-ref VEC IDX)` on both sides or the walk is not this shape.
+func sameExpr(a, b Value) bool {
+	return WriteToString(a) == WriteToString(b)
 }

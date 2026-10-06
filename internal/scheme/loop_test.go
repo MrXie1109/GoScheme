@@ -171,3 +171,132 @@ func TestVecWalkOutOfRangeRaises(t *testing.T) {
 	}()
 	RunVecWalk(walkSum, v, Int(0), Int(5), Int(0))
 }
+
+// TestRecogniseConditionalFold checks a walk whose fold happens only for some
+// elements.
+//
+//	(define (count-even lst n)
+//	  (if (null? lst) n (count-even (cdr lst) (if (even? (car lst)) (+ 1 n) n))))
+//
+// The predicate has to be a builtin.  A programmer-written predicate would have
+// to be called back into Scheme once per element, which is the crossing the walk
+// exists to avoid, so such a walk is not recognised and takes the ordinary path.
+func TestRecogniseConditionalFold(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want loopKind
+		pred predKind
+	}{
+		{
+			name: "计数偶数",
+			src:  `(define (f lst n) (if (null? lst) n (f (cdr lst) (if (even? (car lst)) (+ 1 n) n))))`,
+			want: loopCount, pred: predEven,
+		},
+		{
+			name: "累积正数",
+			src:  `(define (f lst acc) (if (null? lst) acc (f (cdr lst) (if (positive? (car lst)) (+ acc (car lst)) acc))))`,
+			want: loopSum, pred: predPositive,
+		},
+		{
+			name: "收集偶数",
+			src:  `(define (f lst acc) (if (null? lst) acc (f (cdr lst) (if (even? (car lst)) (cons (car lst) acc) acc))))`,
+			want: loopCollect, pred: predEven,
+		},
+		{
+			// 测试的必须是同一个元素。
+			name: "谓词测试别的",
+			src:  `(define (f lst n) (if (null? lst) n (f (cdr lst) (if (even? n) (+ 1 n) n))))`,
+			want: loopNone,
+		},
+		{
+			// 用户写的谓词无法下沉。
+			name: "谓词是用户过程",
+			src:  `(define (f lst n) (if (null? lst) n (f (cdr lst) (if (my-pred (car lst)) (+ 1 n) n))))`,
+			want: loopNone,
+		},
+		{
+			// 两个分支都变，不是「累积或不变」。
+			name: "两个分支都累积",
+			src:  `(define (f lst n) (if (null? lst) n (f (cdr lst) (if (even? (car lst)) (+ 1 n) (+ 2 n)))))`,
+			want: loopNone,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			forms, err := NewStringReader(c.src).ReadAll()
+			if err != nil {
+				t.Fatal(err)
+			}
+			name, formals, body, ok := topLevelProcedure(forms[0])
+			if !ok {
+				t.Fatal("不是顶层过程定义")
+			}
+			w, got := recogniseListWalk(name, formals, body)
+			if got != (c.want != loopNone) {
+				t.Fatalf("识别=%v 期望=%v", got, c.want != loopNone)
+			}
+			if !got {
+				return
+			}
+			if w.kind != c.want || w.pred != c.pred {
+				t.Errorf("kind=%v pred=%v，期望 kind=%v pred=%v", w.kind, w.pred, c.want, c.pred)
+			}
+		})
+	}
+}
+
+// TestConditionalWalkAgreesWithTheSchemePredicate checks that the test the walk
+// applies is the test the Scheme predicate is.
+//
+// The two are written separately — one is a Go method, the other is the
+// library's — so a disagreement is possible and would be silent: a walk that
+// counted odd numbers where the program asked for even ones still prints a
+// number.
+func TestConditionalWalkAgreesWithTheSchemePredicate(t *testing.T) {
+	m := NewMachine()
+	for _, tc := range []struct {
+		pred predKind
+		name string
+	}{
+		{predEven, "even?"},
+		{predOdd, "odd?"},
+		{predPositive, "positive?"},
+		{predNegative, "negative?"},
+		{predZero, "zero?"},
+		{predPair, "pair?"},
+		{predNull, "null?"},
+		{predNumber, "number?"},
+		{predString, "string?"},
+		{predSymbol, "symbol?"},
+		{predVector, "vector?"},
+	} {
+		proc, ok := m.Global.Lookup(Intern(tc.name))
+		if !ok {
+			t.Fatalf("%s is not defined", tc.name)
+		}
+		for _, v := range []Value{
+			Int(0), Int(1), Int(-1), Int(2), Int(-7),
+			Float(0.5), Float(-0.5),
+			&String{}, &Symbol{Name: "s"}, &Vector{}, Nil, List(Int(1)),
+		} {
+			got, err := m.ApplySync(proc, []Value{v})
+			if err != nil {
+				// The predicate raised, so the walk must raise too; the walk's
+				// holds panics in that case, which the caller turns into the
+				// same condition.
+				continue
+			}
+			want := IsTrue(got)
+			var have bool
+			func() {
+				defer func() { _ = recover() }()
+				have = tc.pred.holds(v)
+			}()
+			if have != want {
+				t.Errorf("%s of %s: walk says %v, Scheme says %v",
+					tc.name, WriteToString(v), have, want)
+			}
+		}
+	}
+}
