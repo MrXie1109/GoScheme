@@ -1282,7 +1282,7 @@ func TestUsageLinesMentionEveryOption(t *testing.T) {
 	for _, l := range strings.Split(got, "\n") {
 		t := strings.TrimSpace(l)
 		if strings.HasPrefix(t, "usage: goscheme") ||
-			strings.HasPrefix(t, "goscheme build <script>") ||
+			strings.HasPrefix(t, "goscheme pack <script>") ||
 			strings.HasPrefix(t, "goscheme compile <script>") {
 			lines = append(lines, t)
 		}
@@ -1293,17 +1293,22 @@ func TestUsageLinesMentionEveryOption(t *testing.T) {
 	// 每个选项必须出现在它所属的那一行里。
 	for _, tc := range []struct{ line, opt string }{
 		{lines[0], "-e"}, {lines[0], "-interp"}, {lines[0], "-i"}, {lines[0], "-q"},
-		{lines[1], "-o"}, {lines[1], "-i"},
-		{lines[2], "-o"}, {lines[2], "-obfuscate"},
+		{lines[1], "-o"}, {lines[1], "-i"}, {lines[1], "-static"},
+		{lines[2], "-o"}, {lines[2], "--emit-llvm"}, {lines[2], "-O"},
 	} {
 		if !strings.Contains(tc.line, tc.opt) {
 			t.Errorf("用法行 %q 没提到 %s", tc.line, tc.opt)
 		}
 	}
-	// 而且下面要有对应的说明。
-	for _, opt := range []string{"-obfuscate", "-interp", "-e EXPR"} {
+	// 下面要有对应的说明，而且不能还留着已经删掉的东西。
+	for _, opt := range []string{"--emit-llvm", "-static", "-interp", "-e EXPR"} {
 		if !strings.Contains(got, opt) {
 			t.Errorf("usage 没有解释 %s", opt)
+		}
+	}
+	for _, gone := range []string{"-obfuscate", ".scmc", "goscheme build"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("usage 仍然提到已经删掉的 %s：\n%s", gone, got)
 		}
 	}
 }
