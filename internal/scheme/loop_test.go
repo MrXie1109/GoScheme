@@ -427,3 +427,87 @@ func TestWalkEntryPointsAreDeclaredConsistently(t *testing.T) {
 		t.Errorf("gs_countloop is not declared with the array convention:\n%s", p.IR)
 	}
 }
+
+// TestRecogniseUpLoop checks the loop that counts up to a bound, which is the
+// shape a do loop is written in.
+func TestRecogniseUpLoop(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want loopKind
+	}{
+		{"累加索引", `(define (f i acc) (if (= i n) acc (f (+ i 1) (+ acc i))))`, loopSum},
+		{"计数", `(define (f i acc) (if (= i n) acc (f (+ i 1) (+ acc 1))))`, loopCount},
+		{"收集", `(define (f i acc) (if (= i n) acc (f (+ i 1) (cons i acc))))`, loopCollect},
+		// 应当拒绝
+		{"步长不是 1", `(define (f i acc) (if (= i n) acc (f (+ i 2) (+ acc i))))`, loopNone},
+		{"测试的是别的", `(define (f i acc) (if (= acc n) acc (f (+ i 1) (+ acc i))))`, loopNone},
+		{"递减", `(define (f i acc) (if (= i n) acc (f (- i 1) (+ acc i))))`, loopNone},
+		{"折叠的是别的", `(define (f i acc) (if (= i n) acc (f (+ i 1) (+ acc n))))`, loopNone},
+		{"三个参数", `(define (f i acc k) (if (= i n) acc (f (+ i 1) (+ acc i) k)))`, loopNone},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			forms, err := NewStringReader(c.src).ReadAll()
+			if err != nil {
+				t.Fatal(err)
+			}
+			name, formals, body, ok := topLevelProcedure(forms[0])
+			if !ok {
+				t.Fatal("不是顶层过程定义")
+			}
+			w, got := recogniseUpLoop(name, formals, body)
+			if got != (c.want != loopNone) {
+				t.Fatalf("识别=%v 期望=%v", got, c.want != loopNone)
+			}
+			if got && w.kind != c.want {
+				t.Errorf("kind=%v 期望=%v", w.kind, c.want)
+			}
+		})
+	}
+}
+
+// TestRunUpLoopAgreesWithARange checks the upward walk against the answer
+// computed independently.
+//
+// The walk's arguments are (from, end, acc), and the order is not the one the
+// loop's own parameters are in — getting it wrong made a sum come out as a
+// count, because the bound arrived where the accumulator belonged.  A test that
+// only checked "a number came back" would have passed.
+func TestRunUpLoopAgreesWithARange(t *testing.T) {
+	for _, tc := range []struct{ lo, hi int64 }{{0, 10}, {1, 10}, {0, 1}, {5, 5}, {0, 0}} {
+		want := int64(0)
+		for i := tc.lo; i < tc.hi; i++ {
+			want += i
+		}
+		got := RunUpLoop(walkSum, Int(tc.lo), Int(tc.hi), Int(0))
+		if WriteToString(got) != WriteToString(Int(want)) {
+			t.Errorf("sum %d..%d = %s, want %d", tc.lo, tc.hi, WriteToString(got), want)
+		}
+		// Counting counts the iterations, which is the other walk.
+		gotCount := RunUpLoop(walkCount, Int(tc.lo), Int(tc.hi), Int(0))
+		if WriteToString(gotCount) != WriteToString(Int(tc.hi-tc.lo)) {
+			t.Errorf("count %d..%d = %s, want %d", tc.lo, tc.hi, WriteToString(gotCount), tc.hi-tc.lo)
+		}
+	}
+}
+
+// TestDoLoopIsCompiledAsAWalk checks that a do loop reaches the walk at all.
+//
+// Two separate gates had to open for it: the scanner refused `do` as a form
+// before the walk was ever considered, and the emitter's own do branch was
+// unreachable until it did not.  Either one alone leaves the loop interpreted
+// while looking like it should be compiled.
+func TestDoLoopIsCompiledAsAWalk(t *testing.T) {
+	p, err := CompileToIR(`(define N 100)
+(define (go) (do ((i 0 (+ i 1)) (acc 0 (+ acc i))) ((= i N) acc)))`, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Native == 0 {
+		t.Fatalf("the do loop was not compiled: %v", p.Refused)
+	}
+	if !strings.Contains(p.IR, "@gs_uploop(") {
+		t.Errorf("the do loop is not emitted as an upward walk:\n%s", p.IR)
+	}
+}

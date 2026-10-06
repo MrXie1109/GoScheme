@@ -1205,6 +1205,7 @@ const (
 	shapeList
 	shapeVec
 	shapeCount
+	shapeUp
 )
 
 // recogniseAnyWalk asks each recogniser in turn.
@@ -1215,6 +1216,15 @@ func recogniseAnyWalk(name string, formals []*Symbol, body []Value) (loopKind, p
 // recogniseAnyWalkInv is recogniseAnyWalk with the invariants an enclosing let
 // provides.
 func recogniseAnyWalkInv(name string, formals []*Symbol, body []Value, inv map[string]bool) (loopKind, predKind, walkShape, bool) {
+	// A do loop's recursive call carries the placeholder name, because the do
+	// has no name of its own.  Asking each recogniser for the placeholder as
+	// well as for the name means the same loop is found either way, and the
+	// caller does not have to know which spelling it was written in.
+	if name != doLoopPlaceholder {
+		if k, p, shape, ok := recogniseAnyWalkInv(doLoopPlaceholder, formals, body, inv); ok {
+			return k, p, shape, true
+		}
+	}
 	if w, ok := recogniseListWalk(name, formals, body); ok {
 		return w.kind, w.pred, shapeList, true
 	}
@@ -1223,6 +1233,9 @@ func recogniseAnyWalkInv(name string, formals []*Symbol, body []Value, inv map[s
 	}
 	if w, ok := recogniseCountLoopInv(name, formals, body, inv); ok {
 		return w.kind, predNone, shapeCount, true
+	}
+	if w, ok := recogniseUpLoop(name, formals, body); ok {
+		return w.kind, predNone, shapeUp, true
 	}
 	return loopNone, predNone, shapeNone, false
 }
@@ -1414,7 +1427,42 @@ func (f *irFunc) emitWalkCall(loopName string, vars []*Symbol, body []Value, arg
 		f.emitVecWalkArgs(k, pred, args)
 	case shapeCount:
 		f.emitCountLoopArgs(k, args, extraVals)
+	case shapeUp:
+		if u, ok := recogniseUpLoop(loopName, vars, body); ok {
+			f.emitUpLoopArgs(k, args, u)
+		}
 	}
+}
+
+// emitUpLoopArgs calls the upward walk with (from, end, acc).
+//
+// The bound is evaluated here, once, rather than passed in with the loop's own
+// parameters: it is usually a free variable rather than one of them, and
+// evaluating it before the loop is what makes a `do` whose limit is a global
+// work without reading the global every iteration.
+func (f *irFunc) emitUpLoopArgs(kind loopKind, args []irVal, u upLoop) {
+	if len(args) != 2 {
+		return
+	}
+	endVal, err := f.emitExpr(u.end)
+	if err != nil {
+		return
+	}
+	// The runtime takes (from, end, acc), which is not the order the loop's own
+	// parameters are in — the accumulator comes last because RunUpLoop's
+	// signature ends with it, and getting that wrong made the sum come out as a
+	// count: the bound arrived as the accumulator and the accumulator as the
+	// bound.
+	f.want(gsVal + " @gs_uploop(i32, " + gsVal + "*)")
+	slot := f.allocaArray(3)
+	f.storeArg(slot, 0, args[0]) // the index it starts at
+	f.storeArg(slot, 1, endVal)  // the bound it counts up to
+	f.storeArg(slot, 2, args[1]) // the accumulator
+	out := f.reg()
+	fmt.Fprintf(&f.body, "  %s = call %s @gs_uploop(i32 %d, %s* %s)\n",
+		out, gsVal, int(kind), gsVal, slot)
+	f.listWalkDone = true
+	f.listWalkVal = f.loadVal(out)
 }
 
 // emitListWalkArgs calls the list walk with the list and accumulator given.
@@ -1506,4 +1554,246 @@ func (f *irFunc) emitNamedLetLoop(nl namedLetForm) {
 		return
 	}
 	f.emitWalkCall(nl.loop, nl.vars, nl.body, vals, outerVals, inv)
+}
+
+// ---------------------------------------------------------------------------
+// A do loop
+// ---------------------------------------------------------------------------
+
+// doAsCountLoop reads a do loop as a counting loop, which is what it is.
+//
+//	(do ((i 0 (+ i 1)) (acc 0 (+ acc i))) ((= i n) acc))
+//
+// The variables become the loop's parameters, the inits its starting values and
+// the steps what it passes next — so the loop the do stands for is
+//
+//	(if (= i n) acc (loop (+ i 1) (+ acc i)))
+//
+// which is the same shape the named-let recogniser already handles.  Reading it
+// here rather than through `doExpansion` is deliberate: that expansion wraps the
+// steps in a `guard` to give `(continue)` its meaning, and a `guard` is not a
+// shape anything can be recognised from.
+//
+// A do with a command list is refused.  Those commands run for their effect
+// between the test and the steps, and folding that into a walk would mean
+// deciding what the effects are, which is the interpreter's job.
+func doAsLoop(form Value) (string, []*Symbol, []Value, bool) {
+	p, ok := form.(*Pair)
+	if !ok || !isForm(p, "do") {
+		return "", nil, nil, false
+	}
+	args, _ := ListToSlice(p.Cdr)
+	if len(args) != 2 {
+		return "", nil, nil, false // a command list, or malformed
+	}
+	specs, ok := ListToSlice(args[0])
+	if !ok {
+		return "", nil, nil, false
+	}
+	testClause, ok := ListToSlice(args[1])
+	if !ok || len(testClause) < 1 {
+		return "", nil, nil, false
+	}
+	var vars []*Symbol
+	var steps []Value
+	for _, spec := range specs {
+		items, ok := ListToSlice(spec)
+		if !ok || len(items) != 3 {
+			return "", nil, nil, false
+		}
+		v, ok := items[0].(*Symbol)
+		if !ok {
+			return "", nil, nil, false
+		}
+		vars = append(vars, v)
+		steps = append(steps, items[2])
+	}
+	// (if TEST RESULT (loop STEP...))
+	//
+	// The test's first result is the loop's value.  A do may have several, which
+	// makes it a `values` form and not a walk; and the `begin` the expansion
+	// would wrap around them is not written here either, because the recognisers
+	// accept a base case that is a bare name and would not see through it.
+	if len(testClause) != 2 {
+		return "", nil, nil, false
+	}
+	alt := Cons(doLoopSym, listFromSlice(steps))
+	body := []Value{List(Intern("if"), testClause[0], testClause[1], alt)}
+	// The placeholder is replaced by the caller, which knows the name the
+	// recognisers will compare against.
+	return doLoopPlaceholder, vars, body, true
+}
+
+// doLoopPlaceholder stands where a do loop's recursive call goes, and is
+// replaced by the name the recognisers compare against.
+//
+// A do has no name of its own — its recursive call is an artifact of reading it
+// as a loop rather than something written in the source — so one is chosen here.
+// It has to be a *Symbol, because that is what the recognisers match on.  The
+// spaces are what keep it from colliding with anything a program can write: a
+// Scheme identifier cannot contain one.
+const doLoopPlaceholder = " do-loop "
+
+// doLoopSym is the symbol a do loop's recursive call carries.
+var doLoopSym = Intern(doLoopPlaceholder)
+
+// ---------------------------------------------------------------------------
+// Counting up
+// ---------------------------------------------------------------------------
+
+// upLoop is a loop that counts a parameter from a lower bound up to an upper
+// one, which is the shape a `do` loop is usually written in:
+//
+//	(do ((i 0 (+ i 1)) (acc 0 (+ acc i))) ((= i n) acc))
+//
+// It is the mirror of the counting-down loop and needs its own recogniser,
+// because the test is against a *bound* rather than against zero and the
+// recursion passes `(+ i 1)` rather than `(- i 1)`.
+type upLoop struct {
+	name string
+	idx  *Symbol
+	acc  *Symbol
+	kind loopKind
+	// end is the bound the index counts up to.  It is an *expression* rather
+	// than a name because a do loop's bound is usually a free variable — the
+	// `N` in `(do ((i 0 (+ i 1)) (acc 0)) ((= i N) acc))` — and the expression is
+	// what gets evaluated once, before the loop, to produce the limit.
+	//
+	// Evaluating it once is safe because a body that could assign it is not a
+	// body this recognises: the walk has no set!, so nothing between the first
+	// iteration and the last can change what the bound is.
+	end Value
+}
+
+// recogniseUpLoop reports whether a procedure counts a parameter up to a bound.
+//
+// The accepted body is exactly
+//
+//	(if (= IDX END) ACC (NAME (+ IDX 1) FOLD))
+//
+// with FOLD one of `(+ acc IDX)`, `(+ acc 1)`, `(cons IDX acc)`.  The
+// accumulator is the third parameter or the second, depending on how the loop
+// was written, and both are accepted because `(do ((i 0 ...) (acc 0 ...)))` and
+// `(let loop ((i 0) (acc 0)))` put them in the same order.
+//
+// What is *not* accepted is a loop whose bound is recomputed, or whose index is
+// advanced by anything but one: those are different programs, and a recogniser
+// that guessed would be compiling something else.
+func recogniseUpLoop(name string, formals []*Symbol, body []Value) (upLoop, bool) {
+	var none upLoop
+	if len(formals) != 2 || len(body) != 1 {
+		return none, false
+	}
+	ifForm, ok := body[0].(*Pair)
+	if !ok || !isForm(ifForm, "if") {
+		return none, false
+	}
+	parts, _ := ListToSlice(ifForm.Cdr)
+	if len(parts) != 3 {
+		return none, false
+	}
+	test, then, alt := parts[0], parts[1], parts[2]
+
+	testForm, ok := test.(*Pair)
+	if !ok || !isForm(testForm, "=") {
+		return none, false
+	}
+	testArgs, _ := ListToSlice(testForm.Cdr)
+	if len(testArgs) != 2 {
+		return none, false
+	}
+	idxSym, ok := testArgs[0].(*Symbol)
+	if !ok {
+		return none, false
+	}
+	// The bound is whatever the index is compared with, as long as it is not the
+	// index itself.
+	endExpr := testArgs[1]
+	if isSameSymbol(endExpr, idxSym) {
+		return none, false
+	}
+	accSym, ok := then.(*Symbol)
+	if !ok || accSym.Name == idxSym.Name {
+		return none, false
+	}
+
+	callForm, ok := alt.(*Pair)
+	if !ok {
+		return none, false
+	}
+	callHead, ok := callForm.Car.(*Symbol)
+	if !ok || callHead.Name != name {
+		return none, false
+	}
+	callArgs, _ := ListToSlice(callForm.Cdr)
+	if len(callArgs) != 2 {
+		return none, false
+	}
+	if !isPlusOne(callArgs[0], idxSym) {
+		return none, false
+	}
+	kind, ok := recogniseUpFold(callArgs[1], accSym, idxSym)
+	if !ok {
+		return none, false
+	}
+	if !hasParam(formals, idxSym) || !hasParam(formals, accSym) {
+		return none, false
+	}
+	return upLoop{name: name, idx: idxSym, acc: accSym, kind: kind, end: endExpr}, true
+}
+
+// recogniseUpFold classifies what an upward loop does with the index.
+func recogniseUpFold(e Value, accSym, idxSym *Symbol) (loopKind, bool) {
+	form, ok := e.(*Pair)
+	if !ok {
+		return loopNone, false
+	}
+	head, ok := form.Car.(*Symbol)
+	if !ok {
+		return loopNone, false
+	}
+	args, _ := ListToSlice(form.Cdr)
+	switch head.Name {
+	case "+":
+		if len(args) != 2 {
+			return loopNone, false
+		}
+		if isSameSymbol(args[0], accSym) && isSameSymbol(args[1], idxSym) {
+			return loopSum, true
+		}
+		if isSameSymbol(args[0], idxSym) && isSameSymbol(args[1], accSym) {
+			return loopSum, true
+		}
+		if isSameSymbol(args[0], accSym) && isOne(args[1]) {
+			return loopCount, true
+		}
+		if isOne(args[0]) && isSameSymbol(args[1], accSym) {
+			return loopCount, true
+		}
+	case "cons":
+		if len(args) == 2 && isSameSymbol(args[0], idxSym) && isSameSymbol(args[1], accSym) {
+			return loopCollect, true
+		}
+	}
+	return loopNone, false
+}
+
+// RunUpLoop performs a recognised upward loop.
+//
+// The bound and the starting index are both taken from the loop's arguments, so
+// a `do` that starts at something other than zero is handled without a special
+// case.
+func RunUpLoop(kind int, from, end, acc Value) Value {
+	lo, ok := from.(*Integer)
+	if !ok || !lo.small {
+		return acc
+	}
+	hi, ok := end.(*Integer)
+	if !ok || !hi.small {
+		return acc
+	}
+	for i := lo.i; i < hi.i; i++ {
+		acc = foldOne(kind, Int(i), acc)
+	}
+	return acc
 }

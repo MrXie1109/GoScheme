@@ -405,10 +405,23 @@ func (r *pureReport) scanCombination(x *Pair, local map[string]bool, keep bool) 
 		// and a runtime call returns the same value the interpreter would.
 		isSelf := r.self != "" && head.Name == r.self
 		isKnown := r.known[head.Name]
-		// A form rather than a procedure: `set!`, `lambda`, `do`, a macro that
-		// was not expanded.  It is refused here, where the reason can say so,
-		// rather than left to the emitter to trip over.
+		// A do loop whose shape is a recognised walk is not refused: it is
+		// emitted as that walk, so there is nothing in it the scan has to judge.
+		// Any other form is refused here, where the reason can say so, rather
+		// than left to the emitter to trip over.
 		if isSyntax(head.Name) {
+			// A do loop that is a recognised walk is accepted as a whole.  What
+			// is emitted for it is the walk, not the do's own parts, so there is
+			// nothing here for the scan to walk into — and walking into them
+			// would fail, because the variable list and the step expressions are
+			// not the list of literals and calls this scan reads.
+			if head.Name == "do" {
+				if loopName, vars, dbody, ok := doAsLoop(x); ok {
+					if _, _, _, isWalk := recogniseAnyWalk(loopName, vars, dbody); isWalk {
+						return
+					}
+				}
+			}
 			r.stop("%s is a form, not a call this can compile", head.Name)
 			return
 		}
@@ -839,6 +852,42 @@ func (f *irFunc) emitForm(x *Pair) (irVal, error) {
 	}
 	args, _ := ListToSlice(x.Cdr)
 	switch head.Name {
+	case "do":
+		// A do loop whose shape is a recognised walk is emitted as that walk.
+		// The expansion the interpreter uses wraps the steps in a `guard` for
+		// `(continue)`, and a guard is not a shape anything can be recognised
+		// from, so the loop is read from the source.
+		if loopName, vars, body, ok := doAsLoop(x); ok {
+			if _, _, shape, ok := recogniseAnyWalk(loopName, vars, body); ok && shape != shapeNone {
+				// The inits are what the variables start at.
+				specs, _ := ListToSlice(args[0])
+				vals := make([]irVal, 0, len(vars))
+				good := true
+				for _, spec := range specs {
+					items, _ := ListToSlice(spec)
+					if len(items) != 3 {
+						good = false
+						break
+					}
+					v, err := f.emitExpr(items[1])
+					if err != nil {
+						good = false
+						break
+					}
+					vals = append(vals, v)
+				}
+				if good && len(vals) == len(vars) {
+					f.emitWalkCall(loopName, vars, body, vals, nil, nil)
+					if f.listWalkDone {
+						return f.listWalkVal, nil
+					}
+				}
+			}
+		}
+		// A do that got this far was not recognised as a loop — the scan only
+		// lets through the ones it recognised — so reaching here means the two
+		// disagree, and saying so is better than emitting something wrong.
+		return irVal{}, fmt.Errorf("ir: a do loop that the scan accepted but this cannot emit")
 	case "begin":
 		// Only the last part is in tail position: the earlier ones are evaluated
 		// for their effect and their values are discarded.

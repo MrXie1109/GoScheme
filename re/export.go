@@ -300,6 +300,21 @@ func gs_countloop(kind C.int32_t, args *C.gs_val, nextra C.int32_t) C.gs_val {
 	return tagged(scheme.RunCountLoopExtras(int(int32(kind)), n, acc, extras))
 }
 
+// gs_uploop runs a loop that counts up to a bound in one call.
+//
+// The shape a `do` loop is written in — an index from a lower bound to an upper
+// one, folding as it goes — which is the mirror of gs_countloop and needs its
+// own entry point because the bound is a value rather than zero.
+//
+//export gs_uploop
+func gs_uploop(kind C.int32_t, args *C.gs_val) C.gs_val {
+	if mach == nil {
+		gs_init(0, nil)
+	}
+	return tagged(scheme.RunUpLoop(int(int32(kind)),
+		untagged(*argsAt(args, 0)), untagged(*argsAt(args, 1)), untagged(*argsAt(args, 2))))
+}
+
 // gs_global reads a top-level binding by name, as a tagged value.
 //
 // A compiled body reads a global where the name appears, not once at entry,
