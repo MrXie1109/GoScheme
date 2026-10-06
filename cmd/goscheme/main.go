@@ -40,7 +40,7 @@ func runGuarded() (code int) {
 	// A Go panic anywhere below here is a bug in the interpreter, not in the
 	// program being run, and the program should be told so as a Scheme error
 	// rather than shown a Go stack trace.  Every path goes through this — a
-	// script, a .scmc file, -e, the REPL — so it is the one place it has to
+	// script, -e, the REPL — so it is the one place it has to
 	// happen.
 	defer func() {
 		if r := recover(); r != nil {
@@ -167,8 +167,8 @@ func exitCodeFor(failed bool) int {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: goscheme [-i] [-q] [-interp] [-e expr] [file] [args...]")
-	fmt.Fprintln(os.Stderr, "       goscheme build <script> [-o <output>] [-i <interpreter>]")
-	fmt.Fprintln(os.Stderr, "       goscheme compile <script> [-o <output.scmc>] [-obfuscate]")
+	fmt.Fprintln(os.Stderr, "       goscheme pack <script> [-o <output>] [-i <interpreter>] [-static]")
+	fmt.Fprintln(os.Stderr, "       goscheme compile <script> [-o <output>] [--emit-llvm] [-O0..-O3]")
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "  -e EXPR        evaluate EXPR (may be repeated, evaluated in order)")
 	fmt.Fprintln(os.Stderr, "  -i             enter the REPL after loading the file")
@@ -177,15 +177,16 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  -v, --version  print the version and exit")
 	fmt.Fprintln(os.Stderr, "  -h, --help     print this usage")
 	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "The build subcommand writes a copy of the interpreter with the program bound in:")
-	fmt.Fprintln(os.Stderr, "  -o FILE        where to write it")
+	fmt.Fprintln(os.Stderr, "The pack subcommand writes an executable with the source packed into it:")
+	fmt.Fprintln(os.Stderr, "  -o FILE        where to write it (default: a.out)")
 	fmt.Fprintln(os.Stderr, "  -i INTERPRETER the interpreter to copy (the running one by default)")
+	fmt.Fprintln(os.Stderr, "  -static        bake in every library the script imports")
 	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "The compile subcommand writes the compiled program:")
-	fmt.Fprintln(os.Stderr, "  -o FILE        where to write it (the script's name with .scmc)")
-	fmt.Fprintln(os.Stderr, "  -obfuscate     remove the names from the file")
+	fmt.Fprintln(os.Stderr, "The compile subcommand writes a native program, through LLVM:")
+	fmt.Fprintln(os.Stderr, "  -o FILE        where to write it (default: a.out)")
+	fmt.Fprintln(os.Stderr, "  --emit-llvm    write the LLVM IR instead of building anything")
+	fmt.Fprintln(os.Stderr, "  -O0..-O3       optimisation level passed to opt (default: -O2)")
 }
-
 
 // commandLine builds the (command-line) list: the script (or, for a bundled
 // executable, the program as it was invoked) followed by the user's arguments.
