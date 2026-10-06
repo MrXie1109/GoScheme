@@ -11,11 +11,11 @@ import (
 
 // Generating LLVM IR.
 //
-// The compiler in lower.go turns a Scheme form into bytecode for this process
+// The compiler in compile.go turns a Scheme form into bytecode for this process
 // to run; this turns it into LLVM IR for a program that runs on its own.  They
-// are two back ends over one front end: both read the same forms and both call
-// the same primitives, so a program compiled to a native executable and the
-// same program interpreted here agree about what it means.
+// are two back ends over one front end: both read the same forms, and the
+// generated code calls the same runtime, so a program compiled to a native
+// executable and the same program interpreted here agree about what it means.
 //
 // The shape of the generated program is a **hybrid**, which is the decision
 // this file is built around:

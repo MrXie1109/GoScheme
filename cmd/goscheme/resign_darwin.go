@@ -16,11 +16,11 @@ import (
 func resignIfNeeded(path string) {
 	if _, err := exec.LookPath("codesign"); err != nil {
 		fmt.Fprintf(os.Stderr,
-			"goscheme build: warning: %s may need re-signing; run: codesign --force --sign - %s\n",
+			"goscheme pack: warning: %s may need re-signing; run: codesign --force --sign - %s\n",
 			path, path)
 		return
 	}
 	if out, err := exec.Command("codesign", "--force", "--sign", "-", path).CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "goscheme build: warning: codesign failed: %v: %s\n", err, out)
+		fmt.Fprintf(os.Stderr, "goscheme pack: warning: codesign failed: %v: %s\n", err, out)
 	}
 }

@@ -57,13 +57,19 @@ func (i *Interp) Eval(src string) (Value, error) {
 }
 
 // EvalFile loads a Scheme source file and evaluates it.
+//
+// It runs the forms the way the command line does, which means compiling each
+// one where the compiler can and interpreting the rest.  Calling RunForms
+// instead would skip the compiler and evaluate the whole file as one form,
+// which is both slower and a different extent for a continuation — so this is
+// the compiled entry point on purpose, not by accident.
 func (i *Interp) EvalFile(path string) error {
 	forms, err := scheme.ReadFileForms(i.m, path, false)
 	if err != nil {
 		return err
 	}
 	i.m.AddLoadPath(dirOf(path))
-	_, err = i.m.RunForms(forms, i.m.Global)
+	_, err = i.m.RunFormsCompiled(forms, i.m.Global)
 	return err
 }
 

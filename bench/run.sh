@@ -31,6 +31,12 @@
 # measures process startup (0.5 ms for C, 2.3 ms for GoScheme, 15 ms for
 # CPython).  The Scheme side is timed by bench/time.scm, which is itself a
 # GoScheme program, because /usr/bin/time has a 10 ms resolution.
+#
+# The GoScheme column is the interpreter running the source: that is the engine
+# which runs a file, and the one these ratios are about.  `bench/run-native.sh`
+# is the same panel through `goscheme compile`, for the native compiler — a
+# different question, asked separately, because the compiler is a hybrid and
+# only some of these programs have anything it can compile.
 set -e
 
 RUNS=${1:-5}
@@ -80,14 +86,23 @@ for p in $PROGRAMS; do
     src=$(echo "$p" | tr '-' '_')
     $CC $CFLAGS -o "$BUILD/$p" "$HERE/c/$src.c"
     $CC $CFLAGS $KEEP -o "$BUILD/$p.kept" "$HERE/c/$src.c"
-    "$GOSCHEME" compile "$HERE/scheme/$p.scm" -o "$BUILD/$p.scmc"
+    # The Scheme side is timed as a packed program, so what is measured is
+    # running the workload and not reading and evaluating its source — which is
+    # what the C and Python sides measure too, their compilers having finished
+    # before the clock starts.
+    #
+    # `pack` writes a self-contained executable with the packed script appended,
+    # not a file to hand back to the interpreter, so it is the bundle that gets
+    # timed.  The program is still the interpreter: this measures the interpreter
+    # against the others, and the native compiler is a separate question.
+    "$GOSCHEME" pack "$HERE/scheme/$p.scm" -o "$BUILD/$p.packed"
 
     # the C and Python programs print their own ms/run; take the best of a few
     a=$(best_of 3 "$BUILD/$p" | awk '{print $3}')
     b=$(best_of 3 sh -c "\"$BUILD/$p.kept\" | awk '{print \$3}'")
     y=$(best_of 3 sh -c "$PYTHON \"$HERE/python/$src.py\" | awk '{print \$3}'")
     u=$(best_of 3 sh -c "GUILE_AUTO_COMPILE=0 $GUILE -L \"$HERE/guile\" -s \"$HERE/guile/$p.scm\" | awk '{print \$3}'")
-    c=$("$GOSCHEME" "$HERE/time.scm" "$RUNS" "$GOSCHEME" "$BUILD/$p.scmc")
+    c=$("$GOSCHEME" "$HERE/time.scm" "$RUNS" "$BUILD/$p.packed")
     c=$(awk -v s="$c" 'BEGIN{printf "%.4f", s*1000}')
 
     printf '%-13s %8sms %8sms %8sms %8sms %8sms %5sx %5sx %5sx %5sx\n' "$p" \

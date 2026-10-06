@@ -371,38 +371,49 @@ func (p *printer) printString(sb *strings.Builder, s *String) {
 	sb.WriteByte('"')
 }
 
+// namedChars is the rune-to-name table this printer writes, and the reader reads
+// those names back through a switch of its own.
+//
+// The two are inverse in the direction that matters: every name here is one the
+// reader accepts, so anything written can be read.  The reader accepts more than
+// this — `#\vtab`, `#\nel`, `#\esc`, `#\rubout` and others — because a program
+// may contain them, and those print as `#\x7` and the like, which reads back as
+// the same character.
+//
+// The tables are kept apart on purpose: a reader has to accept every spelling
+// the language allows, while a printer should choose one, and a single table
+// cannot be both.  A test in printer_test.go holds them together by printing
+// every entry and reading it back.
+var namedChars = map[rune]string{
+	' ':  "space",
+	'\n': "newline",
+	'\t': "tab",
+	'\r': "return",
+	0:    "null",
+	7:    "alarm",
+	8:    "backspace",
+	27:   "escape",
+	127:  "delete",
+}
+
 func (p *printer) printChar(sb *strings.Builder, r rune) {
 	if p.mode == modeDisplay {
 		sb.WriteRune(r)
 		return
 	}
-	switch r {
-	case ' ':
-		sb.WriteString("#\\space")
-	case '\n':
-		sb.WriteString("#\\newline")
-	case '\t':
-		sb.WriteString("#\\tab")
-	case '\r':
-		sb.WriteString("#\\return")
-	case 0:
-		sb.WriteString("#\\null")
-	case 7:
-		sb.WriteString("#\\alarm")
-	case 8:
-		sb.WriteString("#\\backspace")
-	case 27:
-		sb.WriteString("#\\escape")
-	case 127:
-		sb.WriteString("#\\delete")
-	default:
-		if r < 32 {
-			fmt.Fprintf(sb, "#\\x%x", r)
-		} else {
-			sb.WriteString("#\\")
-			sb.WriteRune(r)
-		}
+	if name, ok := namedChars[r]; ok {
+		sb.WriteString("#\\")
+		sb.WriteString(name)
+		return
 	}
+	// A character with no name: the hexadecimal escape is the one form that can
+	// always be written and always read back.
+	if r < 32 {
+		fmt.Fprintf(sb, "#\\x%x", r)
+		return
+	}
+	sb.WriteString("#\\")
+	sb.WriteRune(r)
 }
 
 // isPeculiarIdentifier reports whether name is one of the R7RS "peculiar

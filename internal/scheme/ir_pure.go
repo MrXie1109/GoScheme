@@ -1280,15 +1280,14 @@ func (f *irFunc) emitCheckedArith(op string, a, b irVal) (irVal, error) {
 	over := f.reg()
 	fmt.Fprintf(&f.body, "  %s = extractvalue { i64, i1 } %s, 0\n", val, pair)
 	fmt.Fprintf(&f.body, "  %s = extractvalue { i64, i1 } %s, 1\n", over, pair)
-	// No overflow: the word is the answer.  Overflow: the runtime's.
+	// No overflow: the word is the answer.  Overflow: the runtime's, which is
+	// the same block a handle operand goes to.
 	okLabel := f.freshLabel("arith.ok")
-	wrapLabel := f.freshLabel("arith.wrap")
 	fmt.Fprintf(&f.body, "  br i1 %s, label %%%s, label %%%s\n", over, slowLabel, okLabel)
 	f.block(okLabel)
 	fmt.Fprintf(&f.body, "  store i64 %s, i64* %s\n", val, bitsSlot)
 	fmt.Fprintf(&f.body, "  store i64 %s, i64* %s\n", tagFixnum, tagSlot)
 	fmt.Fprintf(&f.body, "  br label %%%s\n", doneLabel)
-	_ = wrapLabel
 
 	f.block(slowLabel)
 	f.want(gsVal + " @gs_arith(i32, " + gsVal + ", " + gsVal + ")")

@@ -162,24 +162,24 @@ func installSRFI133(m *Machine) {
 	// (vector-count pred vec ...) counts the positions where every element
 	// passes.
 	m.defSimple("vector-count", 2, -1, func(a []Value) (Value, error) {
-		return vectorPredIndex(m, "vector-count", a, true, false)
+		return vectorPredIndex(m, "vector-count", a, true, false, false)
 	}, lib)
 
 	// -------------------------------------------------------------- searching
 	m.defSimple("vector-index", 2, -1, func(a []Value) (Value, error) {
-		return vectorPredIndex(m, "vector-index", a, false, false)
+		return vectorPredIndex(m, "vector-index", a, false, false, false)
 	}, lib)
 
 	m.defSimple("vector-index-right", 2, -1, func(a []Value) (Value, error) {
-		return vectorPredIndex(m, "vector-index-right", a, false, true)
+		return vectorPredIndex(m, "vector-index-right", a, false, true, false)
 	}, lib)
 
 	m.defSimple("vector-skip", 2, -1, func(a []Value) (Value, error) {
-		return vectorPredIndex(m, "vector-skip", a, false, false)
+		return vectorPredIndex(m, "vector-skip", a, false, false, true)
 	}, lib)
 
 	m.defSimple("vector-skip-right", 2, -1, func(a []Value) (Value, error) {
-		return vectorPredIndex(m, "vector-skip-right", a, false, true)
+		return vectorPredIndex(m, "vector-skip-right", a, false, true, true)
 	}, lib)
 
 	// (vector-any pred vec ...) is the first true value the predicate
@@ -315,9 +315,17 @@ func vectorFold(m *Machine, name string, a []Value, right bool) (Value, error) {
 }
 
 // vectorPredIndex is the shared body of vector-count, vector-index,
-// vector-index-right, vector-skip and vector-skip-right.  Counting scans from
-// the left; the skip procedures look for the first element that fails.
-func vectorPredIndex(m *Machine, name string, a []Value, countAll, right bool) (Value, error) {
+// vector-index-right, vector-skip and vector-skip-right.
+//
+// countAll scans the whole vector and counts; otherwise the first match is
+// returned.  right scans from the other end.  skip inverts the test, so the
+// procedure finds the first element that *fails* the predicate.
+//
+// skip is a parameter rather than a comparison against name.  Deriving it from
+// the name would make a rename change what the procedure does, silently and
+// with no test able to see it; every caller says which behaviour it wants, and
+// the two booleans beside it already worked that way.
+func vectorPredIndex(m *Machine, name string, a []Value, countAll, right, skip bool) (Value, error) {
 	pred := wantProcedure(name, a[0])
 	predName := builtinName(pred)
 	caller := newFastCaller(m, pred)
@@ -331,7 +339,6 @@ func vectorPredIndex(m *Machine, name string, a []Value, countAll, right bool) (
 			panic(errf(name, "vectors of different lengths"))
 		}
 	}
-	skip := name == "vector-skip" || name == "vector-skip-right"
 	matches := func(i int) bool {
 		args := make([]Value, 0, len(rows))
 		for _, row := range rows {

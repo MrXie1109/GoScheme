@@ -136,7 +136,7 @@ func readBundle(path string) (*bundleInfo, error) {
 }
 
 // writeBundle writes a copy of interpreter to out with a program appended to
-// it.  The payload is bytecode or script text, according to kind.
+// it.  The payload is packed source, and kind says how to read it.
 func writeBundle(interpreter, out, name string, kind byte, payload []byte) error {
 	if _, err := readBundle(interpreter); err == nil {
 		return fmt.Errorf("%s is already a bundle", interpreter)
@@ -282,15 +282,17 @@ func runPack(args []string) int {
 	return 0
 }
 
-// payloadFor turns a script into what a bundle carries: its compiled program
-// when the compiler can produce one, and the script text when it cannot.
+// payloadFor turns a script into what a bundle carries: the script with its
+// comments and layout removed.
 //
-// Compiling needs the libraries the script imports, because macros have to be
-// expanded at build time, and a script may import one that is only there when
-// the program runs (beside the executable, say).  That is the one case where
-// this falls back, and the note says so: the bundle then starts by reading
-// source, which is slower and never wrong.  The note is empty when the program
-// compiled, which is the usual case.
+// Packing is what a bundle does now that there is no compiled file format.  It
+// is not an optimization — reading either form costs about the same — but it
+// makes the executable carry the program in one canonical shape, and it drops
+// the comments and blank lines a shipped program does not need.
+//
+// Packing can fail, on a script the reader cannot read far enough to rewrite,
+// and then the original text is bound instead: a bundle that starts by reading
+// source is slower to prepare and never wrong, and the note says which happened.
 func payloadFor(scriptPath string, script []byte) (payload []byte, kind byte, note string) {
 	abs, err := filepath.Abs(scriptPath)
 	if err != nil {
@@ -304,9 +306,6 @@ func payloadFor(scriptPath string, script []byte) (payload []byte, kind byte, no
 	return packed, kindSource, ""
 }
 
-// defaultOutput is the name used when -o is omitted: a.out, or a.exe when
-// binding a Windows interpreter, in the current directory — the same default a
-// C compiler uses.
 // staticSearchPath is where -static looks for libraries: the script's own
 // directory, then GOSCHEME_LIBRARY_PATH, then the working directory — the same
 // order the interpreter uses at run time.
@@ -322,6 +321,10 @@ func staticSearchPath(scriptPath string) []string {
 	return append(dirs, ".")
 }
 
+// defaultOutput is the name used when -o is omitted: a.out, or a.exe when
+// binding a Windows interpreter, in the current directory — the same default a
+// C compiler uses.  The name follows the interpreter being bound rather than the
+// host, because the bundle is meant to run where that interpreter runs.
 func defaultOutput(interpreter string) string {
 	if strings.HasSuffix(strings.ToLower(interpreter), ".exe") {
 		return "a.exe"

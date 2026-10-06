@@ -184,3 +184,39 @@ func TestInterpretersAreIndependent(t *testing.T) {
 		t.Error("a definition leaked between interpreters")
 	}
 }
+
+// TestEvalFileRunsTheWholeFileAsOneExtent checks that EvalFile gives a file the
+// same treatment the command line does: each form compiled where the compiler
+// can, and the whole file as one extent.
+//
+// The distinction is not cosmetic.  A continuation captured in one top-level
+// form has to stay valid for the forms that follow it, which is what a file
+// means; evaluating the forms one by one would make that continuation invalid
+// the moment the next form started.  EvalFile used to do exactly that, while
+// every other entry point in the project compiled, so an embedded program
+// silently ran on the interpreter with a different extent from the same program
+// run from the command line.
+func TestEvalFileRunsTheWholeFileAsOneExtent(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "extent.scm")
+	// The escape continues out of the form that captured it and into the next
+	// one, which only works if both are part of the same evaluation.
+	body := `(import (scheme base) (scheme write))
+(define k #f)
+(display (call/cc (lambda (c) (set! k c) 1)))
+(newline)
+(define done 'no)
+(set! done 'yes)
+(display done)
+(newline)`
+	if err := os.WriteFile(script, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	i := New()
+	if err := i.EvalFile(script); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := i.Lookup("done"); !ok {
+		t.Error("the file's later definitions did not run")
+	}
+}

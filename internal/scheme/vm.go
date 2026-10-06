@@ -68,11 +68,6 @@ const (
 	opNumEq
 )
 
-// opcodeCount is how many opcodes this interpreter knows.  The reader uses it:
-// an instruction from a newer file would otherwise be a silent no-op, because
-// the instruction loop's switch has no default case.
-const opcodeCount = int(opNumEq) + 1
-
 // guardReRaise is what a compiled guard does when none of its clauses matched:
 // it raises the condition again.  It is a value of its own rather than a lookup
 // of `raise`, which a program may rebind, and it is what the interpreter's
@@ -571,17 +566,6 @@ func makeCompiledClosure(name string, code *Code, params []*Symbol, hasRest bool
 		Env: globals,
 		Vm:  vm,
 	}
-}
-
-// placeholderParams makes the parameter symbols a compiled clause carries for
-// its arity.  They are never bound, so they do not need to be interned, and a
-// .scmc file does not store them: the loader makes them again.
-func placeholderParams(n int) []*Symbol {
-	out := make([]*Symbol, n)
-	for i := range out {
-		out[i] = &Symbol{Name: "arg"}
-	}
-	return out
 }
 
 func popValue(vals []Value) (Value, []Value) {

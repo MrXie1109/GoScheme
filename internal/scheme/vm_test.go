@@ -529,8 +529,6 @@ func mustRead(t *testing.T, src string) Value {
 	return forms[0]
 }
 
-// TestBytecodeFormat pins the parts of the format that a program may rely on:
-
 // TestVMTailCallsAreProper checks the VM's own tail-call path, which is what
 // keeps a loop from growing the stack.
 func TestVMTailCallsAreProper(t *testing.T) {

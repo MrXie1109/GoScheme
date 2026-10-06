@@ -402,28 +402,31 @@ func scanBodyNames(body []Value) []*Symbol {
 	return out
 }
 
-// checkDuplicateVars reports a variable that one binding form names twice,
-// which R7RS makes an error rather than a silent last-one-wins.
-func checkDuplicateVars(syms []*Symbol) error {
+// duplicateVar reports the variable a binding form names twice, or nil when
+// every name is distinct, which is what R7RS requires: a duplicate is an error
+// rather than a silent last-one-wins.
+//
+// It is the single answer to that question.  The interpreter and the compiler
+// both ask it — the compiler to report the error while it is compiling, the
+// interpreter to raise it while it is binding — and having two copies of the
+// check meant having two places to keep the rule in step by hand.
+func duplicateVar(syms []*Symbol) *Symbol {
 	seen := map[*Symbol]bool{}
 	for _, s := range syms {
 		if seen[s] {
-			return NewError("duplicate variable in the same binding form", s)
+			return s
 		}
 		seen[s] = true
 	}
 	return nil
 }
 
-// symsOf picks the symbols out of a list of binding names.
-func symsOf(vars []Value) []*Symbol {
-	out := make([]*Symbol, 0, len(vars))
-	for _, v := range vars {
-		if s, ok := v.(*Symbol); ok {
-			out = append(out, s)
-		}
+// checkDuplicateVars reports a variable that one binding form names twice.
+func checkDuplicateVars(syms []*Symbol) error {
+	if s := duplicateVar(syms); s != nil {
+		return NewError("duplicate variable in the same binding form", s)
 	}
-	return out
+	return nil
 }
 
 // prepBody pre-binds the names introduced by internal definitions, which is
@@ -546,13 +549,6 @@ func evalDefine(m *Machine, form Value, env *Env) {
 		env.Define(name, v)
 		m.Return(UnspecifiedValue)
 	})
-}
-
-func cdrOf(v Value) Value {
-	if p, ok := v.(*Pair); ok {
-		return p.Cdr
-	}
-	return Nil
 }
 
 func evalSet(m *Machine, form Value, env *Env) {

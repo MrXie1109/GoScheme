@@ -1774,3 +1774,25 @@ func TestBundleFromTheCompiledFormatIsReported(t *testing.T) {
 		t.Errorf("the error does not explain itself: %v", err)
 	}
 }
+
+// TestNoSourceNamesTheOldSubcommand checks that nothing in the program still
+// tells the user about `goscheme build`.
+//
+// The subcommand is `pack` now, and a message that names the old one is worse
+// than a message with no name at all: the user types what it says and gets
+// "unknown command".  The case that made this worth a test is a warning only
+// macOS prints, which no test on any other platform would ever have run.
+func TestNoSourceNamesTheOldSubcommand(t *testing.T) {
+	// The usage test covers the usage text; this covers the messages a program
+	// prints while it runs.
+	for _, src := range []string{"main.go", "bundle.go", "static.go",
+		"resign_darwin.go", "resign_other.go", "compiler.go"} {
+		data, err := os.ReadFile(src)
+		if err != nil {
+			t.Fatalf("reading %s: %v", src, err)
+		}
+		if strings.Contains(string(data), "goscheme build") {
+			t.Errorf("%s still names `goscheme build`, which is `pack` now", src)
+		}
+	}
+}

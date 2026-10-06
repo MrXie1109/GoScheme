@@ -181,9 +181,13 @@ func stringCase(s string, kind caseKind) string {
 	return sb.String()
 }
 
-// charCase performs a character level case conversion; multi-character
-// expansions are truncated to their first character for char-upcase, which is
-// what the report specifies for the character procedures.
+// charCase performs a character level case conversion.
+//
+// A mapping that expands to several characters has no character result, so the
+// character is returned unchanged rather than truncated: (char-upcase #\ß) is
+// #\ß, not the #\S that taking the first character would give.  That is what
+// R7RS asks for, and it is why the string procedure beside this one exists —
+// string-upcase is where a multi-character expansion can actually be used.
 func charCase(r rune, kind caseKind) Char {
 	switch kind {
 	case caseUpper:

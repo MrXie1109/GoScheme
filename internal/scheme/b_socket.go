@@ -140,8 +140,8 @@ func wantTcpListener(name string, v Value) *TcpListener {
 	return l
 }
 
-// wantTextualMode reads the optional 'textual / 'binary argument that the
-// socket and process procedures share.
+// wantTextualMode reads the optional 'textual / 'binary argument the socket
+// constructors take.
 func wantTextualMode(name string, v Value) bool {
 	s, ok := v.(*Symbol)
 	if !ok {

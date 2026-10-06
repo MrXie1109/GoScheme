@@ -777,6 +777,13 @@ func (f *fDynamicWindPush) resume(m *Machine, _ Value) {
 // EvalString reads every datum in src and evaluates it in the global
 // environment, returning the value of the last one.  It is a convenience for
 // tests and for embedding the interpreter.
+//
+// Each datum is evaluated on its own, deliberately: this is the entry point for
+// a short expression, where the caller wants the value of the last form and
+// nothing else.  A *file* wants RunFormsCompiled instead, which compiles each
+// form where it can and gives the whole file one extent, so that a continuation
+// captured in one form stays valid for the forms after it.  EvalFile uses that,
+// and the difference is why the two exist.
 func (m *Machine) EvalString(src string) (Value, error) {
 	forms, err := NewStringReader(src).ReadAll()
 	if err != nil {

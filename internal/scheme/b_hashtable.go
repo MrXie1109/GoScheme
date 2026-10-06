@@ -131,7 +131,7 @@ func NewHashtable(kind string) *Hashtable {
 	if kind == "" {
 		kind = "equal"
 	}
-	return &Hashtable{Kind: kind, index: map[interface{}][]int{}, Mutable: true}
+	return &Hashtable{Kind: kind, index: map[interface{}][]int{}}
 }
 
 func (h *Hashtable) lookup(key Value) (int, bool) {

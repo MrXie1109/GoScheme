@@ -582,13 +582,16 @@ type Channel struct {
 // see b_hashtable.go.
 type Hashtable struct {
 	// Kind is "eq", "eqv" or "equal" and selects the key equivalence.
-	Kind    string
-	Mutable bool
-	keys    []Value
-	vals    []Value
-	dead    []bool
-	index   map[interface{}][]int
-	count   int
+	//
+	// Every table this implementation makes is mutable, so there is no
+	// mutability flag: one would always be true, and a field that cannot vary
+	// reads like a distinction the language makes when it does not.
+	Kind  string
+	keys  []Value
+	vals  []Value
+	dead  []bool
+	index map[interface{}][]int
+	count int
 }
 
 // ---------------------------------------------------------------------------
@@ -642,4 +645,3 @@ func cdr(v Value) Value {
 func cadr(v Value) Value  { return car(cdr(v)) }
 func cddr(v Value) Value  { return cdr(cdr(v)) }
 func caddr(v Value) Value { return car(cddr(v)) }
-func cdddr(v Value) Value { return cdr(cddr(v)) }

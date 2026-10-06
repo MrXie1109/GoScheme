@@ -20,7 +20,7 @@ DYNAMIC_PLATFORMS ?= linux/amd64 linux/arm64 windows/amd64
 LDFLAGS := -s -w -X main.version=$(VERSION)
 GOFLAGS := -trimpath
 
-.PHONY: all build test test-short check-disasm fmt vet clean dist list-dist repl examples
+.PHONY: all build test test-short check-compile check-llvm fmt vet clean dist list-dist repl examples
 
 all: build
 
@@ -36,25 +36,34 @@ test:
 test-short:
 	$(GO) test -short ./...
 
-## check-disasm: compile a program with the freshly built interpreter and read
-## the bytecode back with scripts/scmc-disassemble.scm, asserting that what it
-## printed is readable Scheme.  It is the one test of the disassembler, and of
-## the bytecode format as an outside reader sees it.
-check-disasm: build
-	@$(BUILD)/$(BIN) compile test/scheme/r7rs-tests.scm -o $(BUILD)/check.scmc
-	@$(BUILD)/$(BIN) scripts/scmc-disassemble.scm --check $(BUILD)/check.scmc
-	@$(BUILD)/$(BIN) compile test/scheme/goscheme-tests.scm -o $(BUILD)/check-ext.scmc
-	@$(BUILD)/$(BIN) scripts/scmc-disassemble.scm --check $(BUILD)/check-ext.scmc
-	@# The same file without its shebang: a compiled file from before the
-	@# shebang existed has to read and disassemble the same way.
-	@tail -n +2 $(BUILD)/check.scmc > $(BUILD)/check-noshebang.scmc
-	@$(BUILD)/$(BIN) scripts/scmc-disassemble.scm --check $(BUILD)/check-noshebang.scmc
-	@rm -f $(BUILD)/check-noshebang.scmc $(BUILD)/check-v5.scmc
-	@# The symbol table is version 5; the file above is one, and the reader has
-	@# to accept the version 4 shape too, where every symbol was written out
-	@# where it was used.  The committed sample is a real one: a small program
-	@# compiled by the interpreter as it was before the table existed.
-	@$(BUILD)/$(BIN) scripts/scmc-disassemble.scm --check test/bytecode/v4.scmc
+## check-compile: build the interpreter, compile a program with it through LLVM,
+## and run the result, comparing what it prints against what the interpreter
+## prints for the same source.  It is the end-to-end test of the native path, and
+## it is a Makefile target because it needs a toolchain the Go tests are allowed
+## to skip.
+##
+## The comparison is the point.  A generated module can be well-formed, verify
+## cleanly, and still compute something else — or be dead code that nothing ever
+## calls — so what is checked is the output of a program that ran.
+check-compile: build
+	@echo "(display (+ 20 22)) (newline)" > $(BUILD)/check-compile.scm
+	@echo "(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))" >> $(BUILD)/check-compile.scm
+	@echo "(display (fact 20)) (newline)" >> $(BUILD)/check-compile.scm
+	@$(BUILD)/$(BIN) $(BUILD)/check-compile.scm > $(BUILD)/check-interpreted.txt
+	@$(BUILD)/$(BIN) compile $(BUILD)/check-compile.scm -o $(BUILD)/check-compile
+	@$(BUILD)/check-compile > $(BUILD)/check-compiled.txt
+	@diff $(BUILD)/check-interpreted.txt $(BUILD)/check-compiled.txt
+	@echo "compile: the compiled program agrees with the interpreter"
+	@rm -f $(BUILD)/check-compile.scm $(BUILD)/check-compile \
+		$(BUILD)/check-interpreted.txt $(BUILD)/check-compiled.txt
+
+## check-llvm: stop after the LLVM IR and assemble it, so that a module the
+## generator produced is checked as LLVM rather than only as a program that ran.
+check-llvm: build
+	@$(BUILD)/$(BIN) compile test/scheme/r7rs-tests.scm --emit-llvm -o $(BUILD)/check.ll
+	@llvm-as $(BUILD)/check.ll -o /dev/null
+	@echo "compile: the generated module assembles"
+	@rm -f $(BUILD)/check.ll
 
 ## fmt: format the Go sources
 fmt:

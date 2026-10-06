@@ -6,7 +6,7 @@ package scheme
 // with-mutex, or the whole of (goscheme match).  The helpers here load such
 // source from a string that is compiled into the binary, so a program that
 // imports it works everywhere, including an executable produced by
-// `goscheme build` on a machine that has none of the repository's files.
+// `goscheme pack` on a machine that has none of the repository's files.
 
 // runEmbedded evaluates self-contained source in the builtin frame and returns
 // that frame, where the definitions it made now live.
@@ -39,11 +39,4 @@ func (m *Machine) installEmbeddedSource(lib, source string, names ...string) {
 		}
 		m.defValue(n, v, lib)
 	}
-}
-
-// installEmbeddedLibrary evaluates a complete (define-library ...) form, which
-// registers the library and its exports by itself.  The source may hold several
-// libraries.
-func (m *Machine) installEmbeddedLibrary(source string) {
-	m.runEmbedded("embedded library", source)
 }

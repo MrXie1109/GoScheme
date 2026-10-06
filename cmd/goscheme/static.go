@@ -12,7 +12,7 @@ import (
 )
 
 // staticBuilder resolves the libraries a script imports, transitively, so that
-// "goscheme build -static" can bake them into the executable.  The libraries
+// "goscheme pack -static" can bake them into the executable.  The libraries
 // are emitted in dependency order, in front of the script: a bundle then needs
 // no library files beside it.
 //

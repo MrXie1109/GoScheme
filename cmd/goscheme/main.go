@@ -62,7 +62,7 @@ func runGuarded() (code int) {
 }
 
 func run() int {
-	// A standalone executable produced by "goscheme build" carries its script
+	// A standalone executable produced by "goscheme pack" carries its script
 	// in its own tail; if this binary has one, run it.
 	if exe, err := os.Executable(); err == nil {
 		if info, err := readBundle(exe); err == nil {
@@ -131,7 +131,7 @@ func run() int {
 	// (command-line) starts with the script and continues with the user's
 	// arguments; the interpreter's own name is deliberately left out, so that
 	// (cdr (command-line)) is the argument list whether the script is
-	// interpreted or has been bound into an executable by "goscheme build".
+	// interpreted or has been bound into an executable by "goscheme pack".
 	script := ""
 	if len(files) > 0 {
 		script = files[0]

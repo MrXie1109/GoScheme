@@ -1981,17 +1981,16 @@ func (c *comp) finishBody(sub *comp) *Code {
 }
 
 // checkDuplicates reports a binding form that names the same variable twice,
-// which R7RS makes an error rather than a silent last-one-wins.  The
-// interpreter checks the same forms (let and letrec, not let*), with the same
-// message, and a compiled body has to agree about what is an error.
+// which R7RS makes an error rather than a silent last-one-wins.
+//
+// The rule itself lives in duplicateVar, which the interpreter asks as well:
+// a compiled body and an interpreted one have to agree about what is an error,
+// and the way to make them agree is for there to be one answer rather than two
+// that have to be kept in step.
 func (c *comp) checkDuplicates(what string, syms []*Symbol) bool {
-	seen := map[*Symbol]bool{}
-	for _, s := range syms {
-		if seen[s] {
-			c.fail("%s: duplicate variable in the same binding form", what)
-			return false
-		}
-		seen[s] = true
+	if duplicateVar(syms) != nil {
+		c.fail("%s: duplicate variable in the same binding form", what)
+		return false
 	}
 	return true
 }

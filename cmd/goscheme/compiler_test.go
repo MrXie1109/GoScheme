@@ -3,35 +3,24 @@
 package main
 
 import (
-	"io"
-	"os"
 	"testing"
 
 	"github.com/MrXie1109/GoScheme/internal/scheme"
 )
 
-// captureStdout runs fn with os.Stdout redirected and returns what it printed.
-func captureStdout(t *testing.T, fn func()) string {
-	t.Helper()
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	saved := os.Stdout
-	os.Stdout = w
-	done := make(chan string, 1)
-	go func() {
-		data, _ := io.ReadAll(r)
-		done <- string(data)
-	}()
-	fn()
-	w.Close()
-	os.Stdout = saved
-	return <-done
-}
+// Helpers shared by the tests in this package.
+//
+// They live here rather than beside any one test because more than one file
+// needs them: the native-compile tests run a script through the interpreter to
+// get the answer to compare against, and the option tests read what a
+// subcommand wrote to a stream.
 
 // runScriptFile runs a file the way the command line does and returns what the
 // program printed.
+//
+// It is the interpreter's answer, which is the thing the native path has to
+// agree with: a test that compared a compiled program against a hard-coded
+// string would pass on a day the interpreter itself was wrong.
 func runScriptFile(t *testing.T, path string) string {
 	t.Helper()
 	m := scheme.NewMachine()

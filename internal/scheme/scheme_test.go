@@ -343,3 +343,53 @@ func TestExitRunsWindThunks(t *testing.T) {
 		t.Errorf("emergency-exit ran the after thunk: %q", got)
 	}
 }
+
+// TestCharacterNamesRoundTrip holds the printer's name table and the reader's
+// name switch together.
+//
+// They are two tables that have to agree and cannot be derived from one another:
+// the reader must accept every spelling the language allows, while the printer
+// should pick one.  Nothing in either file says so, so a name added to one and
+// not the other would show up as a character that prints in a form the reader
+// rejects — which is a program that writes a file it cannot read.
+func TestCharacterNamesRoundTrip(t *testing.T) {
+	for r, name := range namedChars {
+		printed := WriteToString(Char(r))
+		if printed != `#\`+name {
+			t.Errorf("printing %q gave %s, want #\\%s", string(r), printed, name)
+			continue
+		}
+		read, err := NewStringReader(printed).ReadAll()
+		if err != nil {
+			t.Errorf("the reader rejects %s, which the printer wrote: %v", printed, err)
+			continue
+		}
+		if len(read) != 1 {
+			t.Errorf("%s read as %d forms", printed, len(read))
+			continue
+		}
+		if c, ok := read[0].(Char); !ok || c != Char(r) {
+			t.Errorf("%s read back as %v, want %q", printed, read[0], string(r))
+		}
+	}
+}
+
+// TestEveryCharacterPrintsReadably checks the other direction: a character with
+// no name still has to be written in a form the reader accepts.
+func TestEveryCharacterPrintsReadably(t *testing.T) {
+	for r := rune(0); r < 256; r++ {
+		printed := WriteToString(Char(r))
+		read, err := NewStringReader(printed).ReadAll()
+		if err != nil {
+			t.Errorf("the reader rejects %s (character %d): %v", printed, r, err)
+			continue
+		}
+		if len(read) != 1 {
+			t.Errorf("%s read as %d forms", printed, len(read))
+			continue
+		}
+		if c, ok := read[0].(Char); !ok || c != Char(r) {
+			t.Errorf("%s read back as %v, want character %d", printed, read[0], r)
+		}
+	}
+}
