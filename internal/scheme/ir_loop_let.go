@@ -350,6 +350,52 @@ func (f *irFunc) emitLetInits(bindingsVal Value) []irVal {
 	return out
 }
 
+// vecWalkArgs puts a vector walk's four arguments in the order the runtime
+// wants them: vector, index, bound, accumulator.
+//
+// When the walk was written with all four as parameters, `args` is already in
+// that order and is used as it stands — the recogniser recorded which parameter
+// played which role, so they are looked up by name rather than assumed to be in
+// the order the runtime wants.  When it was written the way people write it —
+// the vector closed over, the bound a literal — only the index and the
+// accumulator are parameters, and the other two are evaluated here, once,
+// before the call.
+//
+// Returning nil when something cannot be emitted leaves the caller to generate
+// the ordinary recursive body.  That is slow but correct, and it is what the
+// silent `len(args) != 4` guard in the emitter used to do at the wrong moment:
+// the loop was recognised, the walk was never emitted, and the function still
+// compiled — as the recursive body that is *slower* than the interpreter.
+func (f *irFunc) vecWalkArgs(w vecWalk, args []irVal) []irVal {
+	idx, ok := f.locals[w.idxParm.Name]
+	if !ok {
+		return nil
+	}
+	acc, ok := f.locals[w.accParm.Name]
+	if !ok {
+		return nil
+	}
+	// The four-parameter spelling passes the vector and the bound along on every
+	// step, and the recogniser recorded both as parameters.  Reading them from
+	// the activation is what keeps that spelling as fast as it was.
+	if w.endParm != nil && w.vecParm != nil {
+		if vec, ok := f.locals[w.vecParm.Name]; ok {
+			if end, ok := f.locals[w.endParm.Name]; ok {
+				return []irVal{vec, idx, end, acc}
+			}
+		}
+	}
+	vec, err := f.emitExpr(w.vecExpr)
+	if err != nil {
+		return nil
+	}
+	end, err := f.emitExpr(w.endExpr)
+	if err != nil {
+		return nil
+	}
+	return []irVal{vec, idx, end, acc}
+}
+
 // emitWalkCall emits the walk that `body` is, called with the given argument
 // values, and records the result as the function's return value.
 func (f *irFunc) emitWalkCall(loopName string, vars []*Symbol, body []Value, args, extraVals []irVal, inv map[string]bool) {
@@ -361,7 +407,16 @@ func (f *irFunc) emitWalkCall(loopName string, vars []*Symbol, body []Value, arg
 	case shapeList:
 		f.emitListWalkArgs(k, pred, args)
 	case shapeVec:
-		f.emitVecWalkArgs(k, pred, args)
+		// The walk wants four arguments — vector, index, bound, accumulator —
+		// and `args` only matches when the walk took all four as parameters.
+		// The 2-argument spelling passes just the index and the accumulator, so
+		// the vector and the bound are evaluated here instead.  Silently doing
+		// nothing when they do not match is what made this loop recognised and
+		// then never emitted: it compiled to the ordinary recursive body, which
+		// is slower than the interpreter, and nothing said so.
+		if w, ok := recogniseVecWalk(loopName, vars, body); ok {
+			f.emitVecWalkArgs(k, pred, f.vecWalkArgs(w, args))
+		}
 	case shapeCount:
 		incl := false
 		if w, ok := recogniseCountLoopInv(loopName, vars, body, inv); ok {

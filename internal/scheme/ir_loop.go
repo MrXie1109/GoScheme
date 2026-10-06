@@ -73,6 +73,15 @@ type vecWalk struct {
 	idxParm *Symbol
 	endParm *Symbol
 	accParm *Symbol
+	// vecExpr and endExpr are the expressions to evaluate for the vector and
+	// the bound.  When the body names a parameter these are the parameter
+	// itself, and the emitter reads it straight off the argument; when it names
+	// something else — a vector from an enclosing scope, or a literal bound —
+	// they are that expression and the emitter evaluates it once, before the
+	// loop.  Both are loop invariants, which is what makes evaluating them once
+	// correct rather than merely convenient.
+	vecExpr Value
+	endExpr Value
 	kind    loopKind
 	pred    predKind
 }
@@ -379,9 +388,36 @@ func (f *irFunc) emitListWalk(w listWalk, formals []*Symbol) {
 // The element arrives as `(vector-ref VEC IDX)`, which is the vector's
 // counterpart of `(car LIST)` and is why the walks below can share the
 // accumulator arithmetic with the list ones.
+//
+// **The bound and the vector need not be parameters**, and that is the whole
+// difference between recognising the loop people write and recognising only the
+// loop they would have to be told to write.  The four-parameter form
+//
+//	(define (vsum v i end acc) (if (= i end) acc (vsum v (+ i 1) end ...)))
+//
+// is what this accepted at first, and almost nobody writes it.  What they write
+// is
+//
+//	(define (sum i acc)
+//	  (if (= i 1000) acc (sum (+ i 1) (+ acc (vector-ref v i)))))
+//
+// with the bound a literal and the vector closed over, which used to be refused
+// at three separate checks and so compiled to nothing at all.  Both are now
+// recognised: the index and the accumulator must be parameters (they are what
+// the recursion advances, so there is nowhere else for them to come from), while
+// the vector and the bound are expressions evaluated once before the loop.
+//
+// Evaluating them once is sound because both are invariants.  A vector and a
+// length do not change while the loop runs, and if one of them named a
+// procedure with an effect that effect would happen once here against once per
+// element in the interpreter — so anything not obviously invariant is refused
+// rather than assumed.  See vecInvariant.
 func recogniseVecWalk(name string, formals []*Symbol, body []Value) (vecWalk, bool) {
 	var none vecWalk
-	if len(formals) != 4 || len(body) != 1 {
+	if len(formals) != 4 && len(formals) != 2 {
+		return none, false
+	}
+	if len(body) != 1 {
 		return none, false
 	}
 	// Find the four parameters by the roles they play.
@@ -408,12 +444,15 @@ func recogniseVecWalk(name string, formals []*Symbol, body []Value) (vecWalk, bo
 	if !ok {
 		return none, false
 	}
-	endSym, ok := testArgs[1].(*Symbol)
-	if !ok || endSym.Name == idxSym.Name {
+	if !hasParam(formals, idxSym) {
+		return none, false
+	}
+	endExpr := testArgs[1]
+	if s, ok := endExpr.(*Symbol); ok && s.Name == idxSym.Name {
 		return none, false
 	}
 	accSym, ok := then.(*Symbol)
-	if !ok || accSym.Name == idxSym.Name || accSym.Name == endSym.Name {
+	if !ok || accSym.Name == idxSym.Name || !hasParam(formals, accSym) {
 		return none, false
 	}
 
@@ -427,30 +466,141 @@ func recogniseVecWalk(name string, formals []*Symbol, body []Value) (vecWalk, bo
 		return none, false
 	}
 	callArgs, _ := ListToSlice(callForm.Cdr)
-	if len(callArgs) != 4 {
-		return none, false
-	}
-	vecSym, ok := callArgs[0].(*Symbol)
-	if !ok {
-		return none, false
-	}
-	// The index advances by one and nothing else.
-	if !isPlusOne(callArgs[1], idxSym) {
-		return none, false
-	}
-	if !isSameSymbol(callArgs[2], endSym) {
-		return none, false
-	}
-	kind, pred, ok := classifyVecFold(callArgs[3], accSym, vecSym, idxSym)
-	if !ok {
-		return none, false
-	}
-	for _, s := range []*Symbol{vecSym, idxSym, endSym, accSym} {
-		if !hasParam(formals, s) {
+	// Two spellings of the same loop, and the difference is only where the
+	// vector and the bound come from.
+	//
+	// Four arguments is the explicit one, where both are parameters passed
+	// along on every step:
+	//
+	//	(define (vsum v i end acc)
+	//	  (if (= i end) acc (vsum v (+ i 1) end (+ acc (vector-ref v i)))))
+	//
+	// Two is what people actually write, with the vector closed over and the
+	// bound a literal:
+	//
+	//	(define (sum i acc)
+	//	  (if (= i 1000) acc (sum (+ i 1) (+ acc (vector-ref v i)))))
+	//
+	// The index and the accumulator are the two that must be parameters either
+	// way: they are what the recursion advances, so they have nowhere else to
+	// come from.  The vector and the bound are read from wherever the body
+	// names them.
+	var vecExpr, endArg, foldExpr Value
+	// endParm is set only for the four-parameter spelling, where the bound is a
+	// parameter the emitter can read straight off the activation.
+	var endParm *Symbol
+	switch len(callArgs) {
+	case 4:
+		vecExpr, endArg, foldExpr = callArgs[0], callArgs[2], callArgs[3]
+		if !isPlusOne(callArgs[1], idxSym) {
 			return none, false
 		}
+		// The bound in the recursive call must be the same expression the test
+		// compares against, so that the loop counts to a fixed place.
+		if !sameExpr(endArg, endExpr) {
+			return none, false
+		}
+		endParm, _ = endArg.(*Symbol)
+	case 2:
+		if !isPlusOne(callArgs[0], idxSym) {
+			return none, false
+		}
+		foldExpr = callArgs[1]
+		// The vector comes from the element expression, which is the only place
+		// it is named when it is not a parameter.
+		vecExpr = vecRefSubject(foldExpr, idxSym)
+		if vecExpr == nil {
+			return none, false
+		}
+	default:
+		return none, false
 	}
-	return vecWalk{name: name, vecParm: vecSym, idxParm: idxSym, endParm: endSym, accParm: accSym, kind: kind, pred: pred}, true
+	vecSym, _ := vecExpr.(*Symbol)
+	if vecSym == nil {
+		return none, false
+	}
+	kind, pred, ok := classifyVecFold(foldExpr, accSym, vecSym, idxSym)
+	if !ok {
+		return none, false
+	}
+	// Both must be safe to evaluate once, outside the loop.
+	if !vecInvariant(vecExpr, formals) || !vecInvariant(endExpr, formals) {
+		return none, false
+	}
+	return vecWalk{
+		name: name, idxParm: idxSym, accParm: accSym,
+		vecParm: vecSym, endParm: endParm, vecExpr: vecExpr,
+		endExpr: endExpr, kind: kind, pred: pred,
+	}, true
+}
+
+// vecRefSubject returns the vector an element expression reads from.
+//
+// It is how the 2-argument spelling of a vector walk says which vector it walks:
+// the vector is not passed as an argument, so the `(vector-ref v i)` inside the
+// fold is the only place it appears.  The fold is the whole combining
+// expression — `(+ acc (vector-ref v i))` — so this looks at the shapes a fold
+// can take and returns the subject of the one `vector-ref` in it, or nil when
+// there is no such reference or more than one.
+func vecRefSubject(fold Value, idx *Symbol) Value {
+	switch v := fold.(type) {
+	case *Pair:
+		if isForm(v, "vector-ref") {
+			args, _ := ListToSlice(v.Cdr)
+			if len(args) == 2 && isSameSymbol(args[1], idx) {
+				return args[0]
+			}
+			return nil
+		}
+		// A combination: every argument is searched, and exactly one subject
+		// must be found.  Two references to different vectors in one fold is
+		// not a shape this can emit, and returning the first would walk the
+		// wrong one.
+		var found Value
+		args, _ := ListToSlice(v.Cdr)
+		for _, a := range args {
+			s := vecRefSubject(a, idx)
+			if s == nil {
+				continue
+			}
+			if found != nil {
+				return nil
+			}
+			found = s
+		}
+		return found
+	}
+	return nil
+}
+
+// vecInvariant reports whether an expression may be evaluated once, before a
+// recognised vector walk, rather than at every element.
+//
+// The walk runs in Go, so the vector and the bound cross the boundary once.  A
+// vector and a length are the same at every element, so once is the right
+// number of times — but only for an expression whose value cannot change and
+// whose evaluation cannot be observed.  What is accepted is a name (a local, a
+// parameter or a global) and a literal, because a global read has no effect and
+// a literal has no cost at all.
+//
+// What is refused is any call.  `(vector-length v)` inside the loop would be
+// evaluated once here and once per element in the interpreter; for that
+// particular call nothing can tell the difference, but the rule cannot know
+// that in general without a cost model and an effect analysis it does not have,
+// and a loop that ran a user's procedure one time instead of a thousand is a
+// wrong answer rather than a slow one.  Refusing costs a walk that is merely
+// not accelerated, which is the failure this compiler prefers.
+func vecInvariant(e Value, formals []*Symbol) bool {
+	switch v := e.(type) {
+	case *Symbol:
+		// A name.  Parameters as well as locals and globals: a parameter is not
+		// invariant across the loop, but it is not re-evaluated either — the
+		// emitter reads it off the activation — so it is safe here.
+		return v.Name != ""
+	case *Integer, *Float, *Rational, *String, *Char, Boolean:
+		return true
+	}
+	return isQuoted(e)
 }
 
 // listCar is the expression (car LIST), which is the element a list walk folds.
@@ -582,19 +732,26 @@ func runVecWalk(kind int, pred predKind, vec, from, end, acc Value) Value {
 //
 // The four arguments and the kind are handed over together; RunVecWalk does the
 // counting, so nothing crosses per element.
+//
+// The vector and the bound are evaluated here, once, in the scope the walk sits
+// in — which is what lets a walk name a vector from an enclosing let or a
+// literal bound instead of having to take both as parameters.  The index and
+// the accumulator are read off the activation, because they are parameters of
+// the procedure being emitted and reading them costs nothing.
 func (f *irFunc) emitVecWalk(w vecWalk, formals []*Symbol) {
 	f.want(gsVal + " @gs_vecwalk(i32, i32, " + gsVal + "*)")
-	slot := f.allocaArray(4)
-	params := []*Symbol{w.vecParm, w.idxParm, w.endParm, w.accParm}
-	for i, p := range params {
-		f.storeArg(slot, i, irVal{
-			bits: "%p_" + p.Name + ".bits",
-			tag:  "%p_" + p.Name + ".tag",
-		})
+	vecVal, err := f.emitExpr(w.vecExpr)
+	if err != nil {
+		return
 	}
-	out := f.reg()
-	fmt.Fprintf(&f.body, "  %s = call %s @gs_vecwalk(i32 %d, i32 %d, %s* %s)\n",
-		out, gsVal, int(w.kind), int(w.pred), gsVal, slot)
-	f.listWalkDone = true
-	f.listWalkVal = f.loadVal(out)
+	endVal, err := f.emitExpr(w.endExpr)
+	if err != nil {
+		return
+	}
+	f.emitVecWalkArgs(w.kind, w.pred, []irVal{
+		vecVal,
+		{bits: "%p_" + w.idxParm.Name + ".bits", tag: "%p_" + w.idxParm.Name + ".tag"},
+		endVal,
+		{bits: "%p_" + w.accParm.Name + ".bits", tag: "%p_" + w.accParm.Name + ".tag"},
+	})
 }

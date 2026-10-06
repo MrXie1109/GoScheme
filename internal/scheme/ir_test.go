@@ -185,13 +185,23 @@ func TestIRPartiallyCompilableBodies(t *testing.T) {
 //
 // The rule is narrow on purpose, and this test pins both halves of that: what it
 // refuses, and what it must not refuse even though the gain is small.
+//
+// One case moved from the first half to the second.  A loop folding
+// `(vector-ref v i)` into an accumulator used to be refused here, because the
+// compiler generated the ordinary recursive body and crossed the boundary for
+// every element.  It is now recognised as a vector walk and emitted as one call
+// into the runtime, which measured 10.5× the interpreter over 10 million
+// elements, so refusing it would now be the mistake — see the second list.
 func TestIRABodyThatIsOnlyACallIsNotCompiled(t *testing.T) {
 	for _, tc := range []struct{ name, src string }{
 		{"a body that only displays", `(define (f n) (display n))`},
 		{"a body that only calls out with no arguments", `(define (f) (newline))`},
 		{"a counter around a call", `(define (f i acc) (if (= i 0) acc (f (- i 1) (string-append acc "x"))))`},
-		{"an accumulator fed only by a call", `(define (f i acc) (if (= i 0) acc (f (+ i 1) (+ acc (vector-ref v i)))))`},
 		{"arithmetic whose only operand is a call's result", `(define (f n) (+ n (string-length "hello")))`},
+		// A vector walk whose bound is a call is refused: the bound would be
+		// evaluated once here and once per element in the interpreter, and a
+		// rule without an effect analysis cannot know that is safe.
+		{"a vector walk bound by a call", `(define (f i acc) (if (= i (vector-length v)) acc (f (+ i 1) (+ acc (vector-ref v i)))))`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p, err := CompileToIR(tc.src, "test")
@@ -212,6 +222,12 @@ func TestIRABodyThatIsOnlyACallIsNotCompiled(t *testing.T) {
 		{"arithmetic with no runtime call at all", `(define (f n) (+ n 1))`},
 		{"an accumulator beside a call", `(define (f i acc) (if (= i 0) acc (f (- i 1) (+ acc i))))`},
 		{"arithmetic beside a call it does not feed", `(define (f n) (begin (display n) (* n n)))`},
+		// The case that moved here from the list above.  A vector walk is one
+		// call into the runtime for the whole loop, so it is not "a body whose
+		// only work is a call" — the call replaces the loop rather than
+		// happening inside it.
+		{"a vector walk with a literal bound", `(define (f i acc) (if (= i 1000) acc (f (+ i 1) (+ acc (vector-ref v i)))))`},
+		{"a vector walk with the bound as a parameter", `(define (f v i end acc) (if (= i end) acc (f v (+ i 1) end (+ acc (vector-ref v i)))))`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p, err := CompileToIR(tc.src, "test")
@@ -637,5 +653,41 @@ func TestIRTheModuleIsReproducible(t *testing.T) {
 		if again.IR != first.IR {
 			t.Fatalf("run %d emitted a different module; the output is not reproducible", i+1)
 		}
+	}
+}
+
+// TestIRAVectorWalkIsActuallyEmitted pins the difference between recognising a
+// walk and emitting one.
+//
+// The two spellings of a vector walk take different numbers of parameters, and
+// the emitter used to require the four-parameter one in the argument list it
+// was handed.  For the two-parameter spelling that list has two entries, so the
+// guard `len(args) != 4` returned without emitting anything — while the
+// recogniser had already reported the walk, so the caller skipped the ordinary
+// body and emitted a function that returned the accumulator unchanged.  The
+// loop was recognised, not emitted, and compiled anyway.
+//
+// The check is on the module text, because that is where the difference is
+// visible: a recognised walk calls gs_vecwalk once for the whole loop, and the
+// buggy version called nothing and recursed per element instead.
+func TestIRAVectorWalkIsActuallyEmitted(t *testing.T) {
+	for _, tc := range []struct{ name, src string }{
+		{"the two-parameter spelling",
+			`(define (f i acc) (if (= i 1000) acc (f (+ i 1) (+ acc (vector-ref v i)))))`},
+		{"the four-parameter spelling",
+			`(define (f v i end acc) (if (= i end) acc (f v (+ i 1) end (+ acc (vector-ref v i)))))`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := CompileToIR(tc.src, "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p.Native != 1 {
+				t.Fatalf("the walk was not compiled: %v", p.Refused)
+			}
+			if !strings.Contains(p.IR, "call %gs.val @gs_vecwalk") {
+				t.Error("the walk was recognised but no gs_vecwalk call was emitted")
+			}
+		})
 	}
 }
