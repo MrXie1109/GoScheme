@@ -45,6 +45,9 @@ type IRProgram struct {
 	// because "why is this program not fast" is usually answered by it.
 	Native  int
 	Runtime int
+	// Refused is one line per procedure that was not compiled natively, saying
+	// what stopped it.
+	Refused []string
 }
 
 // CompileToIR reads a script and generates a native program for it.
@@ -64,7 +67,12 @@ func CompileToIR(source, name string) (*IRProgram, error) {
 	if err := g.program(forms); err != nil {
 		return nil, err
 	}
-	return &IRProgram{IR: g.module.String(), Native: g.native, Runtime: g.runtime}, nil
+	return &IRProgram{
+		IR:      g.module.String(),
+		Native:  g.native,
+		Runtime: g.runtime,
+		Refused: g.refused,
+	}, nil
 }
 
 // irGen holds the state of one generation.
@@ -72,6 +80,13 @@ type irGen struct {
 	module  *irModule
 	native  int
 	runtime int
+	// pure holds the procedures that can be compiled natively, by name, and is
+	// what the dependency order is computed from.
+	pure map[string]*pureProc
+	// refused records the procedures that were not compiled natively, and why.
+	// It is what `--emit-llvm` explains and what a user asking "why is this
+	// slow" needs.
+	refused []string
 }
 
 // ---------------------------------------------------------------------------
@@ -195,6 +210,90 @@ func (g *irGen) program(forms []Value) error {
 	body.WriteString("entry:\n")
 	fmt.Fprintf(&body, "  call void @gs_init(i32 %%argc, i8** %%argv)\n")
 
+	// A top-level (define (name args...) body...) whose body is a pure
+	// computation is compiled to a native function *as well*: the form is still
+	// handed to the runtime, so that a program which looks the name up at run
+	// time finds it, and the native body is what a direct call reaches.
+	//
+	// "As well" is what makes this safe without analysing the whole program:
+	// the runtime definition is the same procedure, so a native call and an
+	// interpreted call agree by construction, and a body the scan refuses is
+	// simply not emitted.
+	//
+	// The functions are emitted in dependency order, and that is a requirement
+	// rather than tidiness: LLVM wants a function defined before the first call
+	// to it, and a forward declaration is not an option — declaring a function
+	// that is later defined is a redefinition error.  So `fact` is written
+	// before whatever calls it, and a cycle (two procedures that call each
+	// other) is refused rather than emitted in an order LLVM will reject.
+	g.pure = map[string]*pureProc{}
+	var order []string
+	for _, form := range forms {
+		name, formals, body, ok := topLevelProcedure(form)
+		if !ok {
+			continue
+		}
+		r := pureBodyNamed(name, formals, body)
+		if !r.ok {
+			g.refused = append(g.refused, name+": "+r.why)
+			continue
+		}
+		g.pure[name] = &pureProc{name: name, formals: formals, body: body, calls: r.calls}
+	}
+	// A procedure whose callee is not itself native cannot be compiled: its
+	// body would call something that is not there.  Dropping them can cascade,
+	// so it is done until nothing changes.
+	for changed := true; changed; {
+		changed = false
+		for name, p := range g.pure {
+			for _, c := range p.calls {
+				if _, ok := g.pure[c]; !ok {
+					g.refused = append(g.refused, name+": it calls "+c+", which is not compiled natively")
+					delete(g.pure, name)
+					changed = true
+					break
+				}
+			}
+		}
+	}
+	// Dependency order, with a cycle refused.
+	state := map[string]int{}
+	var visit func(name string) bool
+	visit = func(name string) bool {
+		switch state[name] {
+		case 1:
+			return false // a cycle
+		case 2:
+			return true
+		}
+		state[name] = 1
+		for _, c := range g.pure[name].calls {
+			if _, ok := g.pure[c]; ok && !visit(c) {
+				return false
+			}
+		}
+		state[name] = 2
+		order = append(order, name)
+		return true
+	}
+	for name := range g.pure {
+		if !visit(name) {
+			g.refused = append(g.refused, name+": it is part of a cycle of native procedures")
+			delete(g.pure, name)
+			// The order built so far may hold functions that depended on it;
+			// rebuilding from scratch is simpler than unpicking it.
+			order = nil
+			state = map[string]int{}
+		}
+	}
+	for _, name := range order {
+		p := g.pure[name]
+		if err := g.emitPureFunction(p.name, p.formals, p.body, p.calls); err != nil {
+			// Not a reason to fail the compile: the procedure runs, it just
+			// runs interpreted.
+			g.refused = append(g.refused, name+": "+err.Error())
+		}
+	}
 	for i, form := range forms {
 		src := WriteToString(form)
 		lit := m.stringLiteral(src, fmt.Sprintf("form%d", i))
@@ -251,4 +350,12 @@ func llvmEscape(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// pureProc is a procedure the scan accepted, waiting to be emitted.
+type pureProc struct {
+	name    string
+	formals []*Symbol
+	body    []Value
+	calls   []string
 }
