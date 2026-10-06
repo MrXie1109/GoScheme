@@ -97,6 +97,11 @@ type pureReport struct {
 	// globals are the names this body reads that are not its parameters, and so
 	// have to be read from the runtime.
 	globals []string
+	// nativeOps counts the operations this body does in machine code: the
+	// arithmetic and comparisons that are the reason to compile it at all.
+	// Together with runtimeCalls it decides whether compiling is worth doing;
+	// see worthCompiling.
+	nativeOps int
 	// known is the set of other procedures in the program that are candidates
 	// for native compilation.  A call to one of them is allowed — whether it
 	// ends up native is settled later, when the call graph is closed — while a
@@ -240,6 +245,9 @@ func (r *pureReport) scanCombination(x *Pair, local map[string]bool) {
 			}
 		}
 		if pureOperator(head.Name) {
+			// The operations worth compiling for, counted so that a body made
+			// only of calls out can be recognised and left alone.
+			r.nativeOps += len(args)
 			return
 		}
 		if isSelf {
@@ -359,6 +367,19 @@ type irFunc struct {
 	// its own name, which a recursive call names.
 	calls []string
 	self  string
+	// tail is true while the expression being emitted is in tail position: its
+	// value is the value of the whole function, so a call there can be a jump
+	// rather than a call.
+	//
+	// This is not an optimization here, it is the language.  R7RS requires
+	// proper tail calls, and the interpreter and the bytecode VM both provide
+	// them, so a compiled loop that grew the stack per iteration would be a
+	// program that segfaults instead of one that runs — which is what happened
+	// before this existed.
+	tail bool
+	// tailReturned is set when a tail call has already left the function by
+	// jumping, so that the emitter does not write a return after it.
+	tailReturned bool
 }
 
 // want declares a runtime function the body being emitted needs.  Declaring it
@@ -421,19 +442,32 @@ func (g *irGen) emitPureFunction(name string, formals []*Symbol, body []Value, c
 	// redefinition error — which `opt -passes=verify` said the first time this
 	// was tried, and is the reason the check is part of the build below.
 
+	// The body is in tail position: whatever it evaluates to is what the
+	// function returns, so a call at the end of it can be a jump.
+	f.tail = true
 	val, err := f.emitExpr(Cons(Intern("begin"), listFromSlice(body)))
 	if err != nil {
 		return err
 	}
-	// The result is boxed before the body is flushed, because boxing emits
-	// instructions into it: `insertvalue` is an instruction like any other, and
-	// a register it defines has to appear before the `ret` that uses it.
-	boxed := val.bits0(f)
+	// A tail call has already returned, by jumping — an ordinary `ret` after it
+	// would be unreachable, and LLVM rejects a `musttail` that is not followed
+	// immediately by a return.  So the return is written only when the body
+	// finished some other way.
+	tailReturned := f.tailReturned
+	f.tailReturned = false
+	var boxed string
+	if !tailReturned {
+		boxed = val.bits0(f)
+	}
 	var out strings.Builder
 	out.WriteString(sig.String())
 	out.WriteString(f.entry.String())
 	out.WriteString(f.body.String())
-	fmt.Fprintf(&out, "  ret %s %s\n}\n\n", gsVal, boxed)
+	if tailReturned {
+		out.WriteString("  unreachable\n}\n\n")
+	} else {
+		fmt.Fprintf(&out, "  ret %s %s\n}\n\n", gsVal, boxed)
+	}
 	g.module.body.WriteString(out.String())
 	g.native++
 	return nil
@@ -545,10 +579,17 @@ func (f *irFunc) emitForm(x *Pair) (irVal, error) {
 	args, _ := ListToSlice(x.Cdr)
 	switch head.Name {
 	case "begin":
+		// Only the last part is in tail position: the earlier ones are evaluated
+		// for their effect and their values are discarded.
 		var last irVal
 		var err error
-		for _, a := range args {
+		for i, a := range args {
+			saved := f.tail
+			if i != len(args)-1 {
+				f.tail = false
+			}
 			last, err = f.emitExpr(a)
+			f.tail = saved
 			if err != nil {
 				return irVal{}, err
 			}
@@ -626,39 +667,87 @@ func (f *irFunc) emitIf(args []Value) (irVal, error) {
 	endLabel := f.freshLabel("endif")
 	fmt.Fprintf(&f.body, "  br i1 %s, label %%%s, label %%%s\n", cond, thenLabel, elseLabel)
 
+	// An arm that ends in a tail call has left the function, so it has no value
+	// to bring to the join — and must not be named as a predecessor of the phi
+	// there, because it does not branch to it.  Each arm is therefore recorded
+	// only if it arrived.
+	type arm struct {
+		val  irVal
+		from string
+	}
+	var arms []arm
+
 	f.block(thenLabel)
-	thenVal, err := f.emitExpr(args[1])
+	armVal, armFrom, returned, err := f.emitArm(args, 1, f.tail)
 	if err != nil {
 		return irVal{}, err
 	}
-	// The value may have been computed in a block other than the one the arm
-	// started in, so the phi has to name where the value really comes from.
-	thenFrom := f.currentBlock
-	fmt.Fprintf(&f.body, "  br label %%%s\n", endLabel)
+	if !returned {
+		fmt.Fprintf(&f.body, "  br label %%%s\n", endLabel)
+		arms = append(arms, arm{armVal, armFrom})
+	}
 
 	f.block(elseLabel)
-	// With no else arm the result is unspecified, and #f is as good a stand-in
-	// as any: no accepted body can observe it, because reaching here means the
-	// test was false and the body would have had to branch on it again.
-	elseVal := fixnumVal(0)
-	elseFrom := f.currentBlock
 	if len(args) > 2 {
-		elseVal, err = f.emitExpr(args[2])
+		var elseVal irVal
+		var elseFrom string
+		var elseReturned bool
+		elseVal, elseFrom, elseReturned, err = f.emitArm(args, 2, f.tail)
 		if err != nil {
 			return irVal{}, err
 		}
-		elseFrom = f.currentBlock
+		if !elseReturned {
+			fmt.Fprintf(&f.body, "  br label %%%s\n", endLabel)
+			arms = append(arms, arm{elseVal, elseFrom})
+		}
+	} else {
+		// With no else arm the result is unspecified, and #f is as good a
+		// stand-in as any: no accepted body can observe it, because reaching here
+		// means the test was false and the body would have had to branch on it
+		// again.
+		fmt.Fprintf(&f.body, "  br label %%%s\n", endLabel)
+		arms = append(arms, arm{fixnumVal(0), f.currentBlock})
 	}
-	fmt.Fprintf(&f.body, "  br label %%%s\n", endLabel)
 
 	f.block(endLabel)
+	if len(arms) == 0 {
+		// Both arms returned, so nothing reaches the join: it is unreachable and
+		// the function is finished.  An `unreachable` there is what tells LLVM
+		// so, and the value it returns is never used.
+		f.body.WriteString("  unreachable\n")
+		f.tailReturned = true
+		return irVal{bits: "0", tag: tagFixnum}, nil
+	}
+	if len(arms) == 1 {
+		// One arm returned and the other did not, so there is nothing to join:
+		// the surviving arm's value is the result.  A phi with one entry would
+		// be legal but pointless, and the register is what the caller wants.
+		return arms[0].val, nil
+	}
 	bits := f.reg()
 	fmt.Fprintf(&f.body, "  %s = phi i64 [ %s, %%%s ], [ %s, %%%s ]\n",
-		bits, thenVal.bits, thenFrom, elseVal.bits, elseFrom)
+		bits, arms[0].val.bits, arms[0].from, arms[1].val.bits, arms[1].from)
 	tag := f.reg()
 	fmt.Fprintf(&f.body, "  %s = phi i64 [ %s, %%%s ], [ %s, %%%s ]\n",
-		tag, thenVal.tag, thenFrom, elseVal.tag, elseFrom)
+		tag, arms[0].val.tag, arms[0].from, arms[1].val.tag, arms[1].from)
 	return irVal{bits: bits, tag: tag}, nil
+}
+
+// emitArm emits one arm of an if, given the index of the part to emit, and
+// reports the value, the block it ended in, and whether a tail call has already
+// left the function from there.
+func (f *irFunc) emitArm(args []Value, i int, tail bool) (irVal, string, bool, error) {
+	saved := f.tail
+	f.tail = tail
+	f.tailReturned = false
+	v, err := f.emitExpr(args[i])
+	returned := f.tailReturned
+	f.tail = saved
+	f.tailReturned = false
+	if err != nil {
+		return irVal{}, "", false, err
+	}
+	return v, f.currentBlock, returned, nil
 }
 
 // emitAndOr emits and/or, which return the value that decided them rather than
@@ -684,7 +773,12 @@ func (f *irFunc) emitAndOr(args []Value, isAnd bool) (irVal, error) {
 	tagSlot := f.alloca()
 	endLabel := f.freshLabel("andor.end")
 	for i, a := range args {
+		andSaved := f.tail
+		if i != len(args)-1 {
+			f.tail = false
+		}
 		v, err := f.emitExpr(a)
+		f.tail = andSaved
 		if err != nil {
 			return irVal{}, err
 		}
@@ -750,10 +844,17 @@ func (f *irFunc) emitLet(args []Value, sequential bool) (irVal, error) {
 		// value is held aside and bound after all of them are computed.
 		f.locals[name.Name] = val
 	}
+	// As with begin, only the last part of a let body is in tail position.
+	body := args[1:]
 	var last irVal
 	var err error
-	for _, b := range args[1:] {
+	for i, b := range body {
+		bodySaved := f.tail
+		if i != len(body)-1 {
+			f.tail = false
+		}
 		last, err = f.emitExpr(b)
+		f.tail = bodySaved
 		if err != nil {
 			return irVal{}, err
 		}
@@ -799,14 +900,23 @@ func (f *irFunc) reg() string {
 // what makes it safe to compile a procedure natively without proving anything
 // about the size of its values.
 func (f *irFunc) emitCall(op string, args []Value) (irVal, error) {
+	// The arguments are not in tail position, even when the call is: their
+	// values are needed *by* this call, so a call of their own has to return
+	// rather than jump.  Leaving the flag set let `(square (square x))` emit the
+	// inner call as the tail call and return from there, so the outer one never
+	// ran — a wrong answer, not a slow one.
+	outerTail := f.tail
 	vals := make([]irVal, 0, len(args))
 	for _, a := range args {
+		f.tail = false
 		v, err := f.emitExpr(a)
+		f.tail = outerTail
 		if err != nil {
 			return irVal{}, err
 		}
 		vals = append(vals, v)
 	}
+	f.tail = outerTail
 	// The operators are inlined, so their arity is checked here rather than by
 	// the runtime that would otherwise catch it.  A call to anything else may
 	// have any number of arguments, including none — `(newline)` is a call like
@@ -917,20 +1027,28 @@ func (f *irFunc) emitCall(op string, args []Value) (irVal, error) {
 // emitRuntimeCall calls a procedure the runtime owns, by name.
 //
 // The arguments are boxed to cross the boundary and the result is read back,
-// which is the same translation every other runtime entry point does.  Looking
-// the procedure up by name on every call is the cost of not knowing at compile
-// time what it is; it is a map lookup, and the alternative — refusing the body
-// — gives up the machine code around the call as well.
+// which is the same translation every other runtime entry point does.  What is
+// worth more care is finding the procedure: a call site is inside a loop as
+// often as not, and resolving the name on every iteration costs a string
+// conversion, a symbol interning and an environment walk each time.
+//
+// So each call site owns a slot, initially null, in which the runtime caches
+// what the name resolved to.  The lookup happens once per site rather than once
+// per call, and a body that calls `string-append` in a loop pays for the
+// arguments and the call and nothing else.  The slot is per site and not per
+// name because a program may rebind a global between two sites, and each site
+// has to see the binding in effect when it first runs.
 func (f *irFunc) emitRuntimeCall(op string, vals []irVal) (irVal, error) {
-	f.want(gsVal + " @gs_call(i8*, i64, " + gsVal + "*)")
+	f.want(gsVal + " @gs_call(i8*, i64, " + gsVal + "*, i64*)")
 	name := f.mod.stringLiteral(op, "call"+op)
+	cache := f.allocaPtr()
 	slot := f.allocaArray(len(vals))
 	for i, v := range vals {
 		f.storeArg(slot, i, v)
 	}
 	out := f.reg()
-	fmt.Fprintf(&f.body, "  %s = call %s @gs_call(i8* %s, i64 %d, %s* %s)\n",
-		out, gsVal, name, len(vals), gsVal, slot)
+	fmt.Fprintf(&f.body, "  %s = call %s @gs_call(i8* %s, i64 %d, %s* %s, i64* %s)\n",
+		out, gsVal, name, len(vals), gsVal, slot, cache)
 	return f.loadVal(out), nil
 }
 
@@ -985,6 +1103,26 @@ func (f *irFunc) emitNativeCall(op string, vals []irVal) (irVal, error) {
 	slot := f.allocaArray(len(vals))
 	for i, v := range vals {
 		f.storeArg(slot, i, v)
+	}
+	// In tail position the call is a jump: `musttail` tells LLVM the frame can
+	// be reused, which is what makes a loop written as recursion run in constant
+	// stack, as R7RS says it must.  LLVM enforces the claim rather than trusting
+	// it — a `musttail` it cannot honour is an error, not a silent ordinary
+	// call — so a mistake here fails the build instead of the program.
+	//
+	// `tail` alone would be a hint LLVM may ignore, and a hint is not a
+	// guarantee: the loop below overflowed the stack with `tail`.
+	if f.tail {
+		// `musttail` has to be followed immediately by the `ret` that gives its
+		// value back — LLVM is strict about this, and a branch in between is an
+		// error rather than a missed optimization.  So the return is written
+		// here, and the emitter marks the function as already returned.
+		out := f.reg()
+		fmt.Fprintf(&f.body, "  %s = musttail call %s @%s(i64 %d, %s* %s)\n",
+			out, gsVal, mangle(op), len(vals), gsVal, slot)
+		fmt.Fprintf(&f.body, "  ret %s %s\n", gsVal, out)
+		f.tailReturned = true
+		return irVal{bits: "0", tag: tagFixnum}, nil
 	}
 	out := f.reg()
 	fmt.Fprintf(&f.body, "  %s = call %s @%s(i64 %d, %s* %s)\n",
@@ -1180,6 +1318,20 @@ func (f *irFunc) emitCompare(op string, a, b irVal) (string, error) {
 	if pred == "" {
 		return "", fmt.Errorf("ir: %s is not a comparison", op)
 	}
+	// Both operands are known to be machine words, so the machine comparison is
+	// the whole answer and there is nothing to branch for.
+	//
+	// This matters more than it looks.  A tag that is a literal zero is the
+	// common case — every value a compiled body computes locally is one — and
+	// emitting the runtime path anyway put a call to gs_num_eq and a call to
+	// gs_truthy inside the loop of `(define (loop i acc) (if (= i 0) ...))`.
+	// The optimizer could not remove them, because the tag arrives through a phi
+	// and it cannot prove which branch reaches the test.
+	if a.tag == tagFixnum && b.tag == tagFixnum {
+		fast := f.reg()
+		fmt.Fprintf(&f.body, "  %s = icmp %s i64 %s, %s\n", fast, pred, a.bits, b.bits)
+		return f.zext(fast), nil
+	}
 	fast := f.reg()
 	fmt.Fprintf(&f.body, "  %s = icmp %s i64 %s, %s\n", fast, pred, a.bits, b.bits)
 
@@ -1329,6 +1481,18 @@ func (f *irFunc) alloca() string {
 	f.nextSlot++
 	name := fmt.Sprintf("%%slot%d", f.nextSlot)
 	fmt.Fprintf(&f.entry, "  %s = alloca i64\n", name)
+	f.slots = append(f.slots, name)
+	return name
+}
+
+// allocaPtr makes a slot holding one integer, which a call site uses to cache
+// what its name resolved to: a handle into the runtime's value table, or zero
+// for "not resolved yet".
+func (f *irFunc) allocaPtr() string {
+	f.nextSlot++
+	name := fmt.Sprintf("%%cache%d", f.nextSlot)
+	fmt.Fprintf(&f.entry, "  %s = alloca i64\n", name)
+	fmt.Fprintf(&f.entry, "  store i64 0, i64* %s\n", name)
 	f.slots = append(f.slots, name)
 	return name
 }

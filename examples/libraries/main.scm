@@ -10,7 +10,7 @@
 ;;;
 ;;; (lib greet) is read from lib/greet.sld next to this file, and (lib namer)
 ;;; imports it in turn.  See ../README.md for the search path rules, and for how
-;;; `goscheme build -static` turns this into one file that needs no library at
+;;; `goscheme pack -static` turns this into one file that needs no library at
 ;;; all.
 
 (import (scheme base) (scheme write)

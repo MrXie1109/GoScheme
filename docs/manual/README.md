@@ -9,7 +9,8 @@ languages:
 
 It covers, in order: running the interpreter · the language in one page ·
 numbers · data and text · concurrency · I/O and the operating system ·
-performance · embedding and `goscheme build` · pitfalls · where to go next.
+performance · embedding, `goscheme pack` and `goscheme compile` · pitfalls ·
+where to go next.
 
 Every example in it was run against the interpreter, and the `; =>` comments
 are what it printed.

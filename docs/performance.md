@@ -386,10 +386,13 @@ Two things in that table deserve to be said plainly rather than left in the
 numbers.
 
 **Most rows are ~1.0×, and that is the hybrid working as designed, not a
-failure.**  `locals` and `closures` have nothing the compiler can take — their
-bodies use a named `let`, a `closure`, a `set!` — so the program is entirely
-interpreted while *appearing* to be compiled.  A compiled program whose
-procedures were all refused is an interpreter with a 19 MB runtime attached.
+failure.**  `closures` has nothing the compiler can take: its one procedure
+returns a `lambda`, which is a refused form.  `locals` has a body whose only
+computation is wrapped around a *named* `let` — a `letrec`-shaped form the scan
+does not accept — so nothing in it compiles either.  Both are therefore entirely
+interpreted while *appearing* to be compiled — and a compiled program whose
+procedures were all refused is an interpreter with a 19 MB runtime attached,
+which is why the `native` column is in the table at all.
 
 **Two rows are genuinely slower, and the reason is worth writing down.**
 `strings` (0.44×) and `vectors` (0.68×) do their real work in library calls and

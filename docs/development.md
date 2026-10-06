@@ -21,6 +21,38 @@ what you need.
 The reference suite needs the chibi-scheme test shim, which is in the
 repository (`test/scheme/chibi/test.scm`), so no network is required.
 
+## The native compiler
+
+`goscheme compile` emits LLVM IR, runs `opt`, runs `llc`, and links the object
+against the runtime archive built from `re/` — so testing the native path needs a
+toolchain the Go tests are not allowed to require, and it lives in two Makefile
+targets rather than in `go test`:
+
+```sh
+make check-compile     # compile a program, run it, diff against the interpreter
+make check-llvm        # stop after the IR and assemble it with llvm-as
+```
+
+`check-compile` is the one that matters, and the comparison is the whole point:
+a generated module can be well-formed, verify cleanly, and still compute
+something else — or be dead code that nothing ever calls, which is a failure mode
+that inspecting the IR cannot catch. What is checked is the output of a program
+that ran.
+
+What that needs installed is `opt` and `llc` (the LLVM tools, on `PATH`) and a C
+compiler (`cc`, or `gcc` on Windows); `make check-llvm` also wants `llvm-as`.
+None of them is a Go test dependency, so a checkout without them still runs
+`make test` in full — it is only these two targets that fail, with the
+toolchain's own message naming the missing program. The runtime archive is built
+on demand with `go build -buildmode=c-archive`, which needs **cgo**, and it is
+cached under the user's cache directory keyed to the interpreter's own build, so
+a stale archive is never linked against a newer compiler.
+
+The compiler only targets the host, which is why it is not wired into `make dist`:
+the six release binaries are the *interpreter*, cross-compiled as before, and a
+program that wants machine code is compiled on the machine it will run on. See
+[docs/compile.md](compile.md) for what it accepts and refuses.
+
 ## Releasing
 
 **CI does it.**  Pushing a `v*` tag runs the test matrix on five native runners
@@ -78,10 +110,24 @@ real runner.
 * `internal/scheme/` — the interpreter, one file per area, and `b_*.go` for the
   libraries.  `b_srfi*.go` are the SRFI libraries, `b_fast*.go` is
   `(goscheme fast)`.
+* `internal/scheme/compile.go` and `vm.go` are the bytecode compiler and the VM
+  that runs a file; `ir.go` and `ir_pure.go` are the LLVM generator and the
+  pure-body scan; `pack.go` is the packed-source round trip; `re.go` builds and
+  finds the runtime archive.
+* `re/` — the GoScheme Runtime Environment, compiled to a C archive that a
+  native program links against.  It is a separate package because
+  `-buildmode=c-archive` needs a `main`, and because the boundary between "the
+  runtime a compiled program links" and "the interpreter this process runs" is
+  worth having a name.
+* `bench/` — the C, Python and Guile counterparts of the twelve workloads, plus
+  `run.sh` (interpreter against them) and `run-native.sh` (compiler against
+  interpreter).
 * `test/scheme/` — one suite per area plus its `run-*.scm` driver; a suite is
   registered in `internal/scheme/scheme_test.go`.
 * `docs/extensions/`, `docs/srfi/` — one reference page per library; a test
   fails if a library exports a name its page does not mention.
+* `docs/compile.md` — the native compiler's design and limits, written down
+  because a limit that is not documented is a bug report waiting to happen.
 * `docs/manual/` — the bilingual guide.
 
 When adding a library: write the Go or embedded-Scheme source, register it in

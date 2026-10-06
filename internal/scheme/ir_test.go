@@ -410,3 +410,59 @@ func TestIRProgramKeepsEveryForm(t *testing.T) {
 		t.Errorf("evaluated %d of 3 top-level forms:\n%s", got, ir)
 	}
 }
+
+// TestIRTailCallsAreJumps checks that a call in tail position is emitted as a
+// jump rather than a call.
+//
+// This is not an optimization, it is the language: R7RS requires proper tail
+// calls, and both the interpreter and the bytecode VM provide them.  A compiled
+// loop written as recursion must not grow the stack, and before this the
+// generated code did exactly that — a loop of 90000 iterations segfaulted where
+// the interpreter returned the right answer, so a program that worked
+// interpreted crashed when compiled.
+func TestIRTailCallsAreJumps(t *testing.T) {
+	ir := irFor(t, `(define (loop i acc) (if (= i 0) acc (loop (- i 1) (+ acc i))))`)
+	if !strings.Contains(ir, "musttail call %gs.val @gs_lam_loop(") {
+		t.Errorf("the recursive call is not a tail call:\n%s", ir)
+	}
+	// `musttail` has to be followed immediately by the return that gives its
+	// value back: LLVM rejects the module otherwise, so this is what keeps the
+	// claim honest rather than a hint that can be ignored.
+	if !strings.Contains(ir, "musttail call") {
+		return
+	}
+	idx := strings.Index(ir, "musttail call")
+	rest := ir[idx:]
+	end := strings.Index(rest, "\n  ret ")
+	if end < 0 {
+		t.Errorf("a musttail call is not followed by a ret:\n%s", ir)
+	}
+	// Nothing but the return may sit between the call and the ret.
+	if between := rest[:end]; strings.Contains(between, "\n  br ") ||
+		strings.Contains(between, "\n  store ") {
+		t.Errorf("something runs between the musttail call and its ret:\n%s", between)
+	}
+}
+
+// TestIRTailCallArgumentsAreNotTailCalls checks the bug that made the wrong
+// answer look like a working program.
+//
+// The arguments of a call are needed *by* that call, so a call among them must
+// return rather than jump.  With the tail flag left set, `(square (square x))`
+// emitted the inner call as the tail call and returned straight from it, so the
+// outer square never ran: `(fourth 100000000000)` printed 10^22 where the
+// interpreter printed 10^44, and nothing about the module looked wrong.
+func TestIRTailCallArgumentsAreNotTailCalls(t *testing.T) {
+	ir := irFor(t, `(define (square x) (* x x))
+(define (fourth x) (square (square x)))`)
+	body := ir[strings.Index(ir, "define %gs.val @gs_lam_fourth("):]
+	body = body[:strings.Index(body, "\n}\n")]
+	// The outer call is the tail call; the inner one must be an ordinary call,
+	// which means the body contains both forms.
+	if !strings.Contains(body, "musttail call %gs.val @gs_lam_square(") {
+		t.Errorf("the outer call is not a tail call:\n%s", body)
+	}
+	if !strings.Contains(body, "= call %gs.val @gs_lam_square(") {
+		t.Errorf("the inner call was emitted as a tail call, so it never returns:\n%s", body)
+	}
+}

@@ -1796,3 +1796,76 @@ func TestNoSourceNamesTheOldSubcommand(t *testing.T) {
 		}
 	}
 }
+
+// TestCompiledTailCallsDoNotGrowTheStack checks the language guarantee that a
+// loop written as tail recursion runs in constant stack.
+//
+// R7RS requires proper tail calls, and both other engines provide them, so a
+// compiled program that segfaults on a loop the interpreter runs is not a
+// performance problem — it is a program that does not work.  That was the case
+// until the generated code started emitting `musttail`: about 87000 iterations
+// was the ceiling, and the failure was a crash with no message.
+//
+// The count is deliberately far past that ceiling, and the value it computes is
+// checked because a stack that does not grow is only half of it.
+func TestCompiledTailCallsDoNotGrowTheStack(t *testing.T) {
+	if testing.Short() {
+		t.Skip("compile shells out to opt, llc and cc")
+	}
+	requireToolchain(t)
+
+	dir := t.TempDir()
+	src := filepath.Join(dir, "tail.scm")
+	// 2,000,000 iterations: n(n+1)/2, which is past a machine word's worth of
+	// iterations by two orders of magnitude and still an exact integer here.
+	program := `(define (loop i acc) (if (= i 0) acc (loop (- i 1) (+ acc i))))
+(display (loop 2000000 0))
+(newline)`
+	if err := os.WriteFile(src, []byte(program), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const want = "2000001000000\n"
+	if got := runScriptFile(t, src); got != want {
+		t.Fatalf("the interpreter printed %q, want %q", got, want)
+	}
+	bin := filepath.Join(dir, "tail")
+	if code := compileToNative(src, bin, "2", false, false); code != 0 {
+		t.Fatalf("compiling failed with code %d", code)
+	}
+	if got := runNative(t, bin); got != want {
+		t.Errorf("the compiled program printed %q, want %q", got, want)
+	}
+}
+
+// TestCompiledTailCallKeepsEveryArgumentEager checks that a tail call still
+// evaluates every argument before jumping.
+//
+// A tail call reuses the frame, and doing that too eagerly is how an argument
+// that is itself a call gets skipped: `(square (square x))` emitted the *inner*
+// call as the tail call, returned from there, and never ran the outer one — so
+// `(fourth 100000000000)` printed 10^22 where 10^44 was right.  The module was
+// well-formed and the program ran, which is what made it worth a test.
+func TestCompiledTailCallKeepsEveryArgumentEager(t *testing.T) {
+	if testing.Short() {
+		t.Skip("compile shells out to opt, llc and cc")
+	}
+	requireToolchain(t)
+
+	dir := t.TempDir()
+	src := filepath.Join(dir, "nest.scm")
+	program := `(define (square x) (* x x))
+(define (fourth x) (square (square x)))
+(display (fourth 100000000000))
+(newline)`
+	if err := os.WriteFile(src, []byte(program), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want := "100000000000000000000000000000000000000000000\n"
+	bin := filepath.Join(dir, "nest")
+	if code := compileToNative(src, bin, "2", false, false); code != 0 {
+		t.Fatalf("compiling failed with code %d", code)
+	}
+	if got := runNative(t, bin); got != want {
+		t.Errorf("the compiled program printed %q, want %q", got, want)
+	}
+}

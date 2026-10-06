@@ -3,7 +3,7 @@
 Small, runnable programs that show what this Scheme does.  Most of the language
 is R7RS-small, so the interesting part is where it goes beyond the report: a Go
 flavoured concurrency library, hash tables, running other programs, and the
-`goscheme build` packaging step.
+`goscheme pack` packaging step.
 
 Every example is a normal script, and each one prints what it is doing, so they
 are meant to be read as much as run.
@@ -69,17 +69,18 @@ root, from its own directory, or by absolute path from anywhere.
 
 ## Turning one into a single executable
 
-`goscheme build` binds a script to a copy of the interpreter, and `-static` also
+`goscheme pack` binds a script to a copy of the interpreter, and `-static` also
 folds in every library and `include` it needs, so the result runs where none of
 those files exist:
 
 ```console
-$ goscheme build -static examples/libraries/main.scm -o hello
+$ goscheme pack -static examples/libraries/main.scm -o hello
 $ cd / && /path/to/hello
 hello from a library, world
 ```
 
 Without `-static`, the executable still reads its libraries from disk at run
 time, which is what you want while developing them.  See the README in the
-repository root for the full `build` story, and `docs/ffi-design.md` for why
+repository root for the full `pack` story and for `goscheme compile`, which turns
+the same script into machine code instead, and `docs/ffi-design.md` for why
 calling into C is the one thing these binaries deliberately do not do.

@@ -17,7 +17,7 @@
 ;;; ------------------------------------------------------------ command-line
 ;; The first element is the script, and the rest are the arguments that were
 ;; given to it.  The interpreter's own name is deliberately *not* in the list,
-;; so a script and an executable built from it with `goscheme build` report the
+;; so a script and an executable built from it with `goscheme pack` report the
 ;; same shape, and (cdr (command-line)) is always just the user's arguments.
 (show "command line:" (command-line))
 (show "the script itself:" (car (command-line)))

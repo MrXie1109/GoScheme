@@ -2,7 +2,7 @@
 
 这里是可以直接运行的小程序，用来展示这门 Scheme 的特色。语言主体是
 R7RS-small，所以真正有意思的地方是超出报告的部分：Go 风格的并发库、哈希表、
-调用外部程序，以及 `goscheme build` 这个打包步骤。
+调用外部程序，以及 `goscheme pack` 这个打包步骤。
 
 每个示例都是普通脚本，运行时会把自己在做什么打印出来，所以它们既是给你跑的，
 也是给你读的。
@@ -66,15 +66,15 @@ $ GOSCHEME=./dist/goscheme-linux-amd64 ./examples/run-all.sh
 
 ## 把脚本变成单个可执行文件
 
-`goscheme build` 把脚本和一份解释器绑在一起；加上 `-static` 还会把它需要的每个库
+`goscheme pack` 把脚本和一份解释器绑在一起；加上 `-static` 还会把它需要的每个库
 和 `include` 都内联进去，于是产物在那些文件都不存在的地方照样能跑：
 
 ```console
-$ goscheme build -static examples/libraries/main.scm -o hello
+$ goscheme pack -static examples/libraries/main.scm -o hello
 $ cd / && /path/to/hello
 hello from a library, world
 ```
 
 不加 `-static` 时，可执行文件仍在运行时从磁盘读取库——开发库的时候这正是你想要的。
-`build` 的完整说明见仓库根目录的 README；至于为什么这些二进制**故意**不能调用 C，
-见 `docs/ffi-design.md`。
+`pack` 的完整说明见仓库根目录的 README，那里也有 `goscheme compile`——它把同一份脚本
+变成机器码；至于为什么这些二进制**故意**不能调用 C，见 `docs/ffi-design.md`。

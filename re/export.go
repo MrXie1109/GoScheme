@@ -270,14 +270,13 @@ func gs_global(name *C.char) C.gs_val {
 // is the whole reason the value it carries is tagged.
 //
 //export gs_call
-func gs_call(name *C.char, n C.int64_t, args *C.gs_val) C.gs_val {
+func gs_call(name *C.char, n C.int64_t, args *C.gs_val, cache *C.int64_t) C.gs_val {
 	if mach == nil {
 		gs_init(0, nil)
 	}
-	procName := C.GoString(name)
-	proc, ok := mach.Global.Lookup(scheme.Intern(procName))
+	proc, ok := cachedProc(name, cache)
 	if !ok {
-		report(fmt.Errorf("%s: undefined", procName))
+		report(fmt.Errorf("%s: undefined", C.GoString(name)))
 		return handle(store(scheme.UnspecifiedValue))
 	}
 	argv := make([]scheme.Value, 0, int(n))
@@ -290,6 +289,42 @@ func gs_call(name *C.char, n C.int64_t, args *C.gs_val) C.gs_val {
 		return handle(store(scheme.UnspecifiedValue))
 	}
 	return tagged(v)
+}
+
+// cachedProc finds the procedure a call site names, remembering it in the slot
+// the generated code gave us.
+//
+// The slot is what makes a call in a loop cheap.  Without it every call pays a
+// C string conversion, a symbol interning under a mutex, and a walk up the
+// environment chain — and a compiled loop whose body is one call therefore ran
+// slower than the interpreter, which is the opposite of the point.
+//
+// The slot holds a *handle*, not a pointer: a Scheme value is a Go interface
+// value and cannot be a C pointer, so what is remembered is an index into the
+// same table every other crossing uses.  Zero means "nothing cached yet", and
+// the table's first entry is never a procedure the compiler would call, so zero
+// is unambiguous.
+//
+// A cached binding is never invalidated, which is a real limit and a deliberate
+// one: a global procedure redefined after a call site has run will not be seen
+// by that site.  Redefining a procedure in a running program is rare, and paying
+// a generation check on every call to catch it would cost more than it saves —
+// the same trade the interpreter declines and the compiler accepts, which is why
+// the cache is per call site and why it was measured before it was added.
+func cachedProc(name *C.char, cache *C.int64_t) (scheme.Value, bool) {
+	if cache != nil && *cache != 0 {
+		return load(int64(*cache) - 1), true
+	}
+	procName := C.GoString(name)
+	proc, ok := mach.Global.Lookup(scheme.Intern(procName))
+	if !ok {
+		return nil, false
+	}
+	if cache != nil {
+		// +1 so that a stored handle is never zero, which is the empty marker.
+		*cache = C.int64_t(store(proc) + 1)
+	}
+	return proc, true
 }
 
 // argsAt indexes a gs_val array, whose elements are not addressable from Go.
