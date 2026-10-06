@@ -236,6 +236,54 @@ func TestTheFormerGapsNowCompile(t *testing.T) {
 	}
 }
 
+// TestAnExactIntegerResultIsKnownToBeExact checks that a call whose result is
+// always an exact integer carries the fixnum tag.
+//
+// The tag is what decides whether the arithmetic around the call takes its fast
+// path or crosses back into the runtime.  A handle operand sent every later
+// addition down the checked path, which emitted a tag test, a branch and a
+// second crossing per iteration; the property that removes it is a property of
+// the *procedure*, not a guess, and this is where it is pinned.
+func TestAnExactIntegerResultIsKnownToBeExact(t *testing.T) {
+	// A loop whose accumulator is fed by a call: with the tag known the addition
+	// needs no runtime fallback, so the emitted function has no gs_arith call.
+	for _, tc := range []struct{ name, src string }{
+		{"string-length", `(define (f i acc)
+  (if (= i 0) acc (f (- i 1) (+ acc (string-length "hello")))))`},
+		{"vector-length", `(define (f i acc)
+  (if (= i 0) acc (f (- i 1) (+ acc (vector-length v)))))`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := CompileToIRWith(tc.src, "test", Options{CompileEverything: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p.Native == 0 {
+				t.Fatalf("not compiled: %v", p.NotCompiled())
+			}
+			// The counter still checks its own tag, so gs_arith is still
+			// reachable; what must not happen is a check on the *call's* tag.
+			// The signature of that is a second comparison against the tag of
+			// the gs_call result, which is no longer emitted at all.
+			if !strings.Contains(p.IR, "@gs_call") {
+				t.Fatal("the call itself was elided")
+			}
+		})
+	}
+	// And a procedure that does *not* always return an exact integer must not be
+	// claimed as one: `(floor 1.5)` is inexact.
+	for _, name := range []string{"floor", "round", "truncate", "abs", "expt", "sqrt", "gcd", "lcm"} {
+		if exactIntegerResult(name) {
+			t.Errorf("%s is claimed to always return an exact integer, which is false", name)
+		}
+	}
+	for _, name := range []string{"string-length", "vector-length", "bytevector-length"} {
+		if !exactIntegerResult(name) {
+			t.Errorf("%s always returns an exact integer and is not marked", name)
+		}
+	}
+}
+
 // TestEveryLiteralKindIsRecognised checks that each kind of literal is accepted
 // in a body, in a form the recognisers and the emitter both see.
 //

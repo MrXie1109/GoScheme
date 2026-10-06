@@ -1038,7 +1038,17 @@ func (f *irFunc) emitRuntimeCall(op string, vals []irVal) (irVal, error) {
 	out := f.reg()
 	fmt.Fprintf(&f.body, "  %s = call %s @gs_call(i8* %s, i64 %d, %s* %s, i64* %s)\n",
 		out, gsVal, name, len(vals), gsVal, slot, cache)
-	return f.loadVal(out), nil
+	res := f.loadVal(out)
+	if exactIntegerResult(op) {
+		// The result is an exact integer whatever the argument was, so when it
+		// fits a machine word the runtime has already tagged it as a fixnum —
+		// `tagged` checks exactly that — and the tag the call returned is the
+		// fixnum tag.  Saying so here rather than extracting it lets every
+		// later arithmetic operation take its fast path with no tag test and no
+		// second crossing.  See exactIntegerResult.
+		res.tag = tagFixnum
+	}
+	return res, nil
 }
 
 // emitGlobalRead reads a top-level binding by name.
