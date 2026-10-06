@@ -36,6 +36,7 @@ func runCompile(args []string) int {
 	optLevel := "2"
 	keepTemps := false
 	explain := false
+	staticLink := false
 
 	for i := 0; i < len(args); i++ {
 		switch a := args[i]; a {
@@ -55,6 +56,11 @@ func runCompile(args []string) int {
 			keepTemps = true
 		case "--explain":
 			explain = true
+		case "--static", "-static":
+			// Link the runtime into the program rather than against the shared
+			// library. Eight megabytes instead of kilobytes, and nothing to
+			// ship beside it: the default is shared, so this is the opt-in.
+			staticLink = true
 		case "-O0", "-O1", "-O2", "-O3":
 			optLevel = a[2:]
 		case "-h", "--help":
@@ -77,7 +83,7 @@ func runCompile(args []string) int {
 		compileUsage(os.Stderr)
 		return 2
 	}
-	return compileToNative(scriptPath, out, optLevel, emitLLVM, keepTemps, explain)
+	return compileToNative(scriptPath, out, optLevel, emitLLVM, keepTemps, explain, staticLink)
 }
 
 func compileUsage(w *os.File) {
@@ -90,8 +96,17 @@ func compileUsage(w *os.File) {
 	fmt.Fprintln(w, "  -o, --output FILE  where to write the executable (default: a.out)")
 	fmt.Fprintln(w, "  --emit-llvm, -S    write the LLVM IR instead of building anything")
 	fmt.Fprintln(w, "  -O0..-O3           optimisation level passed to opt (default: -O2)")
+	fmt.Fprintln(w, "  --static           link the runtime into the program")
 	fmt.Fprintln(w, "  --keep-temps       keep the intermediate .ll and .o files")
 	fmt.Fprintln(w, "  --explain          list every procedure left to the interpreter, and why")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "The runtime is linked as a shared library by default, so the program holds")
+	fmt.Fprintln(w, "only its own machine code — a few kilobytes rather than the several")
+	fmt.Fprintln(w, "megabytes the interpreter takes.  It needs that library at run time, and the")
+	fmt.Fprintln(w, "program is linked with an rpath pointing at it, so it runs where it was")
+	fmt.Fprintln(w, "built; to move it elsewhere, copy the library beside it or set")
+	fmt.Fprintln(w, "LD_LIBRARY_PATH.  --static links the runtime in instead, for a program that")
+	fmt.Fprintln(w, "has to run on a machine where the library is not installed.")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "The compiler takes the procedures whose bodies are pure computations and")
 	fmt.Fprintln(w, "leaves the rest to the interpreter, so a program usually comes out part")
@@ -140,7 +155,7 @@ func reportSplit(w io.Writer, prog *scheme.IRProgram, explain bool) {
 }
 
 // compileToNative runs the LLVM pipeline over a script.
-func compileToNative(scriptPath, out, optLevel string, emitLLVM, keepTemps, explain bool) int {
+func compileToNative(scriptPath, out, optLevel string, emitLLVM, keepTemps, explain, staticLink bool) int {
 	abs, err := filepath.Abs(scriptPath)
 	if err != nil {
 		abs = scriptPath
@@ -188,7 +203,7 @@ func compileToNative(scriptPath, out, optLevel string, emitLLVM, keepTemps, expl
 			out = "a.exe"
 		}
 	}
-	if err := buildNative(prog, abs, out, optLevel, keepTemps); err != nil {
+	if err := buildNative(prog, abs, out, optLevel, keepTemps, staticLink); err != nil {
 		fmt.Fprintf(os.Stderr, "goscheme compile: %v\n", err)
 		return 1
 	}
@@ -197,7 +212,7 @@ func compileToNative(scriptPath, out, optLevel string, emitLLVM, keepTemps, expl
 
 // buildNative takes generated IR the rest of the way: opt, llc, and the link
 // against the runtime library.
-func buildNative(prog *scheme.IRProgram, scriptPath, out, optLevel string, keepTemps bool) error {
+func buildNative(prog *scheme.IRProgram, scriptPath, out, optLevel string, keepTemps, staticLink bool) error {
 	dir, err := os.MkdirTemp("", "goscheme-compile-")
 	if err != nil {
 		return err
@@ -225,11 +240,25 @@ func buildNative(prog *scheme.IRProgram, scriptPath, out, optLevel string, keepT
 
 	// The link: the object, then the runtime library, then whatever the
 	// platform needs beside it.
-	lib, err := scheme.RuntimeLibraryPath()
+	//
+	// The runtime is shared by default, so the program carries only its own
+	// machine code — kilobytes rather than the eight megabytes the interpreter
+	// costs.  -static links the runtime in instead, for a program that has to
+	// run on a machine where the library is not installed.
+	kind := scheme.RuntimeShared
+	if staticLink {
+		kind = scheme.RuntimeStatic
+	}
+	lib, err := scheme.RuntimeLibraryPath(kind)
 	if err != nil {
 		return err
 	}
-	linkArgs := append([]string{objPath, lib, "-o", out}, scheme.RuntimeLinkFlags()...)
+	libDir := ""
+	if kind == scheme.RuntimeShared {
+		libDir = filepath.Dir(lib)
+	}
+	linkArgs := append([]string{objPath, lib, "-o", out},
+		scheme.RuntimeLinkFlags(kind, libDir)...)
 	if err := runTool(scheme.RuntimeLinker(), linkArgs...); err != nil {
 		return err
 	}

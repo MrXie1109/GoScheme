@@ -175,18 +175,48 @@ happen.
   compiled code is synchronous — it has no frame to resume into — so a
   continuation captured inside such a call cannot outlive it. The procedures the
   compiler accepts are ones that cannot contain `call/cc`.
-- **A big binary.** The linked program carries the interpreter and the Go
-  runtime: roughly 8 MB, against 8 MB for a packed script. The two are close
-  because both are mostly the same interpreter, and the runtime archive the
-  compiler links is built with `-s -w` — without it the archive was 27 MB rather
-  than 10 MB and every compiled program was 18 MB, since the linker discards
-  debug sections it was not asked to keep and they were being carried to it
-  anyway.
+- **A big binary, unless it is linked dynamically.** By default the runtime is a
+  shared library and a compiled program is **about 16 KB**: it holds its own
+  machine code and nothing else, and several programs on one machine share one
+  copy of the interpreter. `--static` links the runtime in instead and gives
+  about 8 MB — the same as a packed script, because both are mostly the same
+  interpreter — for a program that has to run where the library is not
+  installed. See §8.
 - **No inlining across the boundary, no type inference, no unboxing beyond the
   fixnum case.** Each of these would be a project of its own, and each would risk
   the correctness property in §1.
 
-## 8. Checking the work
+## 8. Linking: shared by default, static on request
+
+The runtime is the interpreter, and it is several megabytes. Whether a program
+carries it is the difference between 16 KB and 8 MB:
+
+| | program | needs at run time |
+| --- | --- | --- |
+| default (`-buildmode=c-shared`) | ~16 KB | `libgoscheme.so` in the cache, found by rpath |
+| `--static` (`-buildmode=c-archive`) | ~8 MB | nothing |
+
+Both libraries are built on demand and cached under the user's cache directory,
+keyed to the build flags, so switching modes does not reuse the other one's
+library. Both are built with `-s -w`: without it the archive was 27 MB rather
+than 10 MB, and because a shared library is *loaded* rather than linked, the
+debug information would be paid for on every load instead of discarded once.
+
+**The rpath is what makes a shared program runnable.** The link records the
+cache directory, so a program runs where it was built. Moving it elsewhere means
+either putting the library where the loader looks or telling the loader where it
+is: `LD_LIBRARY_PATH` on Linux, `DYLD_LIBRARY_PATH` on macOS. Copying the
+library beside the program is enough on Windows, which searches the program's
+own directory, and is *not* enough on Linux, which does not — the rpath has to
+say so. A missing library is a load-time error naming it, not a silent
+misbehaviour.
+
+The static form is what the release notes and the older documentation describe,
+and it is the right choice for one program shipped to a machine that has no
+GoScheme on it. The shared form is the right default for someone building and
+running programs in place, which is what `goscheme compile` is usually for.
+
+## 9. Checking the work
 
 The property that matters is not "the generated IR is well-formed" but "the
 compiled program computes what the interpreter computes". The tests are built

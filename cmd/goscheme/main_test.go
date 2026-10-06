@@ -1583,7 +1583,7 @@ func TestCompileProducesARunningProgram(t *testing.T) {
 		t.Fatal(err)
 	}
 	bin := filepath.Join(dir, "prog")
-	if code := compileToNative(src, bin, "2", false, false, false); code != 0 {
+	if code := compileToNative(src, bin, "2", false, false, false, false); code != 0 {
 		t.Fatalf("compiling failed with code %d", code)
 	}
 	if _, err := os.Stat(bin); err != nil {
@@ -1675,7 +1675,7 @@ func TestCompiledProgramAgreesWithTheInterpreter(t *testing.T) {
 				t.Fatalf("the interpreter printed %q, want %q", got, tc.want)
 			}
 			bin := filepath.Join(dir, "prog")
-			if code := compileToNative(src, bin, "2", false, false, false); code != 0 {
+			if code := compileToNative(src, bin, "2", false, false, false, false); code != 0 {
 				t.Fatalf("compiling failed with code %d", code)
 			}
 			if got := runNative(t, bin); got != tc.want {
@@ -1698,7 +1698,7 @@ func TestCompileEmitLLVMStopsBeforeTheToolchain(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := filepath.Join(dir, "prog.ll")
-	if code := compileToNative(src, out, "2", true, false, false); code != 0 {
+	if code := compileToNative(src, out, "2", true, false, false, false); code != 0 {
 		t.Fatalf("--emit-llvm failed with code %d", code)
 	}
 	ir, err := os.ReadFile(out)
@@ -1830,7 +1830,7 @@ func TestCompiledTailCallsDoNotGrowTheStack(t *testing.T) {
 		t.Fatalf("the interpreter printed %q, want %q", got, want)
 	}
 	bin := filepath.Join(dir, "tail")
-	if code := compileToNative(src, bin, "2", false, false, false); code != 0 {
+	if code := compileToNative(src, bin, "2", false, false, false, false); code != 0 {
 		t.Fatalf("compiling failed with code %d", code)
 	}
 	if got := runNative(t, bin); got != want {
@@ -1863,7 +1863,7 @@ func TestCompiledTailCallKeepsEveryArgumentEager(t *testing.T) {
 	}
 	want := "100000000000000000000000000000000000000000000\n"
 	bin := filepath.Join(dir, "nest")
-	if code := compileToNative(src, bin, "2", false, false, false); code != 0 {
+	if code := compileToNative(src, bin, "2", false, false, false, false); code != 0 {
 		t.Fatalf("compiling failed with code %d", code)
 	}
 	if got := runNative(t, bin); got != want {
@@ -1946,7 +1946,7 @@ func TestCompiledListWalkAgreesWithTheInterpreter(t *testing.T) {
 				t.Fatalf("the interpreter printed %q, want %q", got, tc.want)
 			}
 			bin := filepath.Join(dir, "prog")
-			if code := compileToNative(src, bin, "2", false, false, false); code != 0 {
+			if code := compileToNative(src, bin, "2", false, false, false, false); code != 0 {
 				t.Fatalf("compiling failed with code %d", code)
 			}
 			if got := runNative(t, bin); got != tc.want {
@@ -2011,7 +2011,7 @@ func TestCompiledTopLevelCallKeepsLaterForms(t *testing.T) {
 		t.Fatalf("the interpreter printed %q, want %q", got, want)
 	}
 	bin := filepath.Join(dir, "prog")
-	if code := compileToNative(src, bin, "2", false, false, false); code != 0 {
+	if code := compileToNative(src, bin, "2", false, false, false, false); code != 0 {
 		t.Fatalf("compiling failed with code %d", code)
 	}
 	if got := runNative(t, bin); got != want {
@@ -2060,5 +2060,65 @@ func TestTheREPLCanInterruptALoopThatNeverEnds(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("cancelled within 100ms and still running after 5s: the loop is not interruptible")
+	}
+}
+
+// TestCompileLinksTheRuntimeBothWays checks the two link modes end to end, and
+// the sizes are the reason it exists.
+//
+// The default links the runtime as a shared library, so a program is kilobytes
+// and needs libgoscheme on the machine.  `-static` links it in, so a program is
+// megabytes and needs nothing.  Both have to work, and the difference has to be
+// real: a `-static` that quietly produced a shared program, or a default that
+// quietly produced a static one, would look fine in every other test and cost
+// either a ten-megabyte binary per program or a program that does not start on
+// a machine without the library.
+func TestCompileLinksTheRuntimeBothWays(t *testing.T) {
+	if testing.Short() {
+		t.Skip("compile shells out to opt, llc and cc")
+	}
+	requireToolchain(t)
+
+	dir := t.TempDir()
+	src := filepath.Join(dir, "prog.scm")
+	if err := os.WriteFile(src, []byte("(display (+ 20 22))\n(newline)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const want = "42\n"
+
+	shared := filepath.Join(dir, "shared")
+	if code := compileToNative(src, shared, "2", false, false, false, false); code != 0 {
+		t.Fatalf("the default (shared) link failed with code %d", code)
+	}
+	if got := runNative(t, shared); got != want {
+		t.Errorf("the shared program printed %q, want %q", got, want)
+	}
+
+	static := filepath.Join(dir, "static")
+	if code := compileToNative(src, static, "2", false, false, false, true); code != 0 {
+		t.Fatalf("the static link failed with code %d", code)
+	}
+	if got := runNative(t, static); got != want {
+		t.Errorf("the static program printed %q, want %q", got, want)
+	}
+
+	sharedInfo, err := os.Stat(shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staticInfo, err := os.Stat(static)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A wide margin rather than a byte count, because the exact size depends on
+	// the platform's linker and the machine code the compiler emitted.  What is
+	// being checked is that one carries the runtime and the other does not.
+	if sharedInfo.Size() >= staticInfo.Size() {
+		t.Errorf("the shared program (%d bytes) is not smaller than the static one (%d bytes)",
+			sharedInfo.Size(), staticInfo.Size())
+	}
+	if sharedInfo.Size() > 1<<20 {
+		t.Errorf("the shared program is %d bytes, so it is carrying the runtime anyway",
+			sharedInfo.Size())
 	}
 }

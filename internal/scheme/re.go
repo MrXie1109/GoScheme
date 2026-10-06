@@ -14,112 +14,148 @@ import (
 	"strings"
 )
 
-// RuntimeLibraryPath returns the path of the runtime archive a compiled program
-// links against, building it if it is not there yet.
+// RuntimeKind is how a compiled program is linked against the runtime.
+type RuntimeKind int
+
+const (
+	// RuntimeShared links against a shared library, and the program carries
+	// only its own machine code.  This is the default: a compiled program is a
+	// few kilobytes instead of eight megabytes, and several programs on one
+	// machine share one copy of the interpreter.  The library has to be
+	// findable at run time, which RuntimeSharedLibraryDir reports.
+	RuntimeShared RuntimeKind = iota
+	// RuntimeStatic links the runtime into the program, which then needs
+	// nothing but itself.  It is what `-static` asks for: eight megabytes per
+	// program, and no library to ship beside it.
+	RuntimeStatic
+)
+
+// RuntimeLibraryPath returns the path of the runtime library a compiled program
+// links against, building it if it is not there yet, for the given kind.
 //
-// The archive is this package compiled as a C archive: `go build
-// -buildmode=c-archive`, which produces a static library and a header.  It is
-// built on demand and cached beside the executable, because it is several
-// megabytes and rebuilding it per compilation would be wasteful — but it is
-// keyed to the interpreter's own build, so that a program is never linked
-// against a runtime that does not match the compiler that generated it.
-func RuntimeLibraryPath() (string, error) {
-	dir, err := runtimeCacheDir()
+// The library is this module's `re` package built by the Go tool:
+// `-buildmode=c-shared` for the shared form and `-buildmode=c-archive` for the
+// static one.  Both are built on demand and cached, because each takes seconds
+// and several megabytes, and rebuilding per compilation would be wasteful.
+//
+// The cache is keyed to the build arguments, so changing them produces a
+// different directory rather than reusing a library built the old way.  See
+// runtimeCacheDir.
+func RuntimeLibraryPath(kind RuntimeKind) (string, error) {
+	dir, err := runtimeCacheDir(kind)
 	if err != nil {
 		return "", err
 	}
-	lib := filepath.Join(dir, runtimeLibName())
+	lib := filepath.Join(dir, runtimeLibName(kind))
 	if _, err := os.Stat(lib); err == nil {
 		return lib, nil
 	}
-	if err := buildRuntimeArchive(dir); err != nil {
+	if err := buildRuntimeLibrary(dir, kind); err != nil {
 		return "", err
 	}
 	return lib, nil
 }
 
-// runtimeLibName is the archive's name on this platform.
-func runtimeLibName() string {
-	if runtime.GOOS == "windows" {
+// runtimeLibName is the library's file name on this platform.
+//
+// Windows names a shared library .dll rather than .so, and there is no
+// import-library story here, so the static archive is what a Windows build
+// gets; see runtimeArchiveBuildArgs.
+func runtimeLibName(kind RuntimeKind) string {
+	if kind == RuntimeStatic {
 		return "libgoscheme.a"
 	}
-	return "libgoscheme.a"
+	switch runtime.GOOS {
+	case "darwin":
+		return "libgoscheme.dylib"
+	case "windows":
+		return "libgoscheme.dll"
+	default:
+		return "libgoscheme.so"
+	}
 }
 
+// RuntimeSharedLibraryDir is the directory the shared runtime library lives in,
+// which a linked program has to be able to find at run time.
+//
+// It is exported because a program linked against the shared runtime needs it:
+// either on LD_LIBRARY_PATH, or compiled into the program as an rpath, or
+// copied next to the program.  `goscheme compile` sets an rpath pointing here,
+// and this is how a caller learns where that is.
+func RuntimeSharedLibraryDir() (string, error) { return runtimeCacheDir(RuntimeShared) }
+
 // runtimeCacheDir is where the runtime archive is kept: under the user's cache
-// directory, so that two checkouts do not fight over one file and a read-only
-// installation still works.
-// runtimeCacheDir is the directory a built runtime archive is cached in.
+// runtimeCacheDir is the directory a built runtime library is cached in:
+// under the user's cache directory, so that two checkouts do not fight over
+// one file and a read-only installation still works.
 //
-// The name carries a stamp for the flags the archive is built with, because the
-// cache previously had no key at all: it was one fixed path, and the comment
-// above claimed it was "keyed to the interpreter's own build" while nothing was
-// checking.  That is the kind of claim that is worse than none, because it
-// stops the next person looking — an archive built before a flag was added
-// stayed, and a program compiled afterwards was silently linked against the
-// older runtime.
+// The name carries a stamp for how the library is built, because the cache
+// previously had no key at all: it was one fixed path, and the comment called it
+// "keyed to the interpreter's own build" while nothing was checking.  That is
+// the kind of claim that is worse than none, because it is what stops the next
+// person looking — an archive built before a flag was added stayed, and a
+// program compiled afterwards was silently linked against the older runtime.
 //
-// Stamping the flags is enough to make the cache honest about them.  It does
-// not make it react to a source change, which needs the module to be rebuilt
-// rather than relinked; `goscheme compile` after an edit to the interpreter is
-// the case to keep in mind, and the answer there is to remove the directory.
-func runtimeCacheDir() (string, error) {
+// Stamping the build makes the cache honest about the flags.  It does not make
+// it react to a source change, which needs the module rebuilt rather than
+// relinked; `goscheme compile` after editing the interpreter is the case to
+// keep in mind, and the answer there is to remove the directory.
+func runtimeCacheDir(kind RuntimeKind) (string, error) {
 	base, err := os.UserCacheDir()
 	if err != nil {
 		base = os.TempDir()
 	}
-	dir := filepath.Join(base, "goscheme", "runtime-"+runtimeCacheStamp())
+	dir := filepath.Join(base, "goscheme", "runtime-"+runtimeCacheStamp(kind))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
 	return dir, nil
 }
 
-// runtimeCacheStamp identifies the way the archive is built, so that changing
-// the flags produces a different cache directory rather than a stale archive.
-func runtimeCacheStamp() string {
-	sum := sha256.Sum256([]byte(strings.Join(runtimeArchiveBuildArgs(), "\x00")))
+// runtimeCacheStamp identifies the way a library of this kind is built, so that
+// changing the flags produces a different cache directory rather than a stale
+// library.
+func runtimeCacheStamp(kind RuntimeKind) string {
+	args := strings.Join(runtimeBuildArgs(kind), "\x00")
+	sum := sha256.Sum256([]byte(args))
 	return hex.EncodeToString(sum[:6])
 }
 
-// runtimeArchiveBuildArgs is the command the archive is built with, in one
-// place so that the stamp above cannot describe flags the build does not use.
+// runtimeBuildArgs is the command a runtime library is built with, in one place
+// so that the stamp cannot describe flags the build does not use.
 //
 // It is a variable so that a test can change it and see the cache key follow,
 // which is the property the stamp exists for.
-var runtimeArchiveBuildArgs = func() []string {
-	return []string{"build", "-buildmode=c-archive", "-ldflags=-s -w"}
+//
+// The two kinds differ only in build mode, and both are stripped: -s -w removes
+// the symbol table and the DWARF, which nobody debugs a compiled Scheme program
+// through.  Keeping them cost 10 MB of a 27 MB archive before the link threw
+// them away, and a shared library is loaded rather than linked, so there they
+// would be paid for on every load.
+var runtimeBuildArgs = func(kind RuntimeKind) []string {
+	mode := "-buildmode=c-shared"
+	if kind == RuntimeStatic {
+		mode = "-buildmode=c-archive"
+	}
+	return []string{"build", mode, "-ldflags=-s -w"}
 }
 
-// buildRuntimeArchive compiles this package as a C archive in dir.
+// buildRuntimeLibrary compiles this package as a C library of the given kind in
+// dir, a shared object or a static archive.
 //
-// It runs `go build -buildmode=c-archive` on a tiny main package that imports
-// the interpreter and pulls in the exported functions.  The generated main is
-// written here rather than kept in the tree because it is not a program anyone
-// runs: its only job is to give the linker a package to build.
-func buildRuntimeArchive(dir string) error {
-	// The archive is built from the `re` package, which is the runtime
-	// environment: a main package whose exported functions are the C ABI a
-	// compiled program calls.  It is a separate package from this one because
-	// `-buildmode=c-archive` requires a main package, and because the boundary
-	// between "the runtime a compiled program links" and "the interpreter this
-	// process runs" is worth having a name.
+// Both are built by the Go tool from the `re` package, which is the runtime
+// environment: a main package whose exported functions are the C ABI a compiled
+// program calls.  It is a separate package from this one because both build
+// modes require a main package, and because the boundary between "the runtime a
+// compiled program links" and "the interpreter this process runs" is worth
+// having a name.
+func buildRuntimeLibrary(dir string, kind RuntimeKind) error {
 	pkgDir, err := runtimePackageDir()
 	if err != nil {
 		return err
 	}
-	lib := filepath.Join(dir, runtimeLibName())
-	// -s -w strips the symbol table and the DWARF debug information.  Nobody
-	// debugs a compiled Scheme program through the Go runtime linked into it,
-	// and keeping them cost 10 MB of the 28 MB archive — which every compiled
-	// program paid for on disk and then threw away, because the linker discards
-	// debug sections it was not asked to keep.  Stripping the archive takes it
-	// to 10 MB and the linked program from 18 MB to 8.5 MB.
-	//
-	// It is a flag on the archive rather than on the final link because the
-	// final link is `cc`, run through RuntimeLinkFlags, and the archive is the
-	// half this program controls.
-	cmd := exec.Command("go", append(runtimeArchiveBuildArgs(), "-o", lib, ".")...)
+	lib := filepath.Join(dir, runtimeLibName(kind))
+	cmd := exec.Command("go", append(runtimeBuildArgs(kind), "-o", lib, ".")...)
 	cmd.Dir = pkgDir
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
 	var stderr bytes.Buffer
@@ -223,15 +259,35 @@ func RuntimeLinker() string {
 	return "cc"
 }
 
-// RuntimeLinkFlags is what the runtime archive needs beside it: the system
-// libraries the Go runtime uses, which differ per platform.
-func RuntimeLinkFlags() []string {
+// RuntimeLinkFlags is what the runtime library needs beside it: the system
+// libraries the Go runtime uses, which differ per platform, and for the shared
+// kind the search path and an rpath.
+//
+// The rpath is what makes a dynamically linked program runnable straight after
+// it is built.  Without it the loader would have to be told where the library
+// is every time, through LD_LIBRARY_PATH (or DYLD_LIBRARY_PATH), and a program
+// that works only under an environment variable is not a program anyone can
+// hand to someone else.
+func RuntimeLinkFlags(kind RuntimeKind, libDir string) []string {
+	var flags []string
 	switch runtime.GOOS {
 	case "darwin":
-		return []string{"-lpthread", "-framework", "CoreFoundation", "-framework", "Security"}
+		flags = []string{"-lpthread", "-framework", "CoreFoundation", "-framework", "Security"}
 	case "windows":
 		return []string{"-lws2_32", "-lntdll", "-luserenv"}
 	default:
-		return []string{"-lpthread", "-lm"}
+		flags = []string{"-lpthread", "-lm"}
 	}
+	if kind == RuntimeShared && libDir != "" {
+		flags = append(flags, "-L"+libDir)
+		// -Wl,-rpath passes the path to the linker rather than to cc, which is
+		// the only way to spell it that both GNU ld and the macOS linker take.
+		flags = append(flags,
+			"-Wl,-rpath,"+libDir,
+			// Link against the library by name so the loader records
+			// "libgoscheme.so" rather than the absolute path of the cached
+			// file, which would break as soon as the cache directory moved.
+			"-lgoscheme")
+	}
+	return flags
 }
