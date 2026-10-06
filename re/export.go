@@ -19,6 +19,7 @@ typedef struct { int64_t bits; int64_t tag; } gs_val;
 // value table, which is where a value that does not fit a machine word lives.
 #define GS_FIXNUM 0
 #define GS_HANDLE 1
+#define GS_BOOLEAN 2
 
 // The operations gs_arith knows, matching arithCode in the generator.
 #define GS_ADD 0
@@ -118,25 +119,44 @@ func fixnum(n int64) C.gs_val { return C.gs_val{bits: C.int64_t(n), tag: C.GS_FI
 // handle is a tagged value holding an index into the value table.
 func handle(i int64) C.gs_val { return C.gs_val{bits: C.int64_t(i), tag: C.GS_HANDLE} }
 
-// tagged boxes a Scheme value: a machine integer travels as itself, and
-// anything else — a bignum, a rational, a non-number — travels as a handle.
+// boolean is a tagged value holding #t or #f.
+func boolean(b bool) C.gs_val {
+	if b {
+		return C.gs_val{bits: 1, tag: C.GS_BOOLEAN}
+	}
+	return C.gs_val{bits: 0, tag: C.GS_BOOLEAN}
+}
+
+// tagged boxes a Scheme value: a machine integer travels as itself, a boolean
+// as its own tag, and anything else — a bignum, a rational, a non-number —
+// travels as a handle.
 //
 // This is the whole reason the tag exists.  A native body computes in a machine
 // word, so a value that is not one machine word has to be named rather than
 // carried; naming it costs a table entry and loses nothing.
+//
+// A boolean gets a tag of its own rather than travelling as 0 or 1 because the
+// two are different values: `(= 1 1)` prints as `#t` and 1 prints as `1`, and a
+// comparison result that arrived as a fixnum would print the wrong one.
 func tagged(v scheme.Value) C.gs_val {
 	if n, ok := v.(*scheme.Integer); ok {
 		if small, fits := n.Int64(); fits {
 			return fixnum(small)
 		}
 	}
+	if b, ok := v.(scheme.Boolean); ok {
+		return boolean(bool(b))
+	}
 	return handle(store(v))
 }
 
 // untagged recovers the Scheme value a tagged word names.
 func untagged(v C.gs_val) scheme.Value {
-	if int64(v.tag) == int64(C.GS_HANDLE) {
+	switch int64(v.tag) {
+	case int64(C.GS_HANDLE):
 		return load(int64(v.bits))
+	case int64(C.GS_BOOLEAN):
+		return scheme.BooleanOf(int64(v.bits) != 0)
 	}
 	return scheme.Value(scheme.Int(int64(v.bits)))
 }

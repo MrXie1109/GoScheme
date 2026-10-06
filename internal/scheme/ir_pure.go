@@ -4,6 +4,7 @@ package scheme
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -62,6 +63,11 @@ const gsValStruct = "{ i64, i64 }"
 const (
 	tagFixnum = "0"
 	tagHandle = "1"
+	// A boolean needs its own tag rather than travelling as a fixnum.  `(= 1 1)`
+	// and `1` are different values in Scheme — one prints as `#t`, the other as
+	// `1` — so a comparison result carried as a fixnum would print the wrong
+	// thing the moment it left the compiled code.
+	tagBoolean = "2"
 )
 
 // gsValType declares the value type in the module, which has to happen before
@@ -407,6 +413,20 @@ func fixnumVal(n int64) irVal {
 	return irVal{bits: fmt.Sprintf("%d", n), tag: tagFixnum}
 }
 
+// boolVal is an irVal holding #t or #f, which is a value of its own kind rather
+// than the numbers 1 and 0.
+func boolVal(b bool) irVal {
+	if b {
+		return irVal{bits: "1", tag: tagBoolean}
+	}
+	return irVal{bits: "0", tag: tagBoolean}
+}
+
+// truthVal converts an i1 into a Scheme boolean.
+func (f *irFunc) truthVal(cond string) irVal {
+	return irVal{bits: f.zext(cond), tag: tagBoolean}
+}
+
 // isConstFixnum reports whether the value is a literal the generator can fold,
 // which is what makes a branch on a constant condition free.
 func (v irVal) isConstFixnum() bool {
@@ -427,10 +447,7 @@ func (f *irFunc) emitExpr(e Value) (irVal, error) {
 		}
 		return irVal{bits: fmt.Sprintf("%d", x.i), tag: tagFixnum}, nil
 	case *Boolean:
-		if *x {
-			return irVal{bits: "1", tag: tagFixnum}, nil
-		}
-		return irVal{bits: "0", tag: tagFixnum}, nil
+		return boolVal(bool(*x)), nil
 	case *Symbol:
 		v, ok := f.locals[x.Name]
 		if !ok {
@@ -479,21 +496,10 @@ func (f *irFunc) emitForm(x *Pair) (irVal, error) {
 	return f.emitCall(head.Name, args)
 }
 
-// mangle turns a Scheme name into an LLVM symbol.  A Scheme name may hold
-// characters an LLVM identifier cannot, and two names must not collide.
+// mangle turns a Scheme procedure name into the LLVM symbol its native body is
+// emitted under.
 func mangle(name string) string {
-	var b strings.Builder
-	b.WriteString("gs_lam_")
-	for i := 0; i < len(name); i++ {
-		c := name[i]
-		switch {
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_':
-			b.WriteByte(c)
-		default:
-			fmt.Fprintf(&b, "_%02x", c)
-		}
-	}
-	return b.String()
+	return "gs_lam_" + mangleName(name)
 }
 
 // emitIf emits a conditional.  Both arms produce a tagged value, and the result
@@ -555,10 +561,8 @@ func (f *irFunc) emitIf(args []Value) (irVal, error) {
 // a boolean.
 func (f *irFunc) emitAndOr(args []Value, isAnd bool) (irVal, error) {
 	if len(args) == 0 {
-		if isAnd {
-			return fixnumVal(1), nil
-		}
-		return fixnumVal(0), nil
+		// (and) is #t and (or) is #f: booleans, not the numbers one and zero.
+		return boolVal(isAnd), nil
 	}
 	if len(args) == 1 {
 		return f.emitExpr(args[0])
@@ -663,10 +667,7 @@ func (f *irFunc) emitQuoted(v Value) (irVal, error) {
 		}
 		return fixnumVal(x.i), nil
 	case *Boolean:
-		if *x {
-			return fixnumVal(1), nil
-		}
-		return fixnumVal(0), nil
+		return boolVal(bool(*x)), nil
 	case Empty:
 		return fixnumVal(0), nil
 	}
@@ -737,7 +738,7 @@ func (f *irFunc) emitCall(op string, args []Value) (irVal, error) {
 			fmt.Fprintf(&f.body, "  %s = and i64 %s, %s\n", both, acc, cmp)
 			acc = both
 		}
-		return irVal{bits: acc, tag: tagFixnum}, nil
+		return irVal{bits: acc, tag: tagBoolean}, nil
 	case "zero?", "positive?", "negative?":
 		// These ask a question about a number, and a number that does not fit a
 		// machine word is a handle — so the question goes to the runtime when
@@ -751,7 +752,7 @@ func (f *irFunc) emitCall(op string, args []Value) (irVal, error) {
 		}
 		not := f.reg()
 		fmt.Fprintf(&f.body, "  %s = xor i1 %s, true\n", not, cond)
-		return irVal{bits: f.zext(not), tag: tagFixnum}, nil
+		return f.truthVal(not), nil
 	case "abs":
 		// abs of the most negative word overflows, which is the one case the
 		// checked path has to catch.
@@ -835,11 +836,26 @@ func (f *irFunc) emitNativeCall(op string, vals []irVal) (irVal, error) {
 
 // truthOf turns a tagged value into an i1 a branch can use.
 //
-// Scheme's only false value is #f, and the accepted bodies produce numbers — so
-// a fixnum is always true, and a handle is the runtime's question to answer.
+// Scheme's only false value is #f, and an accepted body produces numbers, so a
+// fixnum is always true — but "always true" is not the same as "known at
+// compile time".  A comparison is itself a fixnum, and its *value* decides the
+// branch, so a value whose tag is a constant still has to be tested.  Getting
+// that wrong made every comparison test as true, which turned `(if (= n 0) ...)`
+// into a branch that was always taken.
 func (f *irFunc) truthOf(v irVal) (string, error) {
+	// A literal: the answer is known here.
 	if v.isConstFixnum() {
+		if v.bits == "0" {
+			return "false", nil
+		}
 		return "true", nil
+	}
+	// A fixnum whose value is not a literal: only the word needs testing, since
+	// a fixnum is never #f.
+	if v.tag == tagFixnum {
+		out := f.reg()
+		fmt.Fprintf(&f.body, "  %s = icmp ne i64 %s, 0\n", out, v.bits)
+		return out, nil
 	}
 	f.want("i64 @gs_truthy(" + gsVal + ")")
 	isFixnum := f.reg()
@@ -886,11 +902,19 @@ func (v irVal) bits0(f *irFunc) string {
 // the other case.
 func (f *irFunc) numericTest(v irVal, pred, other string) (irVal, error) {
 	if v.isConstFixnum() && other == "0" {
-		// A constant operand: the comparison is decided at compile time.
-		zero := map[string]bool{"eq": true, "sgt": false, "slt": false}[pred]
-		if zero {
-			return fixnumVal(1), nil
+		// A literal against zero is decided here rather than at run time.  The
+		// answer depends on the literal's *value*, not on the fact that it is
+		// one, and reading only the tag is what made `(zero? 5)` true.
+		zero, err := strconv.ParseInt(v.bits, 10, 64)
+		if err != nil {
+			return irVal{}, fmt.Errorf("ir: %s is not a machine integer", v.bits)
 		}
+		yes := map[string]bool{
+			"eq":  zero == 0,
+			"sgt": zero > 0,
+			"slt": zero < 0,
+		}[pred]
+		return boolVal(yes), nil
 	}
 	fast := f.reg()
 	switch pred {
@@ -934,7 +958,7 @@ func (f *irFunc) numericTest(v irVal, pred, other string) (irVal, error) {
 	out := f.reg()
 	fmt.Fprintf(&f.body, "  %s = phi i1 [ %s, %%%s ], [ %s, %%%s ]\n",
 		out, fast, fastFrom, askedBool, slowLabel)
-	return irVal{bits: f.zext(out), tag: tagFixnum}, nil
+	return f.truthVal(out), nil
 }
 
 // callNumCompare calls one of the runtime's comparisons on two tagged values.
@@ -1018,7 +1042,11 @@ func (f *irFunc) emitCompare(op string, a, b irVal) (string, error) {
 	f.want("i64 @gs_num_eq(" + gsVal + ", " + gsVal + ")")
 	f.want("i64 @gs_num_lt(" + gsVal + ", " + gsVal + ")")
 	f.want("i64 @gs_num_le(" + gsVal + ", " + gsVal + ")")
-	fn, swap := map[string]struct {
+	// The table is indexed into a variable first, and deliberately so: written
+	// as `fn, swap := map[...]{...}[op]` the two-result form of a map index
+	// takes over, so `swap` would be the *presence* of the key — always true
+	// here — rather than the field.  That silently reversed every `>` and `>=`.
+	compare := map[string]struct {
 		name string
 		swap bool
 	}{
@@ -1029,10 +1057,10 @@ func (f *irFunc) emitCompare(op string, a, b irVal) (string, error) {
 		">=": {"gs_num_le", true},
 	}[op]
 	lhs, rhs := a, b
-	if swap {
+	if compare.swap {
 		lhs, rhs = b, a
 	}
-	asked := f.callNumCompare(fn.name, lhs, rhs)
+	asked := f.callNumCompare(compare.name, lhs, rhs)
 	askedBool := f.reg()
 	fmt.Fprintf(&f.body, "  %s = icmp ne i64 %s, 0\n", askedBool, asked)
 	fmt.Fprintf(&f.body, "  br label %%%s\n", doneLabel)
@@ -1041,6 +1069,8 @@ func (f *irFunc) emitCompare(op string, a, b irVal) (string, error) {
 	out := f.reg()
 	fmt.Fprintf(&f.body, "  %s = phi i1 [ %s, %%%s ], [ %s, %%%s ]\n",
 		out, fast, fastFrom, askedBool, slowLabel)
+	// A plain 0 or 1: the caller chains comparisons with `and i64` and wraps the
+	// finished chain in a boolean tag.
 	return f.zext(out), nil
 }
 

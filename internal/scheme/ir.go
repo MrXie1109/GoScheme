@@ -286,11 +286,62 @@ func (g *irGen) program(forms []Value) error {
 		}
 		g.pure[p.name] = &pureProc{name: p.name, formals: p.formals, body: p.body, calls: r.calls}
 	}
-	// A procedure whose callee is not itself native cannot be compiled: its
-	// body would call something that is not there.  Dropping them can cascade,
-	// so it is done until nothing changes.
+	// Dependency order, with a cycle refused.
+	//
+	// A cycle is refused by dropping every procedure in it, and the drop
+	// cascades: a procedure that called a dropped one can no longer be
+	// compiled either, because its body would call something that is not
+	// there.  Both passes run until nothing changes, which is what makes the
+	// answer independent of the order the map happens to iterate in — the
+	// first version of this settled a cycle in one pass and could leave a
+	// procedure referencing a body it had just deleted.
 	for changed := true; changed; {
 		changed = false
+		// Which procedures are in a cycle?  A depth-first walk that reports a
+		// back edge, tagging every name on the path so that the whole cycle is
+		// dropped rather than one arbitrary member of it.
+		const (
+			white = 0 // not visited
+			grey  = 1 // on the current path
+			black = 2 // done
+		)
+		state := map[string]int{}
+		var path []string
+		var cyclic func(name string) bool
+		cyclic = func(name string) bool {
+			switch state[name] {
+			case grey:
+				return true
+			case black:
+				return false
+			}
+			state[name] = grey
+			path = append(path, name)
+			for _, c := range g.pure[name].calls {
+				if _, ok := g.pure[c]; ok && cyclic(c) {
+					return true
+				}
+			}
+			path = path[:len(path)-1]
+			state[name] = black
+			return false
+		}
+		for name := range g.pure {
+			path = path[:0]
+			if cyclic(name) {
+				for _, n := range path {
+					g.refused = append(g.refused, n+": it is part of a cycle of native procedures")
+					delete(g.pure, n)
+				}
+				changed = true
+				break
+			}
+		}
+		if changed {
+			continue
+		}
+		// A procedure whose callee is not native cannot be compiled: its body
+		// would call something that is not there.
 		for name, p := range g.pure {
 			for _, c := range p.calls {
 				if _, ok := g.pure[c]; !ok {
@@ -302,35 +353,25 @@ func (g *irGen) program(forms []Value) error {
 			}
 		}
 	}
-	// Dependency order, with a cycle refused.
-	state := map[string]int{}
-	var visit func(name string) bool
-	visit = func(name string) bool {
-		switch state[name] {
-		case 1:
-			return false // a cycle
-		case 2:
-			return true
+	// A topological order of what is left.  Every procedure here calls only
+	// procedures that are still present and are not in a cycle, so the walk
+	// terminates and appends each name after the ones it depends on.
+	state := map[string]bool{}
+	var visit func(name string)
+	visit = func(name string) {
+		if state[name] {
+			return
 		}
-		state[name] = 1
+		state[name] = true
 		for _, c := range g.pure[name].calls {
-			if _, ok := g.pure[c]; ok && !visit(c) {
-				return false
+			if _, ok := g.pure[c]; ok {
+				visit(c)
 			}
 		}
-		state[name] = 2
 		order = append(order, name)
-		return true
 	}
 	for name := range g.pure {
-		if !visit(name) {
-			g.refused = append(g.refused, name+": it is part of a cycle of native procedures")
-			delete(g.pure, name)
-			// The order built so far may hold functions that depended on it;
-			// rebuilding from scratch is simpler than unpicking it.
-			order = nil
-			state = map[string]int{}
-		}
+		visit(name)
 	}
 	for _, name := range order {
 		p := g.pure[name]
@@ -382,13 +423,35 @@ func (m *irModule) stringLiteral(s, hint string) string {
 	if g, ok := m.strings[s]; ok {
 		return g
 	}
-	name := "@." + hint
+	// The hint comes from a Scheme name as often as not — a procedure called
+	// `positive?` gives `procpositive?` — and `?` is not legal in an LLVM
+	// global name, so it is mangled here rather than at every call site.  This
+	// is the only place a hint becomes an identifier, which is what makes it
+	// the right place to do it.
+	name := "@." + mangleName(hint)
 	m.strings[s] = name
 	// The bytes, escaped for LLVM assembly, then a NUL so that the constant is
 	// also usable as a C string when its length is not needed.
 	fmt.Fprintf(&m.body, "%s = private unnamed_addr constant [%d x i8] c\"%s\\00\"\n",
 		name, len(s)+1, llvmEscape(s))
 	return name
+}
+
+// mangleName turns arbitrary text into an identifier LLVM accepts.  A Scheme
+// name may hold characters an LLVM identifier cannot, and two names must not
+// collide, so anything outside the identifier set is escaped by byte.
+func mangleName(text string) string {
+	var b strings.Builder
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_':
+			b.WriteByte(c)
+		default:
+			fmt.Fprintf(&b, "_%02x", c)
+		}
+	}
+	return b.String()
 }
 
 // llvmEscape renders a Go string as the body of an LLVM string constant: the

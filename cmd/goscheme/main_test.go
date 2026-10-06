@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -1542,4 +1543,206 @@ func TestWideCharactersMoveTheCursorTwoColumns(t *testing.T) {
 			t.Errorf("%q (%s): cursor column %d, want %d", tc.keys, tc.why, got, tc.want)
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// compile: the native path, end to end
+// ---------------------------------------------------------------------------
+
+// TestCompileProducesARunningProgram checks the whole pipeline: source to LLVM
+// IR, through opt and llc, linked against the runtime archive, and run.
+//
+// It is an end-to-end test because the failure it exists to catch is one that
+// no amount of inspecting the IR can find.  A module can be well-formed, verify
+// cleanly, contain a correct native body for every procedure — and still be
+// dead code, because nothing in the program ever calls it.  That is exactly what
+// happened, and the only way to see it is to run the result and watch what it
+// does.
+func TestCompileProducesARunningProgram(t *testing.T) {
+	if testing.Short() {
+		t.Skip("compile shells out to opt, llc and cc")
+	}
+	requireToolchain(t)
+
+	dir := t.TempDir()
+	src := filepath.Join(dir, "prog.scm")
+	// Every one of these is computed by native code: the arithmetic, the
+	// recursion, and the call from one compiled procedure to another.
+	program := `(define (add a b) (+ a b))
+(define (square x) (* x x))
+(define (sumsq a b) (+ (square a) (square b)))
+(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))
+(display (add 20 22))
+(newline)
+(display (sumsq 3 4))
+(newline)
+(display (fact 10))
+(newline)`
+	if err := os.WriteFile(src, []byte(program), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(dir, "prog")
+	if code := compileToNative(src, bin, "2", false, false); code != 0 {
+		t.Fatalf("compiling failed with code %d", code)
+	}
+	if _, err := os.Stat(bin); err != nil {
+		t.Fatalf("no program was produced: %v", err)
+	}
+	got := runNative(t, bin)
+	want := "42\n25\n3628800\n"
+	if got != want {
+		t.Errorf("the compiled program printed %q, want %q", got, want)
+	}
+}
+
+// TestCompiledProgramAgreesWithTheInterpreter checks that compiling a program
+// does not change what it computes.
+//
+// The compiler's whole contract is that this is true; a native body is an
+// optimization and never a second answer.  The cases here are the ones where an
+// optimization is most likely to become one: arithmetic that leaves the range a
+// machine word can hold, a comparison of two such values, and a value that
+// passes through several compiled procedures.
+func TestCompiledProgramAgreesWithTheInterpreter(t *testing.T) {
+	if testing.Short() {
+		t.Skip("compile shells out to opt, llc and cc")
+	}
+	requireToolchain(t)
+
+	// Each case is (source, what the interpreter prints).  The expected output
+	// is written out rather than computed here so that a test failure says
+	// which of the two changed.
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			name: "arithmetic inside a machine word",
+			src: `(define (add a b) (+ a b))
+(display (add 20 22))`,
+			want: "42",
+		},
+		{
+			name: "a sum that leaves a machine word",
+			src: `(define (add a b) (+ a b))
+(display (add 9223372036854775807 1))`,
+			want: "9223372036854775808",
+		},
+		{
+			name: "a product that leaves a machine word",
+			src: `(define (square x) (* x x))
+(display (square 4000000000))`,
+			want: "16000000000000000000",
+		},
+		{
+			name: "a value far outside a machine word",
+			src: `(define (square x) (* x x))
+(define (fourth x) (square (square x)))
+(display (fourth 100000000000))`,
+			want: "100000000000000000000000000000000000000000000",
+		},
+		{
+			name: "a large value in a later computation",
+			src: `(define (square x) (* x x))
+(define (f) (+ (square 100000000000) 1))
+(display (f))`,
+			want: "10000000000000000000001",
+		},
+		{
+			name: "comparing values past a machine word",
+			src: `(define (square x) (* x x))
+(define (lt a b) (< a b))
+(display (lt (square 4000000000) (square 4000000001)))`,
+			want: "#t",
+		},
+		{
+			name: "a bignum compared as an argument",
+			src: `(define (positive?2 x) (> x 0))
+(display (positive?2 (* 4000000000 4000000000)))`,
+			want: "#t",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			src := filepath.Join(dir, "prog.scm")
+			if err := os.WriteFile(src, []byte(tc.src), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			// What the interpreter says, which is the answer to agree with.
+			if got := runScriptFile(t, src); got != tc.want {
+				t.Fatalf("the interpreter printed %q, want %q", got, tc.want)
+			}
+			bin := filepath.Join(dir, "prog")
+			if code := compileToNative(src, bin, "2", false, false); code != 0 {
+				t.Fatalf("compiling failed with code %d", code)
+			}
+			if got := runNative(t, bin); got != tc.want {
+				t.Errorf("the compiled program printed %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCompileEmitLLVMStopsBeforeTheToolchain checks that --emit-llvm writes the
+// IR and runs nothing else.
+//
+// It is the option a person uses to see what the compiler did, so it has to work
+// on a machine where opt, llc and cc are absent — which is what makes it useful
+// for reporting a code-generation problem.
+func TestCompileEmitLLVMStopsBeforeTheToolchain(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "prog.scm")
+	if err := os.WriteFile(src, []byte("(define (add a b) (+ a b))\n(display (add 1 2))"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "prog.ll")
+	if code := compileToNative(src, out, "2", true, false); code != 0 {
+		t.Fatalf("--emit-llvm failed with code %d", code)
+	}
+	ir, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("no IR was written: %v", err)
+	}
+	text := string(ir)
+	// The native body, the registration that makes it reachable, and the
+	// fallback the runtime provides.
+	for _, want := range []string{
+		"%gs.val = type { i64, i64 }",
+		"define %gs.val @gs_lam_add(",
+		"@gs_register",
+		"@gs_arith",
+		"@llvm.sadd.with.overflow.i64",
+		"call i64 @gs_eval_source(",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the IR does not mention %q:\n%s", want, text)
+		}
+	}
+}
+
+// requireToolchain skips a test when the LLVM tools are not installed.
+//
+// The native path is a feature of the program rather than a dependency of the
+// interpreter, so a checkout without a toolchain is still a working checkout.
+func requireToolchain(t *testing.T) {
+	t.Helper()
+	for _, tool := range []string{"opt", "llc", "cc"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is not installed, so the native path cannot run", tool)
+		}
+	}
+}
+
+// runNative runs a compiled program and returns its standard output.
+func runNative(t *testing.T, bin string) string {
+	t.Helper()
+	cmd := exec.Command(bin)
+	var out, errBuf bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("running %s: %v\nstderr: %s", bin, err, errBuf.String())
+	}
+	return out.String()
 }
