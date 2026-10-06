@@ -2122,3 +2122,21 @@ func TestCompileLinksTheRuntimeBothWays(t *testing.T) {
 			sharedInfo.Size())
 	}
 }
+
+// The link-mode flag is -static, spelled the way cc spells it, and not
+// --static.  It is a small thing that drifts: both spellings work if both are
+// accepted, and then the usage line documents one while the parser quietly
+// takes two.  This pins the one spelling, and that the other is refused rather
+// than ignored — an option that is silently dropped is worse than one that is
+// rejected, because the program still builds and is eight megabytes bigger.
+func TestTheStaticFlagIsSpelledTheTraditionalWay(t *testing.T) {
+	if code := runCompile([]string{"-static", "prog.scm"}); code == 2 {
+		t.Error("-static was rejected")
+	}
+	// runCompile reports a bad option with exit code 2 and prints usage.  The
+	// script does not exist, so a *recognised* flag gets past the parser and
+	// fails later with a different code; that difference is what is checked.
+	if code := runCompile([]string{"--static", "prog.scm"}); code != 2 {
+		t.Errorf("--static was accepted (exit %d); the flag is -static", code)
+	}
+}

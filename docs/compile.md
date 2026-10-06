@@ -178,7 +178,7 @@ happen.
 - **A big binary, unless it is linked dynamically.** By default the runtime is a
   shared library and a compiled program is **about 16 KB**: it holds its own
   machine code and nothing else, and several programs on one machine share one
-  copy of the interpreter. `--static` links the runtime in instead and gives
+  copy of the interpreter. `-static` links the runtime in instead and gives
   about 8 MB — the same as a packed script, because both are mostly the same
   interpreter — for a program that has to run where the library is not
   installed. See §8.
@@ -194,7 +194,7 @@ carries it is the difference between 16 KB and 8 MB:
 | | program | needs at run time |
 | --- | --- | --- |
 | default (`-buildmode=c-shared`) | ~16 KB | `libgoscheme.so` in the cache, found by rpath |
-| `--static` (`-buildmode=c-archive`) | ~8 MB | nothing |
+| `-static` (`-buildmode=c-archive`) | ~8 MB | nothing |
 
 Both libraries are built on demand and cached under the user's cache directory,
 keyed to the build flags, so switching modes does not reuse the other one's

@@ -216,7 +216,7 @@ func runPack(args []string) int {
 				return 2
 			}
 			interpreter = v
-		case "-static", "--static":
+		case "-static":
 			static = true
 		case "-h", "--help":
 			packUsage(os.Stdout)

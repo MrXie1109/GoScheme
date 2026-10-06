@@ -56,7 +56,7 @@ func runCompile(args []string) int {
 			keepTemps = true
 		case "--explain":
 			explain = true
-		case "--static", "-static":
+		case "-static":
 			// Link the runtime into the program rather than against the shared
 			// library. Eight megabytes instead of kilobytes, and nothing to
 			// ship beside it: the default is shared, so this is the opt-in.
@@ -87,7 +87,7 @@ func runCompile(args []string) int {
 }
 
 func compileUsage(w *os.File) {
-	fmt.Fprintln(w, "usage: goscheme compile <script> [-o <output>] [--emit-llvm] [-O0..-O3]")
+	fmt.Fprintln(w, "usage: goscheme compile <script> [-o <output>] [--emit-llvm] [-O0..-O3] [-static]")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Compiles <script> to a native executable through LLVM: the script is")
 	fmt.Fprintln(w, "translated to LLVM IR, optimised with opt, assembled with llc, and")
@@ -96,7 +96,7 @@ func compileUsage(w *os.File) {
 	fmt.Fprintln(w, "  -o, --output FILE  where to write the executable (default: a.out)")
 	fmt.Fprintln(w, "  --emit-llvm, -S    write the LLVM IR instead of building anything")
 	fmt.Fprintln(w, "  -O0..-O3           optimisation level passed to opt (default: -O2)")
-	fmt.Fprintln(w, "  --static           link the runtime into the program")
+	fmt.Fprintln(w, "  -static            link the runtime into the program")
 	fmt.Fprintln(w, "  --keep-temps       keep the intermediate .ll and .o files")
 	fmt.Fprintln(w, "  --explain          list every procedure left to the interpreter, and why")
 	fmt.Fprintln(w, "")
@@ -105,7 +105,7 @@ func compileUsage(w *os.File) {
 	fmt.Fprintln(w, "megabytes the interpreter takes.  It needs that library at run time, and the")
 	fmt.Fprintln(w, "program is linked with an rpath pointing at it, so it runs where it was")
 	fmt.Fprintln(w, "built; to move it elsewhere, copy the library beside it or set")
-	fmt.Fprintln(w, "LD_LIBRARY_PATH.  --static links the runtime in instead, for a program that")
+	fmt.Fprintln(w, "LD_LIBRARY_PATH.  -static links the runtime in instead, for a program that")
 	fmt.Fprintln(w, "has to run on a machine where the library is not installed.")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "The compiler takes the procedures whose bodies are pure computations and")
