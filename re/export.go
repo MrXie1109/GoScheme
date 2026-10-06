@@ -315,6 +315,23 @@ func gs_uploop(kind C.int32_t, args *C.gs_val) C.gs_val {
 		untagged(*argsAt(args, 0)), untagged(*argsAt(args, 1)), untagged(*argsAt(args, 2))))
 }
 
+// gs_search walks a list and returns the first element a test accepts.
+//
+// The search is the other thing a loop over a sequence does, and like the folds
+// it runs in one call: nothing crosses per element.  The two answers travel in
+// with the list because either can be anything the program wrote — a literal, a
+// value from an enclosing scope — and the runtime cannot invent them.
+//
+//export gs_search
+func gs_search(pred C.int32_t, args *C.gs_val, wantElement C.int32_t) C.gs_val {
+	if mach == nil {
+		gs_init(0, nil)
+	}
+	return tagged(scheme.RunSearch(int(int32(pred)),
+		untagged(*argsAt(args, 0)), untagged(*argsAt(args, 1)), untagged(*argsAt(args, 2)),
+		int(int32(wantElement))))
+}
+
 // gs_global reads a top-level binding by name, as a tagged value.
 //
 // A compiled body reads a global where the name appears, not once at entry,

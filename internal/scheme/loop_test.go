@@ -511,3 +511,103 @@ func TestDoLoopIsCompiledAsAWalk(t *testing.T) {
 		t.Errorf("the do loop is not emitted as an upward walk:\n%s", p.IR)
 	}
 }
+
+// TestRecogniseSearch checks the walk that stops at the first element a test
+// accepts, which is the other thing a loop over a sequence does.
+func TestRecogniseSearch(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		pred predKind
+	}{
+		{"找第一个偶数", `(define (f lst) (if (null? lst) #f (if (even? (car lst)) (car lst) (f (cdr lst)))))`, predEven},
+		{"找第一个正数", `(define (f lst) (if (null? lst) #f (if (positive? (car lst)) (car lst) (f (cdr lst)))))`, predPositive},
+		{"找到就返回固定值", `(define (f lst) (if (null? lst) #f (if (pair? (car lst)) 1 (f (cdr lst)))))`, predPair},
+		// 应当拒绝
+		{"谓词测试别的", `(define (f lst) (if (null? lst) #f (if (even? lst) (car lst) (f (cdr lst)))))`, predNone},
+		{"谓词是用户过程", `(define (f lst) (if (null? lst) #f (if (mine? (car lst)) (car lst) (f (cdr lst)))))`, predNone},
+		{"递归推进的不是 cdr", `(define (f lst) (if (null? lst) #f (if (even? (car lst)) (car lst) (f lst))))`, predNone},
+		{"不是尾递归", `(define (f lst) (if (null? lst) #f (if (even? (car lst)) (car lst) (cons 1 (f (cdr lst))))))`, predNone},
+		{"两个参数", `(define (f lst x) (if (null? lst) #f (if (even? (car lst)) (car lst) (f (cdr lst) x))))`, predNone},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			forms, err := NewStringReader(c.src).ReadAll()
+			if err != nil {
+				t.Fatal(err)
+			}
+			name, formals, body, ok := topLevelProcedure(forms[0])
+			if !ok {
+				t.Fatal("不是顶层过程定义")
+			}
+			w, got := recogniseSearch(name, formals, body)
+			if got != (c.pred != predNone) {
+				t.Fatalf("识别=%v 期望=%v", got, c.pred != predNone)
+			}
+			if got && w.pred != c.pred {
+				t.Errorf("pred=%v 期望=%v", w.pred, c.pred)
+			}
+		})
+	}
+}
+
+// TestRunSearchDistinguishesFoundFromMissed checks that finding a value equal to
+// the "not found" answer is not reported as not having found it.
+//
+// This is why both answers are passed in rather than a single value plus a flag:
+// a search for zero through a list of zeros finds zero, and a search that runs
+// out returns whatever the empty case says — which may also be zero.  A runtime
+// that returned one value would make those the same.
+func TestRunSearchDistinguishesFoundFromMissed(t *testing.T) {
+	zeros := List(Int(0), Int(0), Int(0))
+	// Looking for a zero, with zero as the "not found" answer: it found one.
+	got := RunSearch(int(predZero), zeros, Int(0), Int(0), 1)
+	if WriteToString(got) != "0" {
+		t.Errorf("a search that found a zero returned %s", WriteToString(got))
+	}
+	// Looking for something absent, with -1 as the answer.
+	got = RunSearch(int(predNegative), zeros, Int(0), Int(-1), 1)
+	if WriteToString(got) != "-1" {
+		t.Errorf("a search that found nothing returned %s, want -1", WriteToString(got))
+	}
+	// A fixed answer rather than the element.
+	got = RunSearch(int(predZero), zeros, Int(99), Int(-1), 0)
+	if WriteToString(got) != "99" {
+		t.Errorf("a search with a fixed answer returned %s, want 99", WriteToString(got))
+	}
+}
+
+// TestBooleanIsAValueNotAPointer guards the type that five separate type switches
+// had wrong.
+//
+// `type Boolean bool` is a value type, so a switch listing `*Boolean` compiles,
+// matches nothing, and makes every `#t` and `#f` look like something the
+// compiler cannot read.  It showed up as a body containing `#f` being refused
+// outright, with the reason "the body contains boolean, which is not a literal or
+// a call" — which reads like a deliberate refusal and was not one.
+func TestBooleanIsAValueNotAPointer(t *testing.T) {
+	if !isLiteral(False) || !isLiteral(True) {
+		t.Error("a boolean literal is not recognised as one")
+	}
+	if !isSelfEvaluating(False) || !isSelfEvaluating(True) {
+		t.Error("a boolean does not count as self-evaluating")
+	}
+	// And the emitter must produce a boolean rather than a fixnum for it.
+	p, err := CompileToIR(`(define (f x) (if (even? x) #t #f))`, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Native != 1 {
+		t.Fatalf("a body returning #t and #f was refused: %v", p.Refused)
+	}
+	// Both arms have to carry the boolean tag: that is what makes the result a
+	// boolean rather than the fixnum 1 or 0.  The tag reaches the phi that joins
+	// the arms, so what is checked is the phi's entries — one for the value, one
+	// for the tag — rather than the presence of the digit anywhere.
+	if !strings.Contains(p.IR, "phi i64 [ 1, %then") {
+		t.Errorf("the boolean's value is not 1 in the then-arm:\n%s", p.IR)
+	}
+	if !strings.Contains(p.IR, "phi i64 [ "+tagBoolean+", %then") {
+		t.Errorf("the boolean tag is not carried through the join:\n%s", p.IR)
+	}
+}

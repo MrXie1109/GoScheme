@@ -1123,7 +1123,7 @@ func recogniseTopCall(form Value, compiled map[string]bool) (topCall, bool) {
 	}
 	for _, a := range items {
 		switch a.(type) {
-		case *Integer, *Boolean, *String, *Char, *Float, *Rational:
+		case *Integer, Boolean, *String, *Char, *Float, *Rational:
 			// A literal the compiler can place in the module.
 		default:
 			return topCall{}, false
@@ -1149,9 +1149,9 @@ func (g *irGen) emitTopCall(c topCall, formals []*Symbol, body *strings.Builder,
 				fmt.Fprintf(body, "  %s = call i64 @gs_box_literal(i8* %s, i64 %d)\n", r, lit, len(v.String()))
 				args = append(args, fmt.Sprintf("i64 %s, i64 1", r))
 			}
-		case *Boolean:
+		case Boolean:
 			bit := 0
-			if bool(*v) {
+			if bool(v) {
 				bit = 1
 			}
 			args = append(args, fmt.Sprintf("i64 %d, i64 2", bit))
@@ -1206,6 +1206,7 @@ const (
 	shapeVec
 	shapeCount
 	shapeUp
+	shapeSearch
 )
 
 // recogniseAnyWalk asks each recogniser in turn.
@@ -1236,6 +1237,9 @@ func recogniseAnyWalkInv(name string, formals []*Symbol, body []Value, inv map[s
 	}
 	if w, ok := recogniseUpLoop(name, formals, body); ok {
 		return w.kind, predNone, shapeUp, true
+	}
+	if w, ok := recogniseSearch(name, formals, body); ok {
+		return loopNone, w.pred, shapeSearch, true
 	}
 	return loopNone, predNone, shapeNone, false
 }
@@ -1431,7 +1435,48 @@ func (f *irFunc) emitWalkCall(loopName string, vars []*Symbol, body []Value, arg
 		if u, ok := recogniseUpLoop(loopName, vars, body); ok {
 			f.emitUpLoopArgs(k, args, u)
 		}
+	case shapeSearch:
+		if w, ok := recogniseSearch(loopName, vars, body); ok {
+			f.emitSearchArgs(w, args)
+		}
 	}
+}
+
+// emitSearchArgs calls the search walk with the list and the two answers.
+func (f *irFunc) emitSearchArgs(w searchWalk, args []irVal) {
+	if len(args) != 1 {
+		return
+	}
+	// When the answer is the element itself, the runtime supplies it — there is
+	// no expression to evaluate, and trying to evaluate `(car lst)` here would
+	// fail, because `lst` is a name the loop's own body binds and the emitter
+	// has no local for it.
+	foundVal := irVal{bits: "0", tag: tagNull}
+	if !w.wantElement {
+		v, err := f.emitExpr(w.found)
+		if err != nil {
+			return
+		}
+		foundVal = v
+	}
+	missedVal, err := f.emitExpr(w.missed)
+	if err != nil {
+		return
+	}
+	wantElem := 0
+	if w.wantElement {
+		wantElem = 1
+	}
+	f.want(gsVal + " @gs_search(i32, " + gsVal + "*, i32)")
+	slot := f.allocaArray(3)
+	f.storeArg(slot, 0, args[0])
+	f.storeArg(slot, 1, foundVal)
+	f.storeArg(slot, 2, missedVal)
+	out := f.reg()
+	fmt.Fprintf(&f.body, "  %s = call %s @gs_search(i32 %d, %s* %s, i32 %d)\n",
+		out, gsVal, int(w.pred), gsVal, slot, wantElem)
+	f.listWalkDone = true
+	f.listWalkVal = f.loadVal(out)
 }
 
 // emitUpLoopArgs calls the upward walk with (from, end, acc).
@@ -1796,4 +1841,183 @@ func RunUpLoop(kind int, from, end, acc Value) Value {
 		acc = foldOne(kind, Int(i), acc)
 	}
 	return acc
+}
+
+// ---------------------------------------------------------------------------
+// Searching
+// ---------------------------------------------------------------------------
+
+// Search walks are the other thing a loop over a sequence usually does: stop at
+// the first element a test accepts instead of folding every element in.
+//
+//	(define (find-even lst)
+//	  (if (null? lst) #f (if (even? (car lst)) (car lst) (find-even (cdr lst)))))
+//
+// Like the folding walks, the test has to be a builtin, and like them the shape
+// is checked rather than matched loosely.  What is different is the answer: a
+// search returns something found *inside* the loop, so the walk has to be able to
+// say whether it found anything at all — a search that fell off the end returns
+// the missed value, and the runtime has to distinguish that from having found
+// the same value.
+type searchWalk struct {
+	name string
+	list *Symbol
+	pred predKind
+	// found is what the loop returns when the test accepts an element, and
+	// missed is what it returns when the list runs out.
+	found, missed Value
+	// wantElement says the answer is the element itself — `(car lst)` — rather
+	// than a fixed value, which is what a search for a minimum or a count
+	// would return.
+	wantElement bool
+}
+
+// recogniseSearch reports whether a procedure searches a list.
+//
+// The accepted body is exactly
+//
+//	(if (null? LIST) MISSED (if (PRED (car LIST)) FOUND (NAME (cdr LIST))))
+//
+// with PRED a builtin and FOUND either `(car LIST)` or a literal.  Anything else
+// is refused: a search whose result is computed, or whose test is written by the
+// programmer, is not something this can run without calling back per element.
+func recogniseSearch(name string, formals []*Symbol, body []Value) (searchWalk, bool) {
+	var none searchWalk
+	if len(formals) != 1 || len(body) != 1 {
+		return none, false
+	}
+	outer, ok := body[0].(*Pair)
+	if !ok || !isForm(outer, "if") {
+		return none, false
+	}
+	parts, _ := ListToSlice(outer.Cdr)
+	if len(parts) != 3 {
+		return none, false
+	}
+	// (null? LIST)
+	testForm, ok := parts[0].(*Pair)
+	if !ok || !isForm(testForm, "null?") {
+		return none, false
+	}
+	targs, _ := ListToSlice(testForm.Cdr)
+	if len(targs) != 1 {
+		return none, false
+	}
+	listSym, ok := targs[0].(*Symbol)
+	if !ok || !hasParam(formals, listSym) {
+		return none, false
+	}
+	missed := parts[1]
+
+	// (if (PRED (car LIST)) FOUND (NAME (cdr LIST)))
+	inner, ok := parts[2].(*Pair)
+	if !ok || !isForm(inner, "if") {
+		return none, false
+	}
+	iparts, _ := ListToSlice(inner.Cdr)
+	if len(iparts) != 3 {
+		return none, false
+	}
+	predForm, ok := iparts[0].(*Pair)
+	if !ok {
+		return none, false
+	}
+	predHead, ok := predForm.Car.(*Symbol)
+	if !ok {
+		return none, false
+	}
+	pred := predName(predHead.Name)
+	if pred == predNone {
+		return none, false
+	}
+	pargs, _ := ListToSlice(predForm.Cdr)
+	if len(pargs) != 1 || !isCarOf(pargs[0], listSym) {
+		return none, false
+	}
+	found := iparts[1]
+	wantElement := false
+	if isCarOf(found, listSym) {
+		wantElement = true
+	} else if !isLiteral(found) {
+		return none, false
+	}
+	if !isLiteral(missed) {
+		return none, false
+	}
+	// The alternative is the recursive call, walking on.
+	altForm, ok := iparts[2].(*Pair)
+	if !ok {
+		return none, false
+	}
+	altHead, ok := altForm.Car.(*Symbol)
+	if !ok || altHead.Name != name {
+		return none, false
+	}
+	aargs, _ := ListToSlice(altForm.Cdr)
+	if len(aargs) != 1 {
+		return none, false
+	}
+	cdrForm, ok := aargs[0].(*Pair)
+	if !ok || !isForm(cdrForm, "cdr") {
+		return none, false
+	}
+	cargs, _ := ListToSlice(cdrForm.Cdr)
+	if len(cargs) != 1 || !isSameSymbol(cargs[0], listSym) {
+		return none, false
+	}
+	return searchWalk{name: name, list: listSym, pred: pred, found: found, missed: missed, wantElement: wantElement}, true
+}
+
+// isLiteral reports whether a value is one the compiler can place in the module.
+//
+// Boolean is a value type rather than a pointer — `type Boolean bool` — so it is
+// listed without a star.  Writing `*Boolean` instead compiles, matches nothing,
+// and makes every `#f` look like something the recogniser cannot read.
+func isLiteral(v Value) bool {
+	switch v.(type) {
+	case *Integer, *Float, *Rational, *String, *Char, Boolean, Empty:
+		return true
+	}
+	return false
+}
+
+// RunSearch walks a list and returns the first element a test accepts.
+//
+// The loop's two answers are both passed in — what to return when something is
+// found and what to return when the list runs out — so the runtime never has to
+// signal "nothing found" out of band.  That matters because the two can be the
+// same value: a search for zero in a list of zeros returns zero, and a search
+// that found nothing returns whatever the empty case says, which may also be
+// zero.  Returning a separate flag instead would put the distinction in the
+// caller, where the numbers are the same either way.
+func RunSearch(pred int, list, found, missed Value, wantElement int) Value {
+	cur := list
+	for {
+		p, ok := cur.(*Pair)
+		if !ok {
+			return missed
+		}
+		if predKind(pred).holds(p.Car) {
+			if wantElement != 0 {
+				return p.Car
+			}
+			return found
+		}
+		cur = p.Cdr
+	}
+}
+
+// walkParams returns the loop's own parameters as the arguments a walk takes, or
+// nil when the body is not a walk at all.
+//
+// It exists so that the emitter has one place to ask "is this a walk" rather
+// than a list of recognisers that has to be kept in step with the dispatcher.
+// The caller passes the name the recognisers should match a recursive call
+// against, which for a procedure is its own name and for a do loop is the
+// placeholder.
+func walkParams(name string, formals []*Symbol, body []Value) ([]*Symbol, bool) {
+	if _, _, shape, ok := recogniseAnyWalk(name, formals, body); !ok || shape == shapeNone {
+		return nil, false
+	}
+	return formals, true
 }

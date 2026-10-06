@@ -335,8 +335,10 @@ func (r *pureReport) scanValue(e Value, local map[string]bool, keep bool) {
 			return
 		}
 		r.globals = append(r.globals, x.Name)
-	case *Integer, *Float, *Rational, *String, *Boolean, *Char, Empty:
-		// A literal: it computes nothing.
+	case *Integer, *Float, *Rational, *String, Boolean, *Char, Empty:
+		// A literal: it computes nothing.  Boolean is a value type, not a
+		// pointer, so it is listed without a star — with one it matches nothing
+		// and every `#f` in a body looks like something unreadable.
 	default:
 		r.stop("the body contains %s, which is not a literal or a call", typeName(e))
 	}
@@ -661,15 +663,23 @@ func (g *irGen) emitPureFunction(name string, formals []*Symbol, body []Value, c
 	// the runtime, rather than as a loop that crosses the boundary for every
 	// element.  This is checked first because it replaces the body entirely.
 	//
-	// A body written as a named let is the same loop spelled the idiomatic way,
-	// and is handled by emitting the let's *body* as the walk and passing the
-	// let's initial values as its arguments.
-	if w, ok := recogniseListWalk(name, formals, body); ok {
-		f.emitListWalk(w, formals)
-	} else if w, ok := recogniseVecWalk(name, formals, body); ok {
-		f.emitVecWalk(w, formals)
-	} else if w, ok := recogniseCountLoop(name, formals, body); ok {
-		f.emitCountLoop(w)
+	// The walk's own parameters are the arguments, and there are no invariants —
+	// a body that needs those is a named let, which is handled below.
+	//
+	// There is deliberately one dispatch here and it goes through emitWalkCall,
+	// which asks the recognisers in one place.  An earlier version listed the
+	// shapes again at this call site, and the two lists drifted: `do` and the
+	// searching walk were recognised and never emitted, which is a loop that
+	// looks like it should be compiled and silently is not.
+	if _, isWalk := walkParams(name, formals, body); isWalk {
+		args := make([]irVal, 0, len(formals))
+		for _, s := range formals {
+			args = append(args, irVal{
+				bits: "%p_" + s.Name + ".bits",
+				tag:  "%p_" + s.Name + ".tag",
+			})
+		}
+		f.emitWalkCall(name, formals, body, args, nil, nil)
 	} else if nl, isLet := parseNamedLet(body); isLet {
 		f.emitNamedLetLoop(nl)
 	}
@@ -798,8 +808,8 @@ func (f *irFunc) emitExpr(e Value) (irVal, error) {
 			return f.boxedLiteral(x.String())
 		}
 		return irVal{bits: fmt.Sprintf("%d", x.i), tag: tagFixnum}, nil
-	case *Boolean:
-		return boolVal(bool(*x)), nil
+	case Boolean:
+		return boolVal(bool(x)), nil
 	case *Symbol:
 		if v, ok := f.locals[x.Name]; ok {
 			return v, nil
@@ -837,7 +847,7 @@ func (f *irFunc) emitExpr(e Value) (irVal, error) {
 // other literal does, which is what makes boxing one safe.
 func isSelfEvaluating(v Value) bool {
 	switch v.(type) {
-	case *Integer, *Float, *Rational, *Complex, *String, *Char, *Boolean,
+	case *Integer, *Float, *Rational, *Complex, *String, *Char, Boolean,
 		*Vector, *Bytevector:
 		return true
 	}
@@ -1181,8 +1191,8 @@ func (f *irFunc) emitQuoted(v Value) (irVal, error) {
 			return f.boxedLiteral(x.String())
 		}
 		return fixnumVal(x.i), nil
-	case *Boolean:
-		return boolVal(bool(*x)), nil
+	case Boolean:
+		return boolVal(bool(x)), nil
 	case Empty:
 		return irVal{bits: "0", tag: tagNull}, nil
 	}
