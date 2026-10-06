@@ -43,6 +43,7 @@ import (
 // it in any one of them would mean the others saw a `cond` and had to know what
 // it meant.
 func expandBody(body []Value) []Value {
+	body = expandBodyDefines(body)
 	out := make([]Value, len(body))
 	for i, f := range body {
 		out[i] = expandDerived(f)
@@ -655,4 +656,104 @@ func mentionsAnyNow(v Value, names map[string]bool) bool {
 		}
 	}
 	return false
+}
+
+// expandBodyDefines rewrites the internal definitions at the head of a body into
+// the `letrec*` they mean, which the compiler already knows how to emit.
+//
+//	(define (f n)
+//	  (define m (* n n))        =>   (letrec* ((m (* n n))
+//	  (define (g x) (+ x m))              (g (lambda (x) (+ x m))))
+//	  (+ n (g 1)))                     (+ n (g 1)))
+//
+// R7RS puts internal definitions in the same class as `letrec*`: the names are
+// bound before any initialiser runs, so a definition may refer to one that comes
+// after it as long as the reference is not evaluated during the binding.  That is
+// exactly what `expandLetrecToLet` reads, so producing a `letrec*` here means the
+// rules for it apply unchanged — including the refusal of a forward reference
+// that *is* evaluated, which is why the `letrec*` is offered rather than a bare
+// `let*`.
+//
+// Only definitions at the head of the body are rewritten, which is what the
+// report allows: a definition after an expression is an error, and leaving it
+// alone means the emitter reports it rather than this quietly moving it.
+//
+// A `define` with several body forms becomes a `lambda`, which is what it is:
+// `(define (g x) A B)` is `(g (lambda (x) A B))`.
+func expandBodyDefines(body []Value) []Value {
+	// The head of the body: definitions, looking through `begin` as the report
+	// says a body's definitions may be wrapped in one.
+	idx := 0
+	var names []Value
+	var inits []Value
+	for idx < len(body) {
+		p, ok := body[idx].(*Pair)
+		if !ok {
+			break
+		}
+		s, ok := p.Car.(*Symbol)
+		if !ok || (s.Name != "define" && s.Name != "define-values") {
+			break
+		}
+		if s.Name == "define-values" {
+			// A shape this does not rewrite.  Leaving it means the emitter
+			// refuses the body with a reason rather than the rewrite guessing at
+			// multiple-value binding.
+			return body
+		}
+		args, _ := ListToSlice(p.Cdr)
+		if len(args) < 1 {
+			return body
+		}
+		name, init, ok := defineNameAndInit(args)
+		if !ok {
+			return body
+		}
+		names = append(names, name)
+		inits = append(inits, init)
+		idx++
+	}
+	if len(names) == 0 {
+		return body
+	}
+	rest := body[idx:]
+	if len(rest) == 0 {
+		// A body of nothing but definitions evaluates to unspecified, and the
+		// bindings still happen.
+		rest = []Value{Boolean(false)}
+	}
+	binds := make([]Value, len(names))
+	for i := range names {
+		binds[i] = List(names[i], inits[i])
+	}
+	inner := append([]Value{listFromSlice(binds)}, rest...)
+	return []Value{Cons(Intern("letrec*"), listFromSlice(inner))}
+}
+
+// defineNameAndInit splits one internal definition into the name it binds and the
+// expression that computes it.
+//
+//	(define m EXPR)        =>  m, EXPR
+//	(define (g . args) B)  =>  g, (lambda args B)
+func defineNameAndInit(args []Value) (Value, Value, bool) {
+	switch t := args[0].(type) {
+	case *Symbol:
+		if len(args) != 2 {
+			return nil, nil, false
+		}
+		return t, args[1], true
+	case *Pair:
+		// A curried definition, as in `(define ((f a) b) ...)`, is not R7RS and
+		// is not rewritten.
+		if _, nested := t.Car.(*Pair); nested {
+			return nil, nil, false
+		}
+		s, ok := t.Car.(*Symbol)
+		if !ok || len(args) < 2 {
+			return nil, nil, false
+		}
+		lam := append([]Value{t.Cdr}, args[1:]...)
+		return s, Cons(Intern("lambda"), listFromSlice(lam)), true
+	}
+	return nil, nil, false
 }

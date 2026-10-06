@@ -173,8 +173,16 @@ func TestQuotedDerivedSyntaxIsLeftAlone(t *testing.T) {
 // `letrec` and `set!` were on this list and have left it, which is the list
 // working as intended.
 var knownGaps = []struct{ name, body string }{
-	{"a nested define", `(define y 1) (+ n y)`},
 	{"a dotted parameter list", `(lambda (x . rest) (+ x n))`},
+	{"guard", `(guard (e (#t (+ n 1))) (+ (* n n) 1))`},
+	// Internal definitions that call each other are a `letrec*` with a forward
+	// reference, which is the one shape the rewrite into a `let*` cannot take:
+	// `let*` binds each name in its own frame, so `b` does not exist while `a` is
+	// being defined.  Refusing is correct — accepting produced a program that
+	// reported "b: undefined" where the interpreter found it.  Emitting it would
+	// need a real `letrec` in the emitter, which is a feature rather than a rule.
+	{"mutually recursive internal definitions", `(define (a k) (if (= k 0) (+ n 1) (b (- k 1)))) (define (b k) (if (= k 0) (* n 2) (a (- k 1)))) (+ (* n n) (a n))`},
+	{"delay-force", `(begin (delay-force (+ n 1)) (* n n))`},
 }
 
 func TestTheKnownGapsAreStillGaps(t *testing.T) {
@@ -209,6 +217,8 @@ func TestTheFormerGapsNowCompile(t *testing.T) {
 		{"lambda in an expression position", `(+ (* n n) ((lambda (x) (+ x n)) 1))`},
 		{"a closure reaching a helper", `(+ (* n n) ((lambda (f) (f n)) (lambda (y) (+ y 1))))`},
 		{"a closure capturing a local", `(let ((k n)) (+ (* n n) ((lambda (x) (+ x k)) 1)))`},
+		{"a body with internal definitions", `(define y (* n n)) (+ n y)`},
+		{"an internal definition calling a later one", `(define (g k) (+ k n)) (define z (* n n)) (+ z (g 1))`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p, err := CompileToIR(`(define (probe n) `+tc.body+`)`, "test")
