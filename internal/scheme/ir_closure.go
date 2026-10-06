@@ -402,6 +402,36 @@ func (f *irFunc) emitClosureApply(proc irVal, vals []irVal) (irVal, error) {
 // aggregate is toAggregate under the name this file uses for it.
 func (f *irFunc) aggregate(v irVal) string { return f.toAggregate(v) }
 
+// emitDelay emits `delay` and `delay-force`.
+//
+//	(delay EXPR)        =>  (make-promise (lambda () EXPR))
+//	(delay-force EXPR)  =>  the same, marked so that forcing chains iteratively
+//
+// A promise is the interpreter's object and forcing one runs Scheme code, so the
+// wrapping is a runtime call.  The body is not: it compiles like any other
+// expression, and it is the part worth compiling — a delayed computation that
+// does arithmetic should not be interpreted just because forcing it is.
+func (f *irFunc) emitDelay(x *Pair, force bool) (irVal, error) {
+	args, _ := ListToSlice(x.Cdr)
+	if len(args) != 1 {
+		return irVal{}, fmt.Errorf("ir: delay takes one expression")
+	}
+	lam := Cons(Intern("lambda"), listFromSlice([]Value{Empty{}, args[0]}))
+	thunk, err := f.emitLambda(lam)
+	if err != nil {
+		return irVal{}, err
+	}
+	f.want(gsVal + " @gs_delay(" + gsVal + ", i64)")
+	fv := "0"
+	if force {
+		fv = "1"
+	}
+	out := f.reg()
+	fmt.Fprintf(&f.body, "  %s = call %s @gs_delay(%s %s, i64 %s)\n",
+		out, gsVal, gsVal, f.toAggregate(thunk), fv)
+	return f.loadVal(out), nil
+}
+
 // emitComputedCall emits a call whose operator is an expression.
 //
 //	((make 1) 2)      the operator is a call

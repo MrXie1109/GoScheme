@@ -259,6 +259,7 @@ func installBuiltins(m *Machine) {
 	installChars(m)
 	installVectors(m)
 	installControl(m)
+	installDelayThunk(m)
 	installIO(m)
 	installSystem(m)
 	installHashtables(m)

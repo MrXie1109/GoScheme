@@ -1791,6 +1791,43 @@ func TestCompiledProgramAgreesWithTheInterpreter(t *testing.T) {
 (display (f 5))`,
 			want: "12",
 		},
+		// A `guard` compiles its body as a thunk and lets the interpreter run the
+		// handler, so both paths have to agree: the one that returns and the one
+		// that raises.  The first case is the one that was wrong when the thunk
+		// was not called at all — its captured variables came back unbound.
+		{
+			name: "a guard whose body returns",
+			src: `(define (f n) (guard (e (#t (+ n 99))) (+ (* n n) 1)))
+(display (f 5))`,
+			want: "26",
+		},
+		{
+			name: "a guard that catches",
+			src:  `(display (guard (e (#t 'caught)) (raise 'oops)))`,
+			want: "caught",
+		},
+		{
+			name: "a guard with a variable in its body",
+			src: `(define (f n) (guard (e (#t (* n 100))) (+ (* n n) n)))
+(display (list (f 5) (guard (e (#t (f 3))) (raise 'x))))`,
+			want: "(30 12)",
+		},
+		// A promise is the interpreter's object but its body is not: `delay` is
+		// emitted as a compiled thunk, so forcing one runs machine code.  The
+		// memoisation is the part that says a promise is a promise.
+		{
+			name: "a delay is forced once",
+			src: `(define count 0)
+(define p (delay (begin (set! count (+ count 1)) (* 6 7))))
+(display (list (force p) (force p) count))`,
+			want: "(42 42 1)",
+		},
+		{
+			name: "a delay-force chain",
+			src: `(define (loop n) (if (= n 0) 42 (delay-force (loop (- n 1)))))
+(display (force (loop 5)))`,
+			want: "42",
+		},
 		// The unspecified value must not be confusable with the values a program
 		// can legitimately produce, which is the whole reason it has a tag of its
 		// own rather than being the fixnum 0 or the empty list.

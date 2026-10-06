@@ -493,6 +493,16 @@ func (r *pureReport) scanCombination(x *Pair, local map[string]bool, keep bool) 
 			// a compiled thunk, so what the scan has to judge is the body, and
 			// the clauses are the interpreter's business.  Scanning the body
 			// means a guard around arithmetic is compiled rather than refused.
+			// `delay` and `delay-force` are emitted as a compiled thunk wrapped
+			// in a promise, so the body is scanned like any other expression.
+			if head.Name == "delay" || head.Name == "delay-force" {
+				if len(args) == 1 {
+					r.scanKeep(args[0], local, false)
+				}
+				r.runtimeCalls = append(r.runtimeCalls, head.Name)
+				r.runtimeCost++
+				return
+			}
 			if head.Name == "guard" {
 				if len(args) < 1 {
 					return

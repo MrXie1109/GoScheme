@@ -15,6 +15,22 @@ func makeThunk(body []Value, env *Env) *Closure {
 	return &Closure{Clauses: []ClosureClause{{Body: body, BodyNames: scanBodyNames(body)}}, Env: env}
 }
 
+// installDelayThunk registers the primitive a compiled `delay` builds its
+// promise through.
+//
+// A compiled `delay` is a thunk — the body is machine code and compiles like any
+// other — but a promise is the interpreter's object, and forcing one walks a
+// chain of promises and runs Scheme code.  So the compiled form calls here with
+// the thunk it built, and what comes back is an ordinary Scheme promise that
+// `force` handles without knowing a compiler was involved.
+func installDelayThunk(m *Machine) {
+	m.def("make-promise-from-thunk", 1, 2, func(m *Machine, a []Value) {
+		thunk := wantProcedure("make-promise-from-thunk", a[0])
+		force := len(a) == 2 && IsTrue(a[1])
+		m.Return(&Promise{Thunk: thunk, IsDelayForce: force})
+	})
+}
+
 func evalDelay(m *Machine, form Value, env *Env) {
 	args := formArgs(form)
 	if len(args) != 1 {

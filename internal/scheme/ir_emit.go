@@ -447,6 +447,10 @@ func (f *irFunc) emitForm(x *Pair) (irVal, error) {
 		return f.emitLambda(x)
 	case "guard":
 		return f.emitGuard(x)
+	case "delay":
+		return f.emitDelay(x, false)
+	case "delay-force":
+		return f.emitDelay(x, true)
 	}
 	// Anything else is a call — unless it is a form rather than a procedure.
 	// `set!`, `lambda`, `define` and the rest are syntax, not values, so

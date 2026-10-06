@@ -929,3 +929,35 @@ func gs_guard(clauses *C.char, n C.int64_t, thunk C.gs_val) C.gs_val {
 	}
 	return tagged(v)
 }
+
+// gs_delay builds a promise from a compiled thunk.
+//
+// A `delay` is a thunk and nothing else — the body is not run until the promise
+// is forced — so the body compiles and only the wrapping is the runtime's.  This
+// is the same division gs_guard uses: the part that is arithmetic becomes machine
+// code and the part that is about the machine's own machinery stays where that
+// machinery lives.
+//
+// force is written in the interpreter because forcing walks a chain of promises
+// and may run Scheme code, which is not something generated code does.
+//
+//export gs_delay
+func gs_delay(thunk C.gs_val, force C.int64_t) C.gs_val {
+	if mach == nil {
+		gs_init(0, nil)
+	}
+	// The same round trip gs_guard makes, and for the same reason: the promise
+	// has to hold a *Scheme* procedure, and what crossed the boundary is a
+	// compiled closure that the interpreter applies.
+	newPro, ok := mach.Global.Lookup(re.Intern("make-promise-from-thunk"))
+	if !ok {
+		report(fmt.Errorf("delay: make-promise-from-thunk is not bound"))
+		return handle(store(re.UnspecifiedValue))
+	}
+	v, err := mach.ApplySync(newPro, []re.Value{untagged(thunk), re.BooleanOf(force != 0)})
+	if err != nil {
+		report(err)
+		return handle(store(re.UnspecifiedValue))
+	}
+	return tagged(v)
+}

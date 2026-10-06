@@ -181,7 +181,6 @@ var knownGaps = []struct{ name, body string }{
 	// reported "b: undefined" where the interpreter found it.  Emitting it would
 	// need a real `letrec` in the emitter, which is a feature rather than a rule.
 	{"mutually recursive internal definitions", `(define (a k) (if (= k 0) (+ n 1) (b (- k 1)))) (define (b k) (if (= k 0) (* n 2) (a (- k 1)))) (+ (* n n) (a n))`},
-	{"delay-force", `(begin (delay-force (+ n 1)) (* n n))`},
 }
 
 func TestTheKnownGapsAreStillGaps(t *testing.T) {
@@ -219,6 +218,8 @@ func TestTheFormerGapsNowCompile(t *testing.T) {
 		{"a body with internal definitions", `(define y (* n n)) (+ n y)`},
 		{"an internal definition calling a later one", `(define (g k) (+ k n)) (define z (* n n)) (+ z (g 1))`},
 		{"guard", `(guard (e (#t (+ n 1))) (+ (* n n) 1))`},
+		{"delay", `(begin (delay (+ n 1)) (* n n))`},
+		{"delay-force", `(begin (delay-force (+ n 1)) (* n n))`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p, err := CompileToIR(`(define (probe n) `+tc.body+`)`, "test")
