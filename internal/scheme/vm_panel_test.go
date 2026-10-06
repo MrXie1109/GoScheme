@@ -6,7 +6,8 @@ import "testing"
 
 // The benchmark panel: the same programs run by the bytecode VM and by the
 // tree-walker, so that the two execution paths can be compared on more than one
-// shape of work.  Numbers are in docs/bytecode.md; this is where they come from.
+// shape of work.  The numbers are in docs/performance.md; this is where they
+// come from.
 var panelPrograms = map[string]string{
 	// Non-tail recursion with arithmetic in the body.
 	"fib": `(define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))

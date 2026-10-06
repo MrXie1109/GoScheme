@@ -147,7 +147,18 @@ happen.
 
 - **It is a hybrid.** Part of the program is machine code and part is the
   interpreter. This is by design, but it means the speedup depends on the
-  program: arithmetic-heavy code improves a lot, IO-heavy code barely at all.
+  program, and the honest breakdown is narrower than "compiled is faster":
+  tree recursion whose results feed arithmetic (the shape of `fib`) is 3.4×
+  faster; a **tail loop is a wash**, because each iteration is still a call with
+  its argument array rebuilt, which costs about what the bytecode VM's dispatch
+  costs; and a procedure whose body is mostly library calls is **slower**,
+  because it pays the boundary crossing and gains nothing. [docs/performance.md](performance.md)
+  has the tables.
+- **Tail calls are jumps, and that is a correctness requirement rather than an
+  optimization.** `musttail` is emitted for a call in tail position, so a loop
+  written as recursion runs in constant stack as R7RS requires. Without it the
+  generated code consumed a frame per iteration and a loop of 90000 iterations
+  segfaulted where the interpreter returned the right answer.
 - **No cross-compilation.** `compile` targets the host. The interpreter itself
   still cross-compiles to six targets.
 - **The toolchain must be installed.** `opt`, `llc` and a C compiler, with the

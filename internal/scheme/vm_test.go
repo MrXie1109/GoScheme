@@ -375,7 +375,8 @@ func runProgramText(t *testing.T, src string, interpret bool) string {
 }
 
 // TestVMDifferential is the contract: the same program prints the same thing
-// compiled, compiled-and-reloaded, interpreted, and obfuscated.
+// compiled, packed, and interpreted.  Any disagreement between the engines is a
+// bug in one of them, and which one is not something the program can know.
 func TestVMDifferential(t *testing.T) {
 	for _, p := range vmPrograms {
 		p := p

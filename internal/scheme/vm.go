@@ -322,7 +322,11 @@ type instr struct {
 
 // Code is one compiled body: its instructions, the literals they mention, and
 // the shape of the frame they run in.  A lambda's body is a Code of its own,
-// held in the parent's constant pool; that tree is what a .scmc file stores.
+// held in the parent's constant pool.
+//
+// The tree lives in memory only.  It used to be what a compiled file held, and
+// that format is gone: compiling takes milliseconds, so a script is read,
+// compiled and run without anything being written out in between.
 type Code struct {
 	Name   string
 	Instrs []instr

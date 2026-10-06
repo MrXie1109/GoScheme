@@ -369,18 +369,57 @@ cost rather than speed.
 
 | workload | interpreted | compiled | ratio | native procs |
 |---|---|---|---|---|
-| `fib` | 7.84 ms | 3.54 ms | **2.21×** | 1 |
-| `lists` | 70.79 ms | 30.61 ms | **2.31×** | 2 |
-| `tail-loop` | 48.31 ms | 46.93 ms | 1.03× | 1 |
-| `locals` | 54.24 ms | 52.52 ms | 1.03× | 0 |
-| `higher-order` | 21.83 ms | 21.25 ms | 1.03× | 2 |
-| `mini-eval` | 20.89 ms | 20.91 ms | 1.00× | 0 |
-| `globals` | 54.85 ms | 55.56 ms | 0.99× | 1 |
-| `closures` | 16.56 ms | 16.70 ms | 0.99× | 0 |
-| `sort` | 10.94 ms | 11.18 ms | 0.98× | 1 |
-| `callcc` | 10.81 ms | 11.25 ms | 0.96× | 0 |
-| `vectors` | 29.51 ms | 43.60 ms | **0.68×** | 1 |
-| `strings` | 8.70 ms | 19.61 ms | **0.44×** | 1 |
+| `fib` | 8.14 ms | 3.52 ms | **2.31×** | 1 |
+| `tail-loop` | 46.32 ms | 47.09 ms | 0.98× | 1 |
+| `locals` | 51.60 ms | 52.98 ms | 0.97× | 0 |
+| `globals` | 53.61 ms | 55.42 ms | 0.97× | 1 |
+| `closures` | 16.54 ms | 17.14 ms | 0.96× | 0 |
+| `callcc` | 10.77 ms | 11.24 ms | 0.96× | 0 |
+| `sort` | 10.55 ms | 11.15 ms | 0.95× | 1 |
+| `higher-order` | 19.49 ms | 20.78 ms | 0.94× | 2 |
+| `lists` | 66.56 ms | 71.70 ms | 0.93× | 2 |
+| `mini-eval` | 20.21 ms | 20.34 ms | 0.99× | 0 |
+| `vectors` | 28.12 ms | 47.86 ms | **0.59×** | 1 |
+| `strings` | 8.24 ms | 18.09 ms | **0.46×** | 1 |
+
+The workloads here are small — a few milliseconds each — so this panel measures
+process startup as much as it measures the code, and startup for a compiled
+program is a 19 MB image that links a copy of the Go runtime.  That is worth
+knowing on its own, and it is not the same question as whether the generated code
+is fast.
+
+### The steady-state measurement, which is a different answer
+
+To separate the two, the same loop run for long enough that startup disappears:
+
+| iterations of `(loop i acc)` | interpreted | compiled |
+|---|---|---|
+| 200,000 | 0.061 s | 0.050 s |
+| 2,000,000 | 0.448 s | 0.450 s |
+| 20,000,000 | 4.481 s | 4.552 s |
+
+At 20 million iterations the compiled loop is **not faster** — 4.55 s against
+4.48 s, within noise of each other.  The generated code is good: `opt -O2` folds
+the eighteen basic blocks the emitter produces down to two and removes every
+alloca, leaving a tight loop.  What it cannot remove is the call itself.  Each
+iteration is a `musttail call` with its argument array rebuilt in the caller's
+frame, and that costs about what the bytecode VM's dispatch costs — the VM is a
+tight loop over a pre-decoded instruction array, which is a hard thing to beat
+with a call.
+
+So the honest summary of the two engines is narrower than "compiled is faster":
+
+- **Tree recursion whose results feed arithmetic is much faster**: `fib 30` is
+  0.17 s compiled against 0.60 s interpreted, consistently, and that is where the
+  3.4× figure quoted at the top of this section comes from.
+- **A tail loop is a wash.**  The interpreter's dispatch is already near-optimal
+  for it, and the compiler does not get to remove the call.
+- **A procedure whose body is mostly library calls is slower**, because it pays
+  the crossing and the startup and gains nothing.
+
+`fib` is the case the compiler was built for and it delivers there.  Quoting it
+alone would be misleading, which is why the panel and the steady-state table are
+both here.
 
 Two things in that table deserve to be said plainly rather than left in the
 numbers.
@@ -395,14 +434,14 @@ procedures were all refused is an interpreter with a 19 MB runtime attached,
 which is why the `native` column is in the table at all.
 
 **Two rows are genuinely slower, and the reason is worth writing down.**
-`strings` (0.44×) and `vectors` (0.68×) do their real work in library calls and
-builtin loop procedures, which are not compiled; what compiling bought them is a
-native stub around an interpreted body, and what it cost them is the startup of a
-19 MB program that links a copy of the Go runtime.  These are per-run times on
-workloads of a few milliseconds, so startup is visible in them.  The general
-lesson is the one `docs/compile.md` states in its limitations: **a hybrid's
-speedup depends on the program**, and a compiler that does not compile the part
-you are timing cannot make it faster.
+`strings` (0.46×) and `vectors` (0.59×) do their real work in library calls —
+`string-append`, `vector-ref`, `vector-set!` — which are not compiled; what
+compiling bought them is a native stub around an interpreted body, and what it
+cost them is the startup of a 19 MB program that links a copy of the Go runtime.
+These are per-run times on workloads of a few milliseconds, so startup is visible
+in them.  The general lesson is the one `docs/compile.md` states in its
+limitations: **a hybrid's speedup depends on the program**, and a compiler that
+does not compile the part you are timing cannot make it faster.
 
 ### Why compile at all, then
 
@@ -411,8 +450,10 @@ program whose inner loop is arithmetic over its own parameters — the shape of
 `fib`, and of a great deal of numeric Scheme — gets 3.4× from a compiler that
 refuses nothing it cannot prove, and the language stays whole around it rather
 than becoming a subset with a second, disagreeing implementation.  What this
-document will not do is claim a general speedup by quoting the `fib` number next
-to the panel, which is why both are here.
+document will not do is claim a general speedup: `fib` is recusion whose results
+feed arithmetic, a tail loop gets nothing, and a program that spends its time in
+library calls gets less than nothing.  All three are above, and the reason the
+compiler exists is the first one.
 
 ### Where the compiler's number would have to come from
 
