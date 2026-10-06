@@ -82,17 +82,17 @@ func TestACompiledBuildDoesNotWarn(t *testing.T) {
 }
 
 func TestExplainNamesWhatWasLeftBehind(t *testing.T) {
-	// A `guard` is one of the constructs the generator has no rule for yet, so
-	// it is refused with a reason — which is what --explain is for.  (A `set!`
-	// was the example here until it started compiling, then a `lambda`, then a
-	// nested `define`; the test needs a refusal, and what it is about is the
-	// reporting rather than which construct is refused.)
-	prog, err := scheme.CompileToIR(`(define (f x) (guard (e (#t x)) (+ x 1)))`, "test")
+	// A `delay-force` is one of the constructs the generator has no rule for
+	// yet, so it is refused with a reason — which is what --explain is for.  (A
+	// `set!` was the example here until it started compiling, then a `lambda`,
+	// then a nested `define`, then a `guard`; the test needs a refusal, and what
+	// it is about is the reporting rather than which construct is refused.)
+	prog, err := scheme.CompileToIR(`(define (f x) (delay-force (+ x 1)))`, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(prog.Refused) == 0 {
-		t.Fatal("a body holding a guard should be refused, with a reason")
+		t.Fatal("a body holding a delay-force should be refused, with a reason")
 	}
 	var buf bytes.Buffer
 	reportSplit(&buf, prog, true)

@@ -78,7 +78,6 @@ func TestIRRefusesWhatItCannotEmit(t *testing.T) {
 		name string
 		src  string
 	}{
-		{"guard", `(define (f x) (guard (e (#t x)) (+ x 1)))`},
 		{"do", `(define (f n) (do ((i 0 (+ i 1))) ((= i n) i)))`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -456,12 +455,12 @@ func TestIRRefusedIsReported(t *testing.T) {
 	p, err := CompileToIR(`(define (pure x) (+ x 1))
 (define (reader x) (+ x global))
 (define (setter x) (set! x 1))
-(define (guarded x) (guard (e (#t x)) (+ x 1)))`, "test")
+(define (deferred x) (delay-force (+ x 1)))`, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A global read is compiled, and so is an assignment to a local; the guard
-	// is not.
+	// A global read is compiled, and so is an assignment to a local; the
+	// delay-force is not.
 	if p.Native != 3 {
 		t.Errorf("compiled %d procedures natively, want 3: %v", p.Native, p.Refused)
 	}
@@ -469,7 +468,7 @@ func TestIRRefusedIsReported(t *testing.T) {
 		t.Fatalf("refusals = %v, want one per refused procedure", p.Refused)
 	}
 	joined := strings.Join(p.Refused, "\n")
-	for _, want := range []string{"guarded"} {
+	for _, want := range []string{"deferred"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("no refusal names %s: %v", want, p.Refused)
 		}

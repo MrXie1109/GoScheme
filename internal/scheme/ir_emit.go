@@ -445,6 +445,8 @@ func (f *irFunc) emitForm(x *Pair) (irVal, error) {
 		return f.emitSet(args)
 	case "lambda":
 		return f.emitLambda(x)
+	case "guard":
+		return f.emitGuard(x)
 	}
 	// Anything else is a call — unless it is a form rather than a procedure.
 	// `set!`, `lambda`, `define` and the rest are syntax, not values, so
@@ -474,7 +476,12 @@ func isSyntax(name string) bool {
 		"parameterize", "guard", "assert", "define-syntax", "let-syntax",
 		"letrec-syntax", "syntax-rules", "define-record-type", "case-lambda",
 		"cons-stream", "the-environment", "define-library", "import",
-		"include", "include-ci", "cond-expand", "else", "=>":
+		"include", "include-ci", "cond-expand", "else", "=>",
+		// `match` is syntax this generator has no rule for, and it has to be
+		// listed or its clauses are taken for a call's arguments: walking them
+		// found `(else ...)` and reported "else is a form, not a call this can
+		// compile", which names the wrong thing and hides the real one.
+		"match":
 		return true
 	}
 	return false

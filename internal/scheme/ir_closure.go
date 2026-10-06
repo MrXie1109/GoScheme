@@ -510,3 +510,66 @@ func (f *irFunc) emitCaptureSet(idx int, val irVal) error {
 		f.selfHandle, idx, gsVal, f.toAggregate(val))
 	return nil
 }
+
+// emitGuard emits a `guard`.
+//
+//	(guard (VAR (TEST BODY ...) ...) BODY ...)
+//
+// The body is emitted as a compiled thunk — a closure of no arguments — and the
+// whole form becomes one call into the runtime, which runs the thunk under the
+// interpreter's own handler machinery.  That is the split the runtime's gs_guard
+// documents: the part worth compiling is the body, and the part that is about
+// conditions rather than about arithmetic stays where `raise` looks for handlers.
+//
+// The clauses cross as their own source text.  An encoding of clause structure
+// across the C ABI would be a second representation of Scheme to keep in step
+// with the first, and the text round trip is one a top-level form already makes.
+func (f *irFunc) emitGuard(x *Pair) (irVal, error) {
+	// The form arrives already expanded — expandBody ran over the whole
+	// procedure before anything looked at it — so this works from it directly
+	// rather than expanding again.  Re-expanding was wrong in a way that took a
+	// while to see: expandDerived has no `guard` case, so it walked into the
+	// clause list and rebuilt it, and the body it handed back was not the one
+	// the caller had.
+	args, _ := ListToSlice(x.Cdr)
+	if len(args) < 1 {
+		return irVal{}, fmt.Errorf("ir: guard with no clauses")
+	}
+	// The clauses cross as their own source text.  An encoding of clause
+	// structure across the C ABI would be a second representation of Scheme to
+	// keep in step with the first, and the text round trip is one a top-level
+	// form already makes.  A clause shape this does not understand — `=>`, a
+	// bare test — is then the interpreter's business rather than a refusal here.
+	clauses := WriteToString(args[0])
+
+	// The body as a thunk: a closure of no arguments holding the compiled body.
+	// A closure rather than a plain function because the runtime applies it, and
+	// what the runtime holds is a value.
+	body := args[1:]
+	if len(body) == 0 {
+		return irVal{}, fmt.Errorf("ir: guard with no body")
+	}
+	lam := Cons(Intern("lambda"), listFromSlice(append([]Value{Empty{}}, body...)))
+	thunk, err := f.emitLambda(lam)
+	if err != nil {
+		return irVal{}, err
+	}
+	f.want(gsVal + " @gs_guard(i8*, i64, " + gsVal + ")")
+	lit := f.mod.stringLiteral(clauses, "guard")
+	out := f.reg()
+	fmt.Fprintf(&f.body, "  %s = call %s @gs_guard(i8* %s, i64 %d, %s %s)\n",
+		out, gsVal, lit, len(clauses), gsVal, f.toAggregate(thunk))
+	return f.loadVal(out), nil
+}
+
+// emitComputedCall emits a call whose operator is an expression.
+//
+//	((make 1) 2)      the operator is a call
+//	(f 2)             the operator is a parameter holding a procedure
+//
+// The operator is evaluated first and the arguments after it, which is the order
+// Scheme evaluates them in — and it matters, because both may have effects.  The
+// callee then goes to the runtime, which knows how to apply whatever it is: a
+// compiled closure, an interpreted one, a primitive, a continuation.  That is
+// the same division gs_call makes for a callee known by name, and it is what
+// makes a compiled procedure and an interpreted one interchangeable as values.

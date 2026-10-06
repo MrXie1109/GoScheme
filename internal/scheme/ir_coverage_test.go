@@ -174,7 +174,6 @@ func TestQuotedDerivedSyntaxIsLeftAlone(t *testing.T) {
 // working as intended.
 var knownGaps = []struct{ name, body string }{
 	{"a dotted parameter list", `(lambda (x . rest) (+ x n))`},
-	{"guard", `(guard (e (#t (+ n 1))) (+ (* n n) 1))`},
 	// Internal definitions that call each other are a `letrec*` with a forward
 	// reference, which is the one shape the rewrite into a `let*` cannot take:
 	// `let*` binds each name in its own frame, so `b` does not exist while `a` is
@@ -219,6 +218,7 @@ func TestTheFormerGapsNowCompile(t *testing.T) {
 		{"a closure capturing a local", `(let ((k n)) (+ (* n n) ((lambda (x) (+ x k)) 1)))`},
 		{"a body with internal definitions", `(define y (* n n)) (+ n y)`},
 		{"an internal definition calling a later one", `(define (g k) (+ k n)) (define z (* n n)) (+ z (g 1))`},
+		{"guard", `(guard (e (#t (+ n 1))) (+ (* n n) 1))`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p, err := CompileToIR(`(define (probe n) `+tc.body+`)`, "test")

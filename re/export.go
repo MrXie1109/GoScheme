@@ -886,3 +886,46 @@ func report(err error) {
 	}
 	os.Stderr.WriteString("goscheme: " + err.Error() + "\n")
 }
+
+// gs_guard runs a compiled body under a `guard`.
+//
+// `guard` is the one derived form that cannot be rewritten into core syntax,
+// because what it means is a handler installed on the machine plus a
+// continuation to escape to — and a compiled body has neither.  So the *shape*
+// becomes this call: the body is emitted as a compiled thunk, which is the part
+// worth compiling, and the clauses are passed as the text of a `guard` form the
+// interpreter runs with that thunk as its body.
+//
+// The interpreter's own `guard` therefore does the work — installing the handler,
+// escaping, unwinding `dynamic-wind` — and there is no second implementation to
+// disagree with it.  A body that returns normally never reaches the handler.
+//
+// The thunk is bound to a name before the form is built, because a Scheme call
+// names its operator: `(thunk)` would ask the runtime for a binding called
+// `thunk` rather than call the closure that was passed in.  An earlier version
+// wrote exactly that and the closure was never called, so its captured variables
+// never existed — the interpreter reported them unbound.
+//
+//export gs_guard
+func gs_guard(clauses *C.char, n C.int64_t, thunk C.gs_val) C.gs_val {
+	if mach == nil {
+		gs_init(0, nil)
+	}
+	src := goString(clauses, int64(n))
+	r := re.NewStringReader(src)
+	r.Source = "guard"
+	forms, err := r.ReadAll()
+	if err != nil || len(forms) != 1 {
+		report(fmt.Errorf("guard: malformed clause list"))
+		return handle(store(re.UnspecifiedValue))
+	}
+	name := re.Intern("guard-thunk")
+	mach.Global.Define(name, untagged(thunk))
+	form := re.List(re.Intern("guard"), forms[0], re.List(name))
+	v, err := mach.RunFormsCompiled([]re.Value{form}, mach.Global)
+	if err != nil {
+		report(err)
+		return handle(store(re.UnspecifiedValue))
+	}
+	return tagged(v)
+}

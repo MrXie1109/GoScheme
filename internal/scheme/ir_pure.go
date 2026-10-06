@@ -489,6 +489,32 @@ func (r *pureReport) scanCombination(x *Pair, local map[string]bool, keep bool) 
 				r.scanLambda(args, local)
 				return
 			}
+			// A `guard` is emitted as one call into the runtime with its body as
+			// a compiled thunk, so what the scan has to judge is the body, and
+			// the clauses are the interpreter's business.  Scanning the body
+			// means a guard around arithmetic is compiled rather than refused.
+			if head.Name == "guard" {
+				if len(args) < 1 {
+					return
+				}
+				for _, b := range args[1:] {
+					r.scanKeep(b, local, keep)
+					if !r.ok {
+						return
+					}
+				}
+				// The clauses are evaluated only when a condition is raised, so
+				// they are not counted toward this body's arithmetic — the guard
+				// is a boundary crossing and nothing more.
+				r.runtimeCalls = append(r.runtimeCalls, "guard")
+				r.runtimeCost++
+				return
+			}
+			// `match` is not a form the emitter has a rule for, and its clauses
+			// are not a call's arguments: walking them looking for calls found
+			// `(else ...)` and reported "else is a form, not a call this can
+			// compile", which names the wrong thing entirely.  A form with no
+			// rule is refused as itself, without descending.
 			r.stop("%s is a form, not a call this can compile", head.Name)
 			return
 		}
