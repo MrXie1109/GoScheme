@@ -42,6 +42,11 @@ const matchLib = "(goscheme match)"
 
 func installMatch(m *Machine) {
 	m.defSyntax(matchLib, "match")
+	// The helper the compiler's match rewrite calls, under a name no source
+	// program can write: a compiled `match` is a call to it with the clauses
+	// flattened into arguments.  It is the same primitive the bytecode compiler
+	// uses, so the two agree about what a pattern matches and what it binds.
+	m.Builtin.DefineName("%match-helper", matchHelper)
 }
 
 // evalMatch evaluates (match expr clause ...).

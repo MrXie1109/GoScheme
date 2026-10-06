@@ -99,6 +99,11 @@ func expandDerived(form Value) Value {
 				return expandedChildren(rewritten)
 			}
 			return form
+		case "match":
+			if rewritten, ok := expandMatch(p); ok {
+				return expandedChildren(rewritten)
+			}
+			return form
 		case "when":
 			if rewritten, ok := expandWhenUnless(p, false); ok {
 				return expandedChildren(rewritten)
@@ -756,4 +761,58 @@ func defineNameAndInit(args []Value) (Value, Value, bool) {
 		return s, Cons(Intern("lambda"), listFromSlice(lam)), true
 	}
 	return nil, nil, false
+}
+
+// expandMatch rewrites a `match` into the call the bytecode compiler also
+// produces: the helper procedure, the subject, and four arguments per clause.
+//
+//	(match SUBJ (PAT (guard G) BODY ...) ...)
+//	  =>
+//	(%match-helper SUBJ PAT (VARS...) GUARD-THUNK BODY-THUNK ...)
+//
+// The helper does the pattern matching, which is the same `matchPattern` the
+// interpreter runs, so the two agree about what matches and what it binds.  The
+// guard and the body become `lambda`s over the variables the pattern binds,
+// which is exactly the work in a match — and now that closures compile, this
+// rewrite makes the whole form compilable with no rule for `match` in the
+// emitter at all.
+//
+// It is the same division as `guard` and `delay`: the machinery stays where it
+// lives and the computation becomes machine code.
+func expandMatch(form *Pair) (Value, bool) {
+	args, _ := ListToSlice(form.Cdr)
+	if len(args) < 2 {
+		return nil, false
+	}
+	subject := args[0]
+	out := []Value{Intern("%match-helper"), subject}
+	for _, cl := range args[1:] {
+		pattern, guard, body, err := parseMatchClause(cl)
+		if err != nil {
+			return nil, false // the interpreter reports it
+		}
+		vars := matchPatternVars(pattern)
+		formals := make([]Value, len(vars))
+		for i, v := range vars {
+			formals[i] = v
+		}
+		formalList := listFromSlice(formals)
+		// The pattern and the variable list are *data*, not expressions: the
+		// helper matches with them and binds them by name.  They are quoted so
+		// that nothing downstream reads them as code — an `else` pattern walked
+		// as an expression is refused with "else is a form, not a value this can
+		// compile", which names a keyword that is perfectly correct where it is.
+		out = append(out,
+			List(Intern("quote"), pattern),
+			List(Intern("quote"), formalList))
+		if guard != nil {
+			out = append(out, Cons(Intern("lambda"),
+				listFromSlice([]Value{formalList, guard})))
+		} else {
+			out = append(out, Boolean(false))
+		}
+		out = append(out, Cons(Intern("lambda"),
+			listFromSlice(append([]Value{formalList}, body...))))
+	}
+	return listFromSlice(out), true
 }

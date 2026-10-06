@@ -480,12 +480,7 @@ func isSyntax(name string) bool {
 		"parameterize", "guard", "assert", "define-syntax", "let-syntax",
 		"letrec-syntax", "syntax-rules", "define-record-type", "case-lambda",
 		"cons-stream", "the-environment", "define-library", "import",
-		"include", "include-ci", "cond-expand", "else", "=>",
-		// `match` is syntax this generator has no rule for, and it has to be
-		// listed or its clauses are taken for a call's arguments: walking them
-		// found `(else ...)` and reported "else is a form, not a call this can
-		// compile", which names the wrong thing and hides the real one.
-		"match":
+		"include", "include-ci", "cond-expand", "else", "=>":
 		return true
 	}
 	return false
