@@ -853,6 +853,15 @@ type countLoop struct {
 	count *Symbol
 	acc   *Symbol
 	kind  loopKind
+	// inclusive says the loop folds the zero iteration too, which is what
+	// `(< i 0)` or `(<= i 0)` does where `(= i 0)` does not:
+	//
+	//	(= i 0)  folds n-1 … 1, then stops at 0
+	//	(< i 0)  folds n-1 … 0, then stops at -1
+	//
+	// The two differ by one element and both are ordinary ways to write a
+	// count-down loop, so the recogniser records which and the runtime is told.
+	inclusive bool
 	// extras are the loop's invariants: values the fold adds that come from an
 	// enclosing let and therefore cannot change while the loop runs.
 	//
@@ -896,9 +905,22 @@ func recogniseCountLoopInv(name string, formals []*Symbol, body []Value, inv map
 	}
 	test, then, alt := parts[0], parts[1], parts[2]
 
-	// (if (= N 0) ...) — the test compares a parameter with zero.
+	// The test compares a parameter with zero, either with `=` or with the
+	// ordering a count-down loop is often written with:
+	//
+	//	(if (= n 0) acc (f (- n 1) ...))
+	//	(if (< n 1) acc (f (- n 1) ...))
+	//	(if (<= n 0) acc (f (- n 1) ...))
+	//
+	// All three stop at the same place when the counter only ever decreases by
+	// one from a whole number, which is what the body below is checked for.  A
+	// `>` or `>=` would stop somewhere else and is not accepted.
 	testForm, ok := test.(*Pair)
-	if !ok || !isForm(testForm, "=") {
+	if !ok {
+		return none, false
+	}
+	testHead, ok := testForm.Car.(*Symbol)
+	if !ok {
 		return none, false
 	}
 	testArgs, _ := ListToSlice(testForm.Cdr)
@@ -906,11 +928,37 @@ func recogniseCountLoopInv(name string, formals []*Symbol, body []Value, inv map
 		return none, false
 	}
 	var countSym *Symbol
-	if s, ok := testArgs[0].(*Symbol); ok && isZeroLiteral(testArgs[1]) {
-		countSym = s
-	} else if s, ok := testArgs[1].(*Symbol); ok && isZeroLiteral(testArgs[0]) {
-		countSym = s
+	// Whether the zero iteration is folded, which the test decides.
+	inclusive := false
+	// Which side the counter is on, and what it is compared against.
+	var bound Value
+	if sym, ok := testArgs[0].(*Symbol); ok {
+		countSym, bound = sym, testArgs[1]
+	} else if sym, ok := testArgs[1].(*Symbol); ok {
+		countSym, bound = sym, testArgs[0]
 	} else {
+		return none, false
+	}
+	switch testHead.Name {
+	case "=":
+		if !isZeroLiteral(bound) {
+			return none, false
+		}
+	case "<", "<=":
+		// The ordering test a count-down loop is written with.  `(< i 0)` and
+		// `(<= i 0)` both stop later than `(= i 0)` — one iteration, or two —
+		// but those extra iterations return the accumulator without folding
+		// anything, because the counter has already gone past zero.  So the
+		// answer is the same and the runtime can stop at zero.
+		//
+		// What is *not* the same is a bound on the other side: `(> i 0)` stops
+		// before the zero iteration and would drop an element.
+		n, ok := bound.(*Integer)
+		if !ok || !n.small || n.i != 0 {
+			return none, false
+		}
+		inclusive = true
+	default:
 		return none, false
 	}
 
@@ -942,7 +990,7 @@ func recogniseCountLoopInv(name string, formals []*Symbol, body []Value, inv map
 	if !hasParam(formals, countSym) || !hasParam(formals, accSym) {
 		return none, false
 	}
-	return countLoop{name: name, count: countSym, acc: accSym, kind: kind, extras: extras}, true
+	return countLoop{name: name, count: countSym, acc: accSym, kind: kind, extras: extras, inclusive: inclusive}, true
 }
 
 // isZeroLiteral reports whether a value is the literal 0.
@@ -1056,6 +1104,12 @@ func RunCountLoop(kind int, n, acc Value) Value {
 	return RunCountLoopExtras(kind, n, acc, nil)
 }
 
+// RunCountLoopFull is the entry point the generated code uses: it carries the
+// invariants and whether the zero iteration is folded.
+func RunCountLoopFull(kind int, n, acc Value, extras []Value, inclusive bool) Value {
+	return runCountLoop(kind, n, acc, extras, inclusive)
+}
+
 // RunCountLoopExtras is RunCountLoop with the loop's invariants.
 //
 // Each iteration adds the counter plus every invariant, which is what
@@ -1064,11 +1118,22 @@ func RunCountLoop(kind int, n, acc Value) Value {
 // because a let binds them once and nothing in the loop's scope can assign
 // them — that is the property the recogniser checked before accepting them.
 func RunCountLoopExtras(kind int, n, acc Value, extras []Value) Value {
+	return runCountLoop(kind, n, acc, extras, false)
+}
+
+// runCountLoop is the walk itself, with the flag that says whether the zero
+// iteration is folded.
+func runCountLoop(kind int, n, acc Value, extras []Value, inclusive bool) Value {
 	i, ok := n.(*Integer)
 	if !ok || !i.small || i.i < 0 {
 		return acc
 	}
-	for k := i.i; k > 0; k-- {
+	stop := int64(0)
+	if inclusive {
+		// One more iteration, the one that folds the zero.
+		stop = -1
+	}
+	for k := i.i; k > stop; k-- {
 		switch kind {
 		case walkSum:
 			acc = NumAdd(acc, Int(k))
@@ -1089,7 +1154,7 @@ func (f *irFunc) emitCountLoop(w countLoop) {
 	f.emitCountLoopArgs(w.kind, []irVal{
 		{bits: "%p_" + w.count.Name + ".bits", tag: "%p_" + w.count.Name + ".tag"},
 		{bits: "%p_" + w.acc.Name + ".bits", tag: "%p_" + w.acc.Name + ".tag"},
-	}, nil)
+	}, nil, w.inclusive)
 }
 
 // ---------------------------------------------------------------------------
@@ -1447,7 +1512,11 @@ func (f *irFunc) emitWalkCall(loopName string, vars []*Symbol, body []Value, arg
 	case shapeVec:
 		f.emitVecWalkArgs(k, pred, args)
 	case shapeCount:
-		f.emitCountLoopArgs(k, args, extraVals)
+		incl := false
+		if w, ok := recogniseCountLoopInv(loopName, vars, body, inv); ok {
+			incl = w.inclusive
+		}
+		f.emitCountLoopArgs(k, args, extraVals, incl)
 	case shapeUp:
 		if u, ok := recogniseUpLoop(loopName, vars, body); ok {
 			f.emitUpLoopArgs(k, args, u)
@@ -1477,9 +1546,14 @@ func (f *irFunc) emitBuildArgs(w buildWalk, args []irVal) {
 		return
 	}
 	mode := buildCopy
-	if w.filter {
+	switch {
+	case w.filter:
 		mode = buildFilter
-	} else if !w.wantElement {
+	case w.op == "+":
+		mode = buildSum
+	case w.op == "*":
+		mode = buildProduct
+	case w.op == "cons" && !w.wantElement:
 		mode = buildMap
 	}
 	f.want(gsVal + " @gs_build(i32, " + gsVal + "*, i32)")
@@ -1592,11 +1666,15 @@ func (f *irFunc) emitListWalkArgs(kind loopKind, pred predKind, args []irVal) {
 }
 
 // emitCountLoopArgs calls the counting walk with the count and accumulator given.
-func (f *irFunc) emitCountLoopArgs(kind loopKind, args []irVal, extras []irVal) {
+func (f *irFunc) emitCountLoopArgs(kind loopKind, args []irVal, extras []irVal, inclusive bool) {
 	if len(args) != 2 {
 		return
 	}
-	f.want(gsVal + " @gs_countloop(i32, " + gsVal + "*, i32)")
+	incl := 0
+	if inclusive {
+		incl = 1
+	}
+	f.want(gsVal + " @gs_countloop(i32, " + gsVal + "*, i32, i32)")
 	slot := f.allocaArray(2 + len(extras))
 	for i, v := range args {
 		f.storeArg(slot, i, v)
@@ -1605,8 +1683,8 @@ func (f *irFunc) emitCountLoopArgs(kind loopKind, args []irVal, extras []irVal) 
 		f.storeArg(slot, 2+i, v)
 	}
 	out := f.reg()
-	fmt.Fprintf(&f.body, "  %s = call %s @gs_countloop(i32 %d, %s* %s, i32 %d)\n",
-		out, gsVal, int(kind), gsVal, slot, len(extras))
+	fmt.Fprintf(&f.body, "  %s = call %s @gs_countloop(i32 %d, %s* %s, i32 %d, i32 %d)\n",
+		out, gsVal, int(kind), gsVal, slot, len(extras), incl)
 	f.listWalkDone = true
 	f.listWalkVal = f.loadVal(out)
 }
@@ -2407,6 +2485,18 @@ type buildWalk struct {
 	wantElement bool
 	// mapPred is the builtin applied to the element, or predNone.
 	mapPred predKind
+	// op is how the element and the recursive result are combined: `cons` for a
+	// list, `+` or `*` for a sum or a product.
+	//
+	//	(cons (car l) (f (cdr l)))     a list
+	//	(+ (car l) (f (cdr l)))        a sum
+	//	(* (car l) (f (cdr l)))        a product
+	//
+	// All three are the same shape — a non-tail recursion that combines the
+	// element with what the rest of the list produced — and they differ only in
+	// the operator, which is why one recogniser covers them and the runtime is
+	// told which.
+	op string
 	// filter says the list keeps the elements the test accepts rather than
 	// mapping the test over them:
 	//
@@ -2458,34 +2548,41 @@ func recogniseBuild(name string, formals []*Symbol, body []Value) (buildWalk, bo
 		f.tail = tail
 		return f, true
 	}
-	// (cons ELEM (NAME (cdr LIST) ...))
-	cons, ok := parts[2].(*Pair)
-	if !ok || !isForm(cons, "cons") {
-		return none, false
-	}
-	cargs, _ := ListToSlice(cons.Cdr)
-	if len(cargs) != 2 {
-		return none, false
-	}
-	call, ok := cargs[1].(*Pair)
+	// (OP SOMETHING (NAME (cdr LIST) ...)) for one of the accepted operators.
+	combine, ok := parts[2].(*Pair)
 	if !ok {
 		return none, false
 	}
-	head, ok := call.Car.(*Symbol)
-	if !ok || head.Name != name {
+	combineHead, ok := combine.Car.(*Symbol)
+	if !ok {
 		return none, false
 	}
-	callArgs, _ := ListToSlice(call.Cdr)
-	if len(callArgs) < 1 || !isCdrOf(callArgs[0], listSym) {
+	switch combineHead.Name {
+	case "cons", "+", "*":
+	default:
+		return none, false
+	}
+	cargs, _ := ListToSlice(combine.Cdr)
+	if len(cargs) != 2 {
+		return none, false
+	}
+	// The recursive call is the second operand for `cons` and either for the
+	// arithmetic: `(+ (car l) (f (cdr l)))` and `(+ (f (cdr l)) (car l))` are the
+	// same sum, and both are written.
+	elem, call := cargs[0], cargs[1]
+	if _, isCall := call.(*Pair); !isCall || !isRecurOnCdr(call, name, listSym) {
+		elem, call = cargs[1], cargs[0]
+	}
+	if !isRecurOnCdr(call, name, listSym) {
 		return none, false
 	}
 	// The element: the head of the list, or a builtin applied to it.
-	w := buildWalk{name: name, list: listSym, tail: tail}
-	if isCarOf(cargs[0], listSym) {
+	w := buildWalk{name: name, list: listSym, tail: tail, op: combineHead.Name}
+	if isCarOf(elem, listSym) {
 		w.wantElement = true
 		return w, true
 	}
-	elemForm, ok := cargs[0].(*Pair)
+	elemForm, ok := elem.(*Pair)
 	if !ok {
 		return none, false
 	}
@@ -2584,6 +2681,16 @@ func asSymbol(v Value) *Symbol {
 // one pass rather than recursing — which is the whole gain, because the Scheme
 // version's stack frames are what a compiled copy should not have to pay for.
 func RunBuild(pred int, list, tail Value, mode int) Value {
+	// The elements are collected first and combined afterwards, which is what
+	// makes a non-tail recursion cheap: the Scheme version holds a frame open
+	// until the end of the list and then combines on the way back, and the
+	// combining is the same either way round for the operators accepted here —
+	// `cons` builds the same list, and `+` and `*` are associative and
+	// commutative over the numbers a program is likely to use.
+	//
+	// A product over a list containing a zero comes out the same; a product
+	// containing a non-number raises the same error, from NumMul rather than
+	// from the Scheme `*` — the same condition either way.
 	var out []Value
 	cur := list
 	for {
@@ -2592,8 +2699,6 @@ func RunBuild(pred int, list, tail Value, mode int) Value {
 			break
 		}
 		switch mode {
-		case buildCopy:
-			out = append(out, p.Car)
 		case buildMap:
 			// `(map even? lst)` is a list of booleans: the mapped value is what
 			// the predicate returns, not the element it accepted.
@@ -2603,15 +2708,37 @@ func RunBuild(pred int, list, tail Value, mode int) Value {
 			if predKind(pred).holds(p.Car) {
 				out = append(out, p.Car)
 			}
+		default:
+			// A copy, a sum and a product all take the element as it is; what
+			// differs is what is done with the collected elements afterwards.
+			out = append(out, p.Car)
 		}
 		cur = p.Cdr
+	}
+	switch mode {
+	case buildCopy, buildMap, buildFilter:
+		return appendList(out, tail)
+	case buildSum:
+		acc := tail
+		for _, v := range out {
+			acc = NumAdd(acc, v)
+		}
+		return acc
+	case buildProduct:
+		acc := tail
+		for _, v := range out {
+			acc = NumMul(acc, v)
+		}
+		return acc
 	}
 	return appendList(out, tail)
 }
 
 // The three modes of a build walk, as the generated code passes them.
 const (
-	buildCopy   = 0
-	buildMap    = 1
-	buildFilter = 2
+	buildCopy    = 0
+	buildMap     = 1
+	buildFilter  = 2
+	buildSum     = 3
+	buildProduct = 4
 )

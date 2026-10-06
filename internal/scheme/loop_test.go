@@ -423,7 +423,7 @@ func TestWalkEntryPointsAreDeclaredConsistently(t *testing.T) {
 	// And the count loop is called with the array convention, which is the
 	// change that was half-applied.
 	if strings.Contains(p.IR, "gs_countloop") &&
-		!strings.Contains(p.IR, "@gs_countloop(i32, %gs.val*, i32)") {
+		!strings.Contains(p.IR, "@gs_countloop(i32, %gs.val*, i32, i32)") {
 		t.Errorf("gs_countloop is not declared with the array convention:\n%s", p.IR)
 	}
 }
@@ -847,5 +847,65 @@ func TestQuotedEmptyListIsAcceptedAsATail(t *testing.T) {
 	}
 	if !strings.Contains(p.IR, "@gs_build(") {
 		t.Errorf("the copy is not emitted as a build walk:\n%s", p.IR)
+	}
+}
+
+// TestCountDownTestsAgreeAboutWhereTheyStop checks the two tests a count-down
+// loop is written with.
+//
+//	(= i 0)  folds n-1 … 1 and stops at 0
+//	(< i 0)  folds n-1 … 0 and stops at -1
+//
+// They differ by one element, and the first version of this recogniser treated
+// them as the same — reasoning that the extra iteration folds nothing.  It does:
+// the iteration where the counter is zero conses the zero before the test that
+// stops the loop sees it, so `(range 5)` came out `(1 2 3 4)` where the
+// interpreter gives `(0 1 2 3 4)`.  A wrong answer, one element short, with
+// nothing to show for it.
+func TestCountDownTestsAgreeAboutWhereTheyStop(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		ok   bool
+		incl bool
+	}{
+		{"等号", `(define (f n acc) (if (= n 0) acc (f (- n 1) (cons n acc))))`, true, false},
+		{"小于零", `(define (f n acc) (if (< n 0) acc (f (- n 1) (cons n acc))))`, true, true},
+		{"小于等于零", `(define (f n acc) (if (<= n 0) acc (f (- n 1) (cons n acc))))`, true, true},
+		// 反向的比较停止在别处，不接受
+		{"大于零", `(define (f n acc) (if (> n 0) acc (f (- n 1) (cons n acc))))`, false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			forms, err := NewStringReader(c.src).ReadAll()
+			if err != nil {
+				t.Fatal(err)
+			}
+			name, formals, body, ok := topLevelProcedure(forms[0])
+			if !ok {
+				t.Fatal("不是顶层过程定义")
+			}
+			w, got := recogniseCountLoop(name, formals, body)
+			if got != c.ok {
+				t.Fatalf("识别=%v 期望=%v", got, c.ok)
+			}
+			if got && w.inclusive != c.incl {
+				t.Errorf("inclusive=%v 期望=%v", w.inclusive, c.incl)
+			}
+		})
+	}
+	// 直接验运行时：两者差一个元素。  (f 5 '()) 折叠 5 到 1（排他）
+	// 或 5 到 0（包含），cons 到 Nil 上。
+	for _, c := range []struct {
+		incl bool
+		want string
+	}{
+		{false, "(1 2 3 4 5)"},
+		{true, "(0 1 2 3 4 5)"},
+	} {
+		got := RunCountLoopFull(walkCollect, Int(5), Nil, nil, c.incl)
+		if WriteToString(got) != c.want {
+			t.Errorf("inclusive=%v gave %s, want %s", c.incl, WriteToString(got), c.want)
+		}
 	}
 }

@@ -287,7 +287,7 @@ func gs_vecwalk(kind C.int32_t, pred C.int32_t, args *C.gs_val) C.gs_val {
 // accumulator are handed over.
 //
 //export gs_countloop
-func gs_countloop(kind C.int32_t, args *C.gs_val, nextra C.int32_t) C.gs_val {
+func gs_countloop(kind C.int32_t, args *C.gs_val, nextra C.int32_t, inclusive C.int32_t) C.gs_val {
 	if mach == nil {
 		gs_init(0, nil)
 	}
@@ -297,7 +297,7 @@ func gs_countloop(kind C.int32_t, args *C.gs_val, nextra C.int32_t) C.gs_val {
 	for i := 0; i < int(nextra); i++ {
 		extras = append(extras, untagged(*argsAt(args, 2+i)))
 	}
-	return tagged(scheme.RunCountLoopExtras(int(int32(kind)), n, acc, extras))
+	return tagged(scheme.RunCountLoopFull(int(int32(kind)), n, acc, extras, int32(inclusive) != 0))
 }
 
 // gs_uploop runs a loop that counts up to a bound in one call.
