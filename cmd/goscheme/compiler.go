@@ -37,6 +37,7 @@ func runCompile(args []string) int {
 	keepTemps := false
 	explain := false
 	staticLink := false
+	compileAll := false
 
 	for i := 0; i < len(args); i++ {
 		switch a := args[i]; a {
@@ -56,6 +57,11 @@ func runCompile(args []string) int {
 			keepTemps = true
 		case "--explain":
 			explain = true
+		case "-compile-all":
+			// Emit every procedure the generator understands, including the ones
+			// the cost rule would leave to the interpreter.  It is a judgement
+			// about speed and this is how a caller overrules it.
+			compileAll = true
 		case "-static":
 			// Link the runtime into the program rather than against the shared
 			// library. Eight megabytes instead of kilobytes, and nothing to
@@ -83,7 +89,7 @@ func runCompile(args []string) int {
 		compileUsage(os.Stderr)
 		return 2
 	}
-	return compileToNative(scriptPath, out, optLevel, emitLLVM, keepTemps, explain, staticLink)
+	return compileToNative(scriptPath, out, optLevel, emitLLVM, keepTemps, explain, staticLink, compileAll)
 }
 
 func compileUsage(w *os.File) {
@@ -97,6 +103,7 @@ func compileUsage(w *os.File) {
 	fmt.Fprintln(w, "  --emit-llvm, -S    write the LLVM IR instead of building anything")
 	fmt.Fprintln(w, "  -O0..-O3           optimisation level passed to opt (default: -O2)")
 	fmt.Fprintln(w, "  -static            link the runtime into the program")
+	fmt.Fprintln(w, "  -compile-all       emit every procedure, ignoring the cost rule")
 	fmt.Fprintln(w, "  --keep-temps       keep the intermediate .ll and .o files")
 	fmt.Fprintln(w, "  --explain          list every procedure left to the interpreter, and why")
 	fmt.Fprintln(w, "")
@@ -107,6 +114,13 @@ func compileUsage(w *os.File) {
 	fmt.Fprintln(w, "built; to move it elsewhere, copy the library beside it or set")
 	fmt.Fprintln(w, "LD_LIBRARY_PATH.  -static links the runtime in instead, for a program that")
 	fmt.Fprintln(w, "has to run on a machine where the library is not installed.")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "-compile-all overrules the cost rule, which otherwise leaves a procedure")
+	fmt.Fprintln(w, "whose only work is a call into the runtime to the interpreter.  That rule is")
+	fmt.Fprintln(w, "right — such a procedure measured 2 to 3 times slower compiled — but it is a")
+	fmt.Fprintln(w, "judgement about speed, and a judgement should be visible and overridable")
+	fmt.Fprintln(w, "rather than silent.")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "The compiler takes the procedures whose bodies are pure computations and")
 	fmt.Fprintln(w, "leaves the rest to the interpreter, so a program usually comes out part")
@@ -155,7 +169,7 @@ func reportSplit(w io.Writer, prog *scheme.IRProgram, explain bool) {
 }
 
 // compileToNative runs the LLVM pipeline over a script.
-func compileToNative(scriptPath, out, optLevel string, emitLLVM, keepTemps, explain, staticLink bool) int {
+func compileToNative(scriptPath, out, optLevel string, emitLLVM, keepTemps, explain, staticLink, compileAll bool) int {
 	abs, err := filepath.Abs(scriptPath)
 	if err != nil {
 		abs = scriptPath
@@ -168,7 +182,7 @@ func compileToNative(scriptPath, out, optLevel string, emitLLVM, keepTemps, expl
 
 	// The reader runs first, so that a script with a syntax error is reported
 	// as one without invoking a single LLVM tool.
-	prog, err := scheme.CompileToIR(string(source), abs)
+	prog, err := scheme.CompileToIRWith(string(source), abs, scheme.Options{CompileEverything: compileAll})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "goscheme compile: %v\n", err)
 		return 1

@@ -70,6 +70,29 @@ func (p *IRProgram) CompiledAnything() bool { return p.Native > 0 || p.TopNative
 // The script is read here rather than by the runtime, so that a syntax error is
 // reported by the compiler with the compiler's message and no tool is invoked.
 func CompileToIR(source, name string) (*IRProgram, error) {
+	return CompileToIRWith(source, name, Options{})
+}
+
+// Options are what a caller may ask for beyond the default behaviour.
+type Options struct {
+	// CompileEverything emits every procedure whose body the generator
+	// understands, ignoring the cost rule that otherwise leaves a body with
+	// nothing to gain from machine code to the interpreter.
+	//
+	// It is not the better default and it is not a bug fix: a body whose only
+	// work is a call into the runtime is genuinely slower compiled, measured at
+	// 2.1x to 3.1x on the shapes the rule refuses.  What it is for is the case
+	// where the caller knows better than the rule — a procedure that is called
+	// rarely and whose *other* calls are to procedures that did compile, or one
+	// kept hot by a profiler rather than by intuition.
+	//
+	// The rule is a judgement about cost, and a judgement should be visible and
+	// overridable rather than silent.
+	CompileEverything bool
+}
+
+// CompileToIRWith is CompileToIR with the caller's options.
+func CompileToIRWith(source, name string, opts Options) (*IRProgram, error) {
 	r := NewStringReader(source)
 	if name != "" {
 		r.Source = name
@@ -78,7 +101,7 @@ func CompileToIR(source, name string) (*IRProgram, error) {
 	if err != nil {
 		return nil, err
 	}
-	g := &irGen{module: newIRModule()}
+	g := &irGen{module: newIRModule(), compileEverything: opts.CompileEverything}
 	if err := g.program(forms); err != nil {
 		return nil, err
 	}
@@ -104,6 +127,8 @@ type irGen struct {
 	// pure holds the procedures that can be compiled natively, by name, and is
 	// what the dependency order is computed from.
 	pure map[string]*pureProc
+	// compileEverything turns off the cost rule; see Options.
+	compileEverything bool
 	// refused records the procedures that were not compiled natively, and why.
 	// It is what `--emit-llvm` explains and what a user asking "why is this
 	// slow" needs.
@@ -323,7 +348,7 @@ func (g *irGen) program(forms []Value) error {
 			g.refused = append(g.refused, p.name+": "+r.why)
 			continue
 		}
-		if why := notWorthCompiling(r); why != "" {
+		if why := notWorthCompiling(r); why != "" && !g.compileEverything {
 			g.refused = append(g.refused, p.name+": "+why)
 			continue
 		}
