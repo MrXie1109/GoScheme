@@ -107,18 +107,40 @@ real runner.
 
 ## Where things live
 
+The interpreter is two packages, and the dependency between them goes one way:
+`internal/scheme` imports `internal/re`, never the reverse.  A test asks
+`go list -deps` rather than reading imports, because a transitive dependency is
+what would do the damage and it is invisible in this package's own import block.
+
+* `internal/re/` — the **runtime environment**: the value representation
+  (`value.go`), the numeric tower (`number.go`), the reader (`reader.go`),
+  printer (`printer.go`) and ports (`port.go`).  It is everything that does not
+  need to know how Scheme is evaluated.  Where a runtime type needs something
+  the machine owns, the dependency is inverted rather than looped —
+  `re.Describer` is implemented by the interpreter's extension types for the
+  printed forms `re` cannot know, and `re.Machine` and `re.Env` are interfaces
+  the interpreter's concrete types satisfy.
 * `internal/scheme/` — the interpreter, one file per area, and `b_*.go` for the
   libraries.  `b_srfi*.go` are the SRFI libraries, `b_fast*.go` is
   `(goscheme fast)`.
-* `internal/scheme/compile.go` and `vm.go` are the bytecode compiler and the VM
-  that runs a file; `ir.go` and `ir_pure.go` are the LLVM generator and the
-  pure-body scan; `pack.go` is the packed-source round trip; `re.go` builds and
-  finds the runtime archive.
-* `re/` — the GoScheme Runtime Environment, compiled to a C archive that a
-  native program links against.  It is a separate package because
-  `-buildmode=c-archive` needs a `main`, and because the boundary between "the
-  runtime a compiled program links" and "the interpreter this process runs" is
-  worth having a name.
+* `compile*.go` — the bytecode compiler: `compile.go` holds `comp`'s state and
+  the scope machinery, `compile_expr.go` compiles expressions,
+  `compile_special.go` the special forms, `compile_frame.go` frames and
+  lambdas.  `vm.go` runs what it produces.
+* `ir*.go` — the LLVM generator.  `ir.go` assembles the module and decides which
+  procedures to emit, `ir_pure.go` scans a body to decide whether it *can* be
+  emitted, `ir_emit.go` emits it, and `ir_loop*.go` recognise whole loops and run
+  them in one call into the runtime.  `pack.go` is the packed-source round trip;
+  `re.go` builds and finds the runtime archive.
+* `internal/scheme/eval*.go` — the tree-walking interpreter: `eval.go` holds the
+  dispatch table and the core step, `eval_syntax.go` quoting, conditionals and
+  binding forms, `eval_proc.go` procedures, `eval_misc.go` the rest, and
+  `eval_library.go` `import` and `define-library`.
+* `re/` — the **C ABI** a compiled program calls: `package main` built with
+  `-buildmode=c-archive`, so it is a separate module-level directory from
+  `internal/re` and shares only the name, which is the one the docs use for the
+  runtime concept.  It links the interpreter's own runtime environment, and the
+  boundary is a C ABI because that is what LLVM-generated code can call.
 * `bench/` — the C, Python and Guile counterparts of the twelve workloads, plus
   `run.sh` (interpreter against them) and `run-native.sh` (compiler against
   interpreter).

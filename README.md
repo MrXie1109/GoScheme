@@ -350,8 +350,9 @@ Compiled procedures are also **registered with the runtime by name**
 forms — reaches the machine code instead of walking that procedure's closure.
 The interpreted definition is still there and is used whenever the native body
 declines a call, which is what makes the native path an optimization rather than
-a second implementation of the language.  `internal/scheme/ir_pure.go` and
-`re/export.go` are the two halves of this.
+a second implementation of the language.  `internal/scheme/ir_pure.go`
+decides what can be emitted, `internal/scheme/ir_emit.go` emits it, and
+`re/export.go` is the boundary the emitted code calls through.
 
 ### What it costs and what it buys
 
@@ -382,34 +383,45 @@ cmd/goscheme/             command line driver
   term_darwin.go          termios raw mode (macOS)
   term_other.go           fallback for platforms without raw mode
   main_test.go            REPL and editor regression tests
-internal/scheme/          the interpreter
+internal/re/              the runtime environment: values, numbers, reader,
+                          printer and ports.  The interpreter depends on it and
+                          not the other way round; a test checks that.
   value.go                runtime objects (symbols, pairs, strings, vectors,
                           bytevectors, procedures, records, …)
   number.go               numeric tower and arithmetic
   reader.go               lexer and datum reader
   printer.go              write / display / write-shared / write-simple
+  port.go                 textual, binary, string and bytevector ports
+internal/scheme/          the interpreter
   env.go                  lexical environments and hygienic name resolution
   machine.go              CEK machine, continuations, dynamic-wind, exceptions
-  eval.go                 special forms and derived syntax
   macro.go                syntax-rules pattern matching and instantiation
   equal.go                eq? / eqv? / equal?
   library.go              R7RS libraries and import sets
-  port.go                 textual, binary, string and bytevector ports
   builtins.go             procedure registration and argument checking
+  eval.go                 the special-form dispatch table and the core step
+  eval_syntax.go          quoting, conditionals, binding forms, cond/case/and/or
+  eval_proc.go            lambda, case-lambda, define, set!
+  eval_misc.go            delay, parameterize, guard, records, macros, include
+  eval_library.go         import and define-library
+  vm.go                   the bytecode VM: instructions, frames, cells
+  compile.go              the bytecode compiler: comp's state and scopes
+  compile_expr.go         compiling expressions
+  compile_special.go      compiling the special forms
+  compile_frame.go        frames, blocks and lambdas
+  ir.go                   the LLVM IR generator: the hybrid, and the split
+  ir_pure.go              the pure-body scan: what can be emitted
+  ir_emit.go              emitting it
+  ir_loop*.go             recognising whole loops, and the walks that run them
+  pack.go                 PackSource / UnpackCheck: the packed-source round trip
+  re.go                   building and finding the runtime archive to link
+  runforms.go             running a file's forms, one at a time
   b_number.go             numeric procedures
   b_list.go               pairs and lists
   b_string.go             strings, characters, symbols
   b_vector.go             vectors and bytevectors
   b_control.go            apply, map, continuations, values, promises
   b_io.go                 ports, read and write
-  machine.go              CEK machine, continuations, dynamic-wind, exceptions
-  vm.go                   the bytecode VM: instructions, frames, cells
-  compile.go              the bytecode compiler: every form of the language
-  ir.go                   the LLVM IR generator: the hybrid, and the split
-  ir_pure.go              the pure-body scan and the tagged-value boundary
-  pack.go                 PackSource / UnpackCheck: the packed-source round trip
-  re.go                   building and finding the runtime archive to link
-  runforms.go             running a file's forms, one at a time
   b_system.go             files, process context, time, eval and load
   b_hashtable.go          hash tables (extension)
   b_concurrent.go         channels, (go ...), (select ...) (extension)
