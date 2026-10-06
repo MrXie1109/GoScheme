@@ -51,7 +51,7 @@ can actually stand behind.
   **1.68×** slower. Those numbers are in the README and the docs, undecorated.
 - The **native compiler is partial**, and says so: it compiles a procedure whose
   body is a pure computation and hands everything else to the interpreter, so a
-  program runs partly as machine code and partly interpreted. It is **3.4×** the
+  program runs partly as machine code and partly interpreted. It is **157×** the
   interpreter on `fib` and much less on what it cannot take, and
   [docs/compile.md](compile.md) writes down every limit rather than leaving them
   to be discovered.

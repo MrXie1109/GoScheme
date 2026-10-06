@@ -359,8 +359,8 @@ The compiler **targets the host**: cross-compilation is not supported yet.
 `opt`, `llc` and a C compiler have to be on the machine that compiles, and the
 runtime archive is built and cached for that machine.
 
-On `fib`, compiled against interpreted, it is about **3.4×** faster
-(`(fib 32)`: 1.54 s interpreted, 0.45 s compiled).  The speedup is concentrated
+On `fib`, compiled against interpreted, it is about **157×** faster
+(`(fib 38)`: 32.98 s interpreted, 0.21 s compiled).  The speedup is concentrated
 where a program spends its time in arithmetic over its own parameters — exactly
 what the pure-body scan accepts.  A program that spends its time in `set!`, in
 macros or in library calls sees much less, because those run in the interpreter
@@ -994,8 +994,8 @@ executable, and a program that only needs to be started without source is what
 `goscheme pack` is for.  Both are above.
 
 **The native compiler** is the third engine, and on the workload it is built for
-it is the fastest of the three: `(fib 32)` takes **1.54 s interpreted and 0.45 s
-compiled**, about **3.4×**.  It is not a comparison with the VM row above — the
+it is the fastest of the three: `(fib 38)` takes **32.98 s interpreted and 0.21 s
+compiled**, about **157×**.  It is not a comparison with the VM row above — the
 panel runs through the VM, and the compiler only takes the procedures whose
 bodies are pure computations, so what it buys depends on how much of a program's
 time is spent there.  [docs/performance.md](docs/performance.md) says what the

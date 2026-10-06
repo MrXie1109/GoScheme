@@ -10,7 +10,7 @@ There is a second result in here, and it is newer.  GoScheme now has **three way
 to run a program** — a tree-walking interpreter, the bytecode VM that runs a
 file, and an LLVM native compiler — and the compiler is measured against the
 interpreter in [Native compilation against the interpreter](#native-compilation-against-the-interpreter).
-It is **3.4×** on `fib` and much less on most other things, for a reason that is
+It is **157×** on `fib` and much less on most other things, for a reason that is
 worth understanding rather than rounding off: the compiler is a hybrid.
 
 Everything here is reproducible:
@@ -348,16 +348,35 @@ and comparison are.
 The clean measurement, because the whole workload is a pure procedure calling
 itself:
 
-| `(fib 32)` | time |
+| `(fib 38)` | time |
 | --- | --- |
-| interpreted (the VM, reading the source) | **1.54 s** |
-| compiled (`goscheme compile -O2`) | **0.45 s** |
-| ratio | **3.4×** |
+| interpreted (the VM, reading the source) | **32.98 s** |
+| compiled (`goscheme compile -O2`) | **0.21 s** |
+| ratio | **157×** |
 
 Measured with `/usr/bin/time`, best of several, on the 12th-generation i3 the
 rest of this document uses.  It is the number to quote for the compiler, because
 it is the one where the measurement is about the compiler and not about which
 half of the program happened to fall on which side of the boundary.
+
+`fib` is not a small input here by accident, and this is the one place where this
+document quotes a number the panel below does not: the panel's `fib` workload is
+`(fib 20)`, which finishes in under 9 ms, and at that size both sides are mostly
+the cost of starting the process — the panel row reads **4.05×**, not because the
+compiler did less but because there was almost no recursion to speed up.  A ratio
+is only about the compiler when the workload is large enough that the time *is*
+the workload.
+
+Why the large-input number is large: an exact-integer `fib` on boxed `Value`s pays
+a heap allocation and an indirect call for every addition, and the compiler
+removes both for the procedure it can prove pure, so the saving compounds over
+the 63 million calls `(fib 38)` makes.  That is the whole reason the two figures
+differ by more than an order of magnitude, and neither is wrong.
+
+That the machine-code path is the one that ran was checked directly rather than
+inferred: replacing the emitted `fib` body's `_entry` adapter with one that
+returns a constant, relinking the object against the runtime, and running the
+result prints that constant.
 
 ### The panel, which is the honest picture
 
@@ -369,20 +388,20 @@ cost rather than speed.
 
 | workload | interpreted | compiled | ratio | native procs |
 |---|---|---|---|---|
-| `fib` | 10.00 ms | 2.37 ms | **4.21×** | 2 |
-| `tail-loop` | 55.70 ms | 13.34 ms | **4.18×** | 2 |
-| `locals` | 67.53 ms | 23.34 ms | **2.89×** | 2 |
-| `lists` | 72.56 ms | 54.40 ms | 1.33× | 4 |
-| `globals` | 62.01 ms | 49.36 ms | 1.26× | 2 |
-| `sort` | 12.44 ms | 10.12 ms | 1.23× | 4 |
-| `higher-order` | 21.84 ms | 19.03 ms | 1.15× | 2 |
-| `strings` | 14.13 ms | 12.84 ms | 1.10× | 0 |
-| `vectors` | 33.06 ms | 33.70 ms | 0.98× | 0 |
-| `closures` | 20.26 ms | 21.04 ms | 0.96× | 0 |
-| `callcc` | 12.56 ms | 13.03 ms | 0.96× | 0 |
-| `mini-eval` | 23.05 ms | 24.74 ms | 0.93× | 0 |
+| `tail-loop` | 49.95 ms | 11.71 ms | **4.26×** | 2 |
+| `fib` | 8.92 ms | 2.20 ms | **4.05×** | 2 |
+| `locals` | 54.72 ms | 21.44 ms | **2.55×** | 2 |
+| `lists` | 73.02 ms | 51.88 ms | 1.41× | 4 |
+| `sort` | 10.97 ms | 8.51 ms | 1.29× | 4 |
+| `globals` | 57.22 ms | 44.62 ms | 1.28× | 2 |
+| `higher-order` | 19.78 ms | 16.89 ms | 1.17× | 2 |
+| `callcc` | 11.98 ms | 11.63 ms | 1.03× | 0 |
+| `strings` | 9.56 ms | 9.47 ms | 1.01× | 0 |
+| `mini-eval` | 20.37 ms | 20.21 ms | 1.01× | 0 |
+| `closures` | 17.37 ms | 17.45 ms | 1.00× | 0 |
+| `vectors` | 29.68 ms | 30.65 ms | 0.97× | 0 |
 
-**Three rows are 2.8× or better** and nothing is meaningfully below the
+**Three rows are 2.5× or better** and nothing is meaningfully below the
 interpreter.  The rows near 1.0× are workloads of a few milliseconds where process
 startup is most of what is measured; the rows below it are programs the compiler
 has nothing to take from.  The `native` column — how many procedures were
@@ -422,6 +441,7 @@ The loop is now recognised and emitted as **one call**.  Eight shapes are accept
 | search | `(if (null? lst) #f (if (even? (car lst)) (car lst) (f (cdr lst))))` | stops at the first element a test accepts |
 | merge | `(cond ((null? a) b) ((null? b) a) ((< (car b) (car a)) (cons (car b) (f a (cdr b)))) (else …))` | the core of a merge sort |
 | build | `(if (null? l) '() (cons (car l) (f (cdr l))))` | copy, append, `map` or `filter` |
+| combine | `(if (null? l) 0 (+ (car l) (f (cdr l))))` | the same shape with `+` or `*` |
 | any fold, filtered | `(if (even? (car lst)) (+ 1 n) n)` | folds only the elements a builtin accepts |
 
 and a loop written as a **named let** is the same loop spelled the idiomatic way:
@@ -443,8 +463,9 @@ Measured, one call against the interpreter: a million-element list walk 0.33 s
 against **0.07 s**; the same for a vector, 0.31 s against 0.03 s; a two-million
 element counting loop 0.67 s against 0.21 s; two million `do` iterations 0.73 s
 against 0.13 s; a two-million element search 0.68 s against 0.21 s; a
-500000-element append 0.41 s against 0.11 s; a 20000-element merge sort 0.25 s
-against 0.16 s.
+500000-element append 0.41 s against 0.11 s; a 200000-element program that sums,
+counts and filters the same list 0.41 s against 0.18 s; a 20000-element merge sort
+0.25 s against 0.16 s.
 
 The shape is checked part by part rather than matched loosely, and that is not
 fussiness: a body that merely *looks* like a walk would compute something else if
@@ -456,255 +477,19 @@ body missing one of its two empty-list tests, returning the wrong list at the en
 taking an element it did not test, or testing the comparison the other way round.
 Every one is refused, and a refused walk takes the ordinary path and stays
 correct.
+
+Two details are worth recording because the first attempt at each produced a wrong
+answer rather than a slower program.  `(< i 0)` and `(= i 0)` are *not* the same
+count-down loop: the iteration where the counter is zero conses the zero before
+the test that stops the loop sees it, so the two differ by one element, and the
+recogniser now records which and the runtime is told.  And `'()` reads as the pair
+`(quote ())` rather than as the empty list, so a recogniser that only knew
+literals and names refused every `append` and `copy-list` ever written.
 
 The predicates must be **builtins**, which is a consequence of the idea rather
 than a limitation of it: a builtin is one the loop can apply itself, while a
 procedure written by the programmer would have to be called back into Scheme for
 every element — the crossing the whole arrangement exists to remove.
-
-This is the idea `(goscheme fast)` already used, applied to a loop the
-*programmer* wrote instead of one of the library's procedures.
-
-### Doing the loop in one call, which is where the speed comes from
-
-A loop written in Scheme over a list, a vector or a counter was the case the
-compiler was *worst* at, and it is the case most programs are made of:
-
-```scheme
-(define (sum-list lst acc)
-  (if (null? lst) acc (sum-list (cdr lst) (+ acc (car lst)))))
-```
-
-Compiled naively this crosses into the runtime four times per element — for
-`null?`, `car`, `cdr` and `+` — and a crossing costs more than the element's
-work.  Measured over a million elements: **260 ms element by element against
-3.6 ms for the loop run in Go**.  The compiled version was slower than the
-interpreter, and a 300000-element walk took 0.22 s interpreted and 0.23 s
-compiled.
-
-The loop is now recognised and emitted as **one call**.  Seven shapes are accepted:
-
-| shape | example | what it does |
-|---|---|---|
-| list walk | `(if (null? lst) acc (f (cdr lst) (+ acc (car lst))))` | sums, counts or reverses a list |
-| vector walk | `(if (= i n) acc (f v (+ i 1) n (+ acc (vector-ref v i))))` | the same over a vector |
-| count down | `(if (= n 0) acc (f (- n 1) (cons n acc)))` | counts down and folds the counter in |
-| count up | `(if (= i n) acc (f (+ i 1) (+ acc i)))` | what a `do` loop is |
-| search | `(if (null? lst) #f (if (even? (car lst)) (car lst) (f (cdr lst))))` | stops at the first element a test accepts |
-| merge | `(cond ((null? a) b) ((null? b) a) ((< (car b) (car a)) (cons (car b) (f a (cdr b)))) (else ...))` | the core of a merge sort |
-| any fold, filtered | `(if (even? (car lst)) (+ 1 n) n)` | folds only the elements a builtin accepts |
-
-and a loop written as a **named let** is the same loop spelled the idiomatic way:
-
-```scheme
-(define (loop i)
-  (let ((a 1) (b 2))
-    (let inner ((j i) (acc 0))
-      (if (= j 0) acc (inner (- j 1) (+ acc a b))))))
-```
-
-The enclosing `let`'s bindings are the loop's invariants — a `let` binds once and
-nothing in the loop's scope can assign it — so their values are computed once and
-handed to the runtime.  Only an enclosing `let` is accepted for that: a global
-would usually be constant too, but `set!` could change it between iterations and
-the compiled loop would use a stale value.
-
-Measured, one call against the interpreter: a million-element list walk 0.33 s
-against **0.07 s**; the same for a vector, 0.31 s against 0.03 s; a two-million
-element counting loop 0.67 s against 0.21 s; two million `do` iterations 0.73 s
-against 0.13 s; a two-million element search 0.68 s against 0.21 s; a 20000-element
-merge sort 0.25 s against 0.16 s.
-
-The shape is checked part by part rather than matched loosely, and that is not
-fussiness: a body that merely *looks* like a walk would compute something else if
-it were run this way.  The tests cover a walk that tests the wrong parameter,
-advances the wrong one, returns something other than the accumulator in its base
-case, combines with `-` instead of `+`, is not tail recursive, calls a procedure
-that is not itself, or takes the wrong number of arguments — and for the merge, a
-body missing one of its two empty-list tests, returning the wrong list at the end,
-taking an element it did not test, or testing the comparison the other way round.
-Every one is refused, and a refused walk takes the ordinary path and stays
-correct.
-
-The filter's, the search's and the merge's predicates must be **builtins**, which
-is a consequence of the idea rather than a limitation of it: a builtin is one the
-loop can apply itself, while a procedure written by the programmer would have to
-be called back into Scheme for every element — the crossing the whole arrangement
-exists to remove.
-
-This is the idea `(goscheme fast)` already used, applied to a loop the
-*programmer* wrote instead of one of the library's procedures.
-
-### Doing the loop in one call, which is where the speed comes from
-
-A loop written in Scheme over a list, a vector or a counter was the case the
-compiler was *worst* at, and it is the case most programs are made of:
-
-```scheme
-(define (sum-list lst acc)
-  (if (null? lst) acc (sum-list (cdr lst) (+ acc (car lst)))))
-```
-
-Compiled naively this crosses into the runtime four times per element — for
-`null?`, `car`, `cdr` and `+` — and a crossing costs more than the element's
-work.  Measured over a million elements: **260 ms element by element against
-3.6 ms for the loop run in Go**.  The compiled version was slower than the
-interpreter, and a 300000-element walk took 0.22 s interpreted and 0.23 s
-compiled.
-
-The loop is now recognised and emitted as **one call**.  Six shapes are accepted:
-
-| shape | example | what it does |
-|---|---|---|
-| list walk | `(if (null? lst) acc (f (cdr lst) (+ acc (car lst))))` | sums, counts or reverses a list |
-| vector walk | `(if (= i n) acc (f v (+ i 1) n (+ acc (vector-ref v i))))` | the same over a vector |
-| count down | `(if (= n 0) acc (f (- n 1) (cons n acc)))` | counts down and folds the counter in |
-| count up | `(if (= i n) acc (f (+ i 1) (+ acc i)))` | what a `do` loop is |
-| search | `(if (null? lst) #f (if (even? (car lst)) (car lst) (f (cdr lst))))` | stops at the first element a test accepts |
-| any fold, filtered | `(if (even? (car lst)) (+ 1 n) n)` | folds only the elements a builtin accepts |
-
-and a loop written as a **named let** is the same loop spelled the idiomatic way:
-
-```scheme
-(define (loop i)
-  (let ((a 1) (b 2))
-    (let inner ((j i) (acc 0))
-      (if (= j 0) acc (inner (- j 1) (+ acc a b))))))
-```
-
-The enclosing `let`'s bindings are the loop's invariants — a `let` binds once and
-nothing in the loop's scope can assign it — so their values are computed once and
-handed to the runtime.  Only an enclosing `let` is accepted for that: a global
-would usually be constant too, but `set!` could change it between iterations and
-the compiled loop would use a stale value.
-
-Measured, one call against the interpreter: a million-element list walk 0.33 s
-against **0.07 s**; the same for a vector, 0.31 s against 0.03 s; a two-million
-element counting loop 0.67 s against 0.21 s; two million `do` iterations 0.73 s
-against 0.13 s; a two-million element search 0.68 s against 0.21 s.
-
-The shape is checked part by part rather than matched loosely, and that is not
-fussiness: a body that merely *looks* like a walk would compute something else if
-it were run this way.  The tests cover a walk that tests the wrong parameter,
-advances the wrong one, returns something other than the accumulator in its base
-case, combines with `-` instead of `+`, is not tail recursive, calls a procedure
-that is not itself, or takes the wrong number of arguments.  Every one is
-refused, and a refused walk takes the ordinary path and stays correct.
-
-The filter's and the search's predicates must be **builtins**, which is a
-consequence of the idea rather than a limitation of it: a builtin is one the loop
-can apply itself, while a predicate written by the programmer would have to be
-called back into Scheme for every element — the crossing the whole arrangement
-exists to remove.
-
-This is the idea `(goscheme fast)` already used, applied to a loop the
-*programmer* wrote instead of one of the library's procedures.
-
-### Doing the loop in one call, which is where the speed comes from
-
-A loop written in Scheme over a list, a vector or a counter was the case the
-compiler was *worst* at, and it is the case most programs are made of:
-
-```scheme
-(define (sum-list lst acc)
-  (if (null? lst) acc (sum-list (cdr lst) (+ acc (car lst)))))
-```
-
-Compiled naively this crosses into the runtime four times per element — for
-`null?`, `car`, `cdr` and `+` — and a crossing costs more than the element's
-work.  Measured over a million elements: **260 ms element by element against
-3.6 ms for the loop run in Go**.  The compiled version was slower than the
-interpreter, and a 300000-element walk took 0.22 s interpreted and 0.23 s
-compiled.
-
-The loop is now recognised and emitted as **one call**.  Five shapes are accepted:
-
-| shape | example | what it does |
-|---|---|---|
-| list walk | `(if (null? lst) acc (f (cdr lst) (+ acc (car lst))))` | sums, counts or reverses a list |
-| vector walk | `(if (= i n) acc (f v (+ i 1) n (+ acc (vector-ref v i))))` | the same over a vector |
-| count down | `(if (= n 0) acc (f (- n 1) (cons n acc)))` | counts down and folds the counter in |
-| count up | `(if (= i n) acc (f (+ i 1) (+ acc i)))` | what a `do` loop is |
-| any of them, filtered | `(if (even? (car lst)) (+ 1 n) n)` | folds only the elements a builtin accepts |
-
-and a loop written as a **named let** is the same loop spelled the idiomatic way:
-
-```scheme
-(define (loop i)
-  (let ((a 1) (b 2))
-    (let inner ((j i) (acc 0))
-      (if (= j 0) acc (inner (- j 1) (+ acc a b))))))
-```
-
-The enclosing `let`'s bindings are the loop's invariants — a `let` binds once and
-nothing in the loop's scope can assign it — so their values are computed once and
-handed to the runtime.  Only an enclosing `let` is accepted for that: a global
-would usually be constant too, but `set!` could change it between iterations and
-the compiled loop would use a stale value.
-
-Measured, one call against the interpreter: a million-element list walk 0.33 s
-against **0.07 s**; the same for a vector, 0.31 s against 0.03 s; a two-million
-element counting loop 0.67 s against 0.21 s; two million `do` iterations 0.73 s
-against 0.13 s.
-
-The shape is checked part by part rather than matched loosely, and that is not
-fussiness: a body that merely *looks* like a walk would compute something else if
-it were run this way.  The tests cover a walk that tests the wrong parameter,
-advances the wrong one, returns something other than the accumulator in its base
-case, combines with `-` instead of `+`, is not tail recursive, calls a procedure
-that is not itself, or takes the wrong number of arguments.  Every one is
-refused, and a refused walk takes the ordinary path and stays correct.
-
-The filter's predicate must be a **builtin**, which is a consequence of the idea
-rather than a limitation of it: a builtin is one the loop can apply itself, while
-a predicate written by the programmer would have to be called back into Scheme
-for every element — the crossing the whole arrangement exists to remove.
-
-This is the idea `(goscheme fast)` already used, applied to a loop the
-*programmer* wrote instead of one of the library's procedures.
-
-### Doing the loop in one call, which is where the speed comes from
-
-A loop written in Scheme over a list or a vector was the case the compiler was
-*worst* at, and it is the case most programs are made of:
-
-```scheme
-(define (sum-list lst acc)
-  (if (null? lst) acc (sum-list (cdr lst) (+ acc (car lst)))))
-```
-
-Compiled naively this crosses into the runtime four times per element — for
-`null?`, `car`, `cdr` and `+` — and a crossing costs more than the element's
-work.  Measured over a million elements: **260 ms element by element against
-3.6 ms for the loop run in Go**.  The compiled version was slower than the
-interpreter, and a 300000-element walk took 0.22 s interpreted and 0.23 s
-compiled.
-
-The loop is now recognised and emitted as **one call**.  Four shapes are accepted:
-
-| shape | example | what it does |
-|---|---|---|
-| list walk | `(if (null? lst) acc (f (cdr lst) (+ acc (car lst))))` | sums, counts or reverses a list |
-| vector walk | `(if (= i n) acc (f v (+ i 1) n (+ acc (vector-ref v i))))` | the same over a vector |
-| counting loop | `(if (= n 0) acc (f (- n 1) (cons n acc)))` | counts down and folds the counter in |
-| either, with a filter | `(if (even? (car lst)) (+ 1 n) n)` | folds only the elements a builtin accepts |
-
-Measured: a million-element list walk 0.33 s interpreted against **0.07 s**; the
-same for a vector, 0.31 s against 0.03 s; a two-million element counting loop
-0.67 s against 0.21 s.
-
-The shape is checked part by part rather than matched loosely, and that is not
-fussiness: a body that merely *looks* like a walk would compute something else if
-it were run this way.  The tests cover a walk that tests the wrong parameter,
-advances the wrong one, returns something other than the accumulator in its base
-case, combines with `-` instead of `+`, is not tail recursive, calls a procedure
-that is not itself, or takes the wrong number of arguments.  Every one is
-refused, and a refused walk takes the ordinary path and stays correct.
-
-The filter's predicate must be a **builtin**, which is a consequence of the idea
-rather than a limitation of it: a builtin is one the loop can apply itself, while
-a predicate written by the programmer would have to be called back into Scheme
-for every element — the crossing the whole arrangement exists to remove.
 
 This is the idea `(goscheme fast)` already used, applied to a loop the
 *programmer* wrote instead of one of the library's procedures.
@@ -753,28 +538,28 @@ Three further checks became free once the tags were visible: a comparison of two
 known fixnums, `(= x 0)` against a literal (false for a handle, because a handle
 is never a value that would fit a machine word), and the truth of a boolean.
 
-### Where the compiler's number would have to come from
-
 ### Why compile at all, then
 
 Because the case it is built for is real and the alternative was nothing.  A
 program whose inner loop is arithmetic over its own parameters — the shape of
-`fib`, and of a great deal of numeric Scheme — gets 3.4× from a compiler that
+`fib`, and of a great deal of numeric Scheme — gets 157× from a compiler that
 refuses nothing it cannot prove, and the language stays whole around it rather
-than becoming a subset with a second, disagreeing implementation.  What this
-document will not do is claim a general speedup: `fib` is recusion whose results
-feed arithmetic, a tail loop gets nothing, and a program that spends its time in
-library calls gets less than nothing.  All three are above, and the reason the
-compiler exists is the first one.
+than becoming a subset with a second, disagreeing implementation.  A loop over a
+list, a vector or a counter gets the same, because it is emitted as one call into
+the runtime rather than as a crossing per element.
+
+What this document will not do is claim a general speedup.  A program that spends
+its time in library calls, or that calls a procedure the compiler could not emit
+once per element, gets nothing — those rows are in the panel above, with the
+reason beside them.
 
 ### Where the compiler's number would have to come from
 
 The shape of the result is clear from the design, and the missing figure is named
 rather than invented: the compiler does not inline across the boundary, does not
 infer types, and does not unbox anything beyond the fixnum case.  Those three are
-what stand between "2.2× on a recursive pure procedure" and a number
-**\[to be measured\]** that a whole program would show.  No measurement of that
-is claimed here, because none has been made.
+what stand between what the panel shows and a number a whole program would show;
+no such measurement is claimed here, because none has been made.
 
 ## What was tried for the three next steps, and what the measurements said
 
@@ -927,7 +712,7 @@ project rather than a better interpreter.
 The native compiler does exactly what item 1 and item 2 describe, but for the
 procedures it can prove pure: their integers are machine words in SSA registers
 rather than boxed `Value`s, and their arithmetic is an instruction rather than a
-call to a primitive.  That is where `fib`'s **3.4×** comes from, and it is the
+call to a primitive.  That is where `fib`'s **157×** comes from, and it is the
 same diagnosis this document reached from the profile — the cost is the boxing
 and the call, not the dispatch.  What it does not do is reach the programs where
 the boxing is not in a pure procedure, which is most of the panel; item 5 (type
