@@ -60,6 +60,15 @@ type irFunc struct {
 	// a captured variable arrives as a parameter whose name is the original, so
 	// this is normally empty and exists for the case where it cannot be.
 	captureNames map[string]string
+	// captures maps a captured variable's name to its index in the enclosing
+	// closure, and is non-empty only while a lambda body is being emitted.  An
+	// assignment to one of these names is written through the closure rather
+	// than rebinding the parameter it arrived as: the parameter is a copy, so
+	// assigning it would be local to the call and the counter would never count.
+	captures map[string]int
+	// selfHandle is the closure's own handle as an SSA value, or "" when the
+	// body does not assign any of its captures and so does not need it.
+	selfHandle string
 	// tail is true while the expression being emitted is in tail position: its
 	// value is the value of the whole function, so a call there can be a jump
 	// rather than a call.
@@ -728,6 +737,26 @@ func (f *irFunc) emitSet(args []Value) (irVal, error) {
 		return irVal{}, err
 	}
 	if _, local := f.locals[name.Name]; local {
+		// A captured variable is a local of this function too — it arrived as a
+		// parameter — but assigning the parameter would only change the copy this
+		// call was given.  The write has to reach the closure's own storage, and
+		// the closure's handle is what does it.
+		//
+		// Getting this wrong is silent and wrong rather than slow:
+		// `(let ((n 0)) (lambda () (set! n (+ n 1)) n))` returned 1 on every call
+		// instead of counting, because the addition happened and the store did
+		// not.  Nothing reported it and nothing could have, because the body
+		// compiled.
+		if idx, isCapture := f.captures[name.Name]; isCapture && f.selfHandle != "" {
+			if err := f.emitCaptureSet(idx, val); err != nil {
+				return irVal{}, err
+			}
+			// The parameter this call was given is stale once the store has
+			// happened, so the local is rebound: a later read in the same call
+			// must see the assignment, which is what the interpreter does.
+			f.locals[name.Name] = val
+			return unspecifiedVal(), nil
+		}
 		f.locals[name.Name] = val
 		return unspecifiedVal(), nil
 	}

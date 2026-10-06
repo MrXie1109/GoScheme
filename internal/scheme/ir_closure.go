@@ -187,6 +187,8 @@ func (f *irFunc) emitLambda(form *Pair) (irVal, error) {
 	// register and no boundary crossing.
 	name := f.lambdaNames.next()
 	savedNames := f.captureNames
+	savedCaptures := f.captures
+	savedSelfHandle := f.selfHandle
 	f.captureNames = map[string]string{}
 	sig := &strings.Builder{}
 	fmt.Fprintf(sig, "define %s @%s(", gsVal, mangle(name))
@@ -202,6 +204,22 @@ func (f *irFunc) emitLambda(form *Pair) (irVal, error) {
 		}
 		fmt.Fprintf(sig, "i64 %%c_%s.bits, i64 %%c_%s.tag", cap, cap)
 	}
+	// The closure's own handle comes last, and only when the body assigns one of
+	// its captures.  Reading a capture needs nothing more than the parameter it
+	// arrives as; *writing* one has to reach the closure's storage, because a
+	// parameter cannot be assigned through — an assignment to it would be local
+	// to the call, and `(let ((n 0)) (lambda () (set! n (+ n 1)) n))` returned 1
+	// every time instead of counting.
+	//
+	// So the handle is passed when it is needed and not otherwise, which keeps
+	// the common case — a closure that only reads — free of it.
+	needsSelf := assignsCapture(body, free)
+	if needsSelf {
+		if len(params) > 0 || len(free) > 0 {
+			sig.WriteString(", ")
+		}
+		sig.WriteString("i64 %self")
+	}
 	sig.WriteString(") {\nentry:\n")
 	saved := f.locals
 	f.locals = map[string]irVal{}
@@ -216,6 +234,18 @@ func (f *irFunc) emitLambda(form *Pair) (irVal, error) {
 			bits: "%c_" + cap + ".bits",
 			tag:  "%c_" + cap + ".tag",
 		}
+	}
+	// Which names are captures and where they live, so that an assignment to one
+	// can be emitted as a write through the closure rather than as a rebinding of
+	// the parameter it arrived as.
+	f.captures = map[string]int{}
+	for i, cap := range free {
+		f.captures[cap] = i
+	}
+	if needsSelf {
+		f.selfHandle = "%self"
+	} else {
+		f.selfHandle = ""
 	}
 	// The inner function gets its own body *and* its own entry block: an alloca
 	// belongs to the function that uses it, and reusing the outer one's would
@@ -244,6 +274,8 @@ func (f *irFunc) emitLambda(form *Pair) (irVal, error) {
 			f.entry, f.nextSlot, f.slots = savedEntry, savedNextSlot, savedSlots
 			f.label, f.nextReg = savedLabel, savedNextReg
 			f.captureNames = savedNames
+			f.captures = savedCaptures
+			f.selfHandle = savedSelfHandle
 			return irVal{}, err
 		}
 		ret = v
@@ -262,6 +294,8 @@ func (f *irFunc) emitLambda(form *Pair) (irVal, error) {
 	f.locals = saved
 	f.tail = savedTail
 	f.captureNames = savedNames
+	f.captures = savedCaptures
+	f.selfHandle = savedSelfHandle
 	epilogue += fmt.Sprintf("  ret %s %s\n}\n\n", gsVal, packed)
 	f.mod.body.WriteString(sig.String())
 	f.mod.body.WriteString(epilogue)
@@ -271,10 +305,10 @@ func (f *irFunc) emitLambda(form *Pair) (irVal, error) {
 	// runtime calls one ABI for every compiled procedure and the captures have
 	// already been folded into the argument array by gs_closure_apply.
 	adapter := adapterName(name)
-	f.emitClosureAdapter(adapter, name, len(params)+len(free))
+	f.emitClosureAdapter(adapter, name, len(params)+len(free), needsSelf)
 
 	// And the closure itself, where the lambda was written.
-	f.want("i64 @gs_closure_new(i64, i64, i64)")
+	f.want("i64 @gs_closure_new(i64, i64, i64, i64)")
 	f.want("void @gs_closure_set(i64, i64, " + gsVal + ")")
 	// The code pointer crosses as an integer, which is what the runtime's
 	// gs_closure_new takes: a function pointer is data here, and the runtime
@@ -286,8 +320,12 @@ func (f *irFunc) emitLambda(form *Pair) (irVal, error) {
 	fmt.Fprintf(&f.body, "  %s = ptrtoint %s (i64, %s*)* @%s to i64\n",
 		code, gsVal, gsVal, adapter)
 	h := f.reg()
-	fmt.Fprintf(&f.body, "  %s = call i64 @gs_closure_new(i64 %s, i64 %d, i64 %d)\n",
-		h, code, len(free), len(params))
+	selfFlag := 0
+	if needsSelf {
+		selfFlag = 1
+	}
+	fmt.Fprintf(&f.body, "  %s = call i64 @gs_closure_new(i64 %s, i64 %d, i64 %d, i64 %d)\n",
+		h, code, len(free), len(params), selfFlag)
 	for i, v := range capVals {
 		fmt.Fprintf(&f.body, "  call void @gs_closure_set(i64 %s, i64 %d, %s %s)\n",
 			h, i, gsVal, f.aggregate(v))
@@ -302,7 +340,7 @@ func (f *irFunc) emitLambda(form *Pair) (irVal, error) {
 // top-level procedure, for the same reason: one function-pointer type covers
 // every arity, so the runtime does not need to know how many parameters a
 // procedure has.
-func (f *irFunc) emitClosureAdapter(adapter, body string, arity int) {
+func (f *irFunc) emitClosureAdapter(adapter, body string, arity int, needsSelf bool) {
 	if arity > 32 {
 		return
 	}
@@ -316,7 +354,22 @@ func (f *irFunc) emitClosureAdapter(adapter, body string, arity int) {
 		fmt.Fprintf(ad, "  %%t%d = extractvalue %s %%w%d, 1\n", i, gsVal, i)
 		args = append(args, fmt.Sprintf("i64 %%b%d, i64 %%t%d", i, i))
 	}
-	fmt.Fprintf(ad, "  %%r = call %s @%s(%s)\n", gsVal, mangle(body), strings.Join(args, ", "))
+	all := strings.Join(args, ", ")
+	if needsSelf {
+		// The closure's own handle arrives as one more element of the argument
+		// array, appended by gs_closure_apply after the caller's arguments and
+		// the captures.  It cannot be recovered from the array's address, which
+		// is what this used to pass — an address is not a handle, and the runtime
+		// rejected it as an out-of-range capture index.
+		fmt.Fprintf(ad, "  %%eh = getelementptr %s, %s* %%args, i64 %d\n", gsVal, gsVal, arity)
+		fmt.Fprintf(ad, "  %%wh = load %s, %s* %%eh\n", gsVal, gsVal)
+		fmt.Fprintf(ad, "  %%h = extractvalue %s %%wh, 0\n", gsVal)
+		if all != "" {
+			all += ", "
+		}
+		all += "i64 %h"
+	}
+	fmt.Fprintf(ad, "  %%r = call %s @%s(%s)\n", gsVal, mangle(body), all)
 	fmt.Fprintf(ad, "  ret %s %%r\n}\n\n", gsVal)
 	f.mod.body.WriteString(ad.String())
 }
@@ -380,4 +433,80 @@ func (f *irFunc) emitComputedCall(x *Pair) (irVal, error) {
 		vals = append(vals, v)
 	}
 	return f.emitClosureApply(proc, vals)
+}
+
+// assignsCapture reports whether a lambda body assigns any of the names it
+// captured.
+//
+// It decides whether the emitted body needs its own closure handle: reading a
+// capture needs only the parameter it arrives as, but assigning one has to write
+// through the closure.  Passing the handle only when it is used keeps the common
+// case — a closure that reads what it captured — as cheap as it was.
+//
+// The walk looks through the body rather than at its top level, because the
+// assignment is usually inside the `if` of a loop.  A `set!` inside a *nested*
+// lambda is not this lambda's assignment, so a quoted form and an inner
+// parameter list are both respected.
+func assignsCapture(body []Value, free []string) bool {
+	if len(free) == 0 {
+		return false
+	}
+	isFree := map[string]bool{}
+	for _, n := range free {
+		isFree[n] = true
+	}
+	var walk func(v Value) bool
+	walk = func(v Value) bool {
+		p, ok := v.(*Pair)
+		if !ok {
+			return false
+		}
+		if isForm(p, "quote") {
+			return false
+		}
+		if s, ok := p.Car.(*Symbol); ok {
+			switch s.Name {
+			case "set!":
+				args, _ := ListToSlice(p.Cdr)
+				if len(args) == 2 {
+					if target, ok := args[0].(*Symbol); ok && isFree[target.Name] {
+						return true
+					}
+				}
+				return false
+			case "lambda":
+				// A nested lambda's captures are its own; whether it assigns one
+				// is that lambda's question, asked when it is emitted.
+				inner, _ := ListToSlice(p.Cdr)
+				if len(inner) >= 2 {
+					return false
+				}
+			}
+		}
+		items, _ := ListToSlice(p)
+		for _, a := range items {
+			if walk(a) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, b := range body {
+		if walk(b) {
+			return true
+		}
+	}
+	return false
+}
+
+// emitCaptureSet writes a captured variable through the closure that owns it.
+//
+// The value crosses tagged like any other, and the index is the position the
+// capture was given when the closure was made — the same index the body reads it
+// from at entry, which is why one list serves both directions.
+func (f *irFunc) emitCaptureSet(idx int, val irVal) error {
+	f.want("void @gs_closure_set(i64, i64, " + gsVal + ")")
+	fmt.Fprintf(&f.body, "  call void @gs_closure_set(i64 %s, i64 %d, %s %s)\n",
+		f.selfHandle, idx, gsVal, f.toAggregate(val))
+	return nil
 }

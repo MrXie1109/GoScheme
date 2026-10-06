@@ -467,6 +467,13 @@ type nativeClosure struct {
 	// arity is how many arguments the procedure takes, which is what the
 	// interpreter checks a call against when it applies this closure itself.
 	arity int
+	// handle is this closure's own index in the value table, which the body needs
+	// in order to assign a capture: assigning the parameter it was given would
+	// only change that call's copy.
+	handle int64
+	// needsSelf is whether the body assigns a capture at all, and so wants the
+	// handle passed to it.
+	needsSelf bool
 }
 
 // Call runs the compiled closure with Scheme values, which is what makes it a
@@ -487,13 +494,16 @@ func (c *nativeClosure) Call(args []re.Value) (re.Value, bool) {
 	for i, cap := range c.captures {
 		taggedArgs[len(args)+i] = tagged(cap)
 	}
-	out := C.gs_call_addr(C.uintptr_t(c.code), C.int64_t(total), &taggedArgs[0])
+	if c.needsSelf {
+		taggedArgs = append(taggedArgs, handle(c.handle))
+	}
+	out := C.gs_call_addr(C.uintptr_t(c.code), C.int64_t(len(taggedArgs)), &taggedArgs[0])
 	return untagged(out), true
 }
 
 //export gs_closure_new
-func gs_closure_new(code C.uint64_t, n C.int64_t, arity C.int64_t) C.int64_t {
-	c := &nativeClosure{code: uintptr(code), n: int(n), arity: int(arity)}
+func gs_closure_new(code C.uint64_t, n C.int64_t, arity C.int64_t, needsSelf C.int64_t) C.int64_t {
+	c := &nativeClosure{code: uintptr(code), n: int(n), arity: int(arity), needsSelf: needsSelf != 0}
 	if n > 0 {
 		c.captures = make([]re.Value, int(n))
 	}
@@ -508,9 +518,23 @@ func gs_closure_new(code C.uint64_t, n C.int64_t, arity C.int64_t) C.int64_t {
 			Native: c,
 		}},
 	}
-	return C.int64_t(store(proc))
+	h := store(proc)
+	c.handle = h
+	return C.int64_t(h)
 }
 
+// gs_closure_set writes one of a closure's captures.
+//
+// It is called twice in a closure's life and both are the same operation: once
+// when the closure is made, to store the value of each captured variable, and
+// again whenever the body assigns one.  A capture has to be assignable because a
+// closure that counts is the reason closures are worth having —
+// `(let ((n 0)) (lambda () (set! n (+ n 1)) n))` — and handing the capture in as
+// a *parameter* is what makes reading one free.  A parameter cannot be assigned
+// through, so the body writes here instead, and reads the parameter it was
+// given.  The two agree because the parameter is loaded from here at the start
+// of every call.
+//
 //export gs_closure_set
 func gs_closure_set(h C.int64_t, i C.int64_t, v C.gs_val) {
 	c, ok := closureAt(int64(h))
@@ -579,6 +603,13 @@ func gs_closure_apply(h C.int64_t, n C.int64_t, args *C.gs_val) C.gs_val {
 	}
 	for i := 0; i < c.n; i++ {
 		vals = append(vals, tagged(c.captures[i]))
+	}
+	// Then the closure's own handle, when the body assigns a capture and so needs
+	// to be able to write one back.  It is one more argument rather than a
+	// separate register because the ABI has one way to pass a value and adding a
+	// second would mean every emitted body had to agree about it.
+	if c.needsSelf {
+		vals = append(vals, handle(int64(h)))
 	}
 	if len(vals) == 0 {
 		return C.gs_call_addr(C.uintptr_t(c.code), 0, nil)
