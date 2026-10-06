@@ -628,7 +628,8 @@ func callNative(proc Value, args []Value) (Value, bool) {
 	return nil, false
 }
 
-func compiledClause(proc Value, args []Value) (vmCallee, bool) {	c, ok := proc.(*Closure)
+func compiledClause(proc Value, args []Value) (vmCallee, bool) {
+	c, ok := proc.(*Closure)
 	if !ok || len(c.Clauses) != 1 {
 		return vmCallee{}, false
 	}

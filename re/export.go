@@ -48,6 +48,7 @@ static inline gs_val gs_call_native(gs_native_fn fn, int64_t n, gs_val *args) {
 import "C"
 
 import (
+	"fmt"
 	"os"
 	"sync"
 	"unsafe"
@@ -230,6 +231,46 @@ func gs_box_literal(text *C.char, n C.int64_t) C.int64_t {
 		return C.int64_t(store(scheme.UnspecifiedValue))
 	}
 	return C.int64_t(store(forms[0]))
+}
+
+// gs_call applies a Scheme procedure by name, with tagged arguments.
+//
+// This is how a compiled body reaches a procedure the compiler could not emit:
+// display, cons, anything in the library.  Refusing the whole body instead would
+// give up the machine code around the call for nothing, since the call means the
+// same thing either way.
+//
+// The name is looked up rather than the procedure passed in, because the
+// generated code has no way to hold a Scheme value that is not a number — which
+// is the whole reason the value it carries is tagged.
+//
+//export gs_call
+func gs_call(name *C.char, n C.int64_t, args *C.gs_val) C.gs_val {
+	if mach == nil {
+		gs_init(0, nil)
+	}
+	procName := C.GoString(name)
+	proc, ok := mach.Global.Lookup(scheme.Intern(procName))
+	if !ok {
+		report(fmt.Errorf("%s: undefined", procName))
+		return handle(store(scheme.UnspecifiedValue))
+	}
+	argv := make([]scheme.Value, 0, int(n))
+	for i := 0; i < int(n); i++ {
+		argv = append(argv, untagged(*argsAt(args, i)))
+	}
+	v, err := mach.ApplySync(proc, argv)
+	if err != nil {
+		report(err)
+		return handle(store(scheme.UnspecifiedValue))
+	}
+	return tagged(v)
+}
+
+// argsAt indexes a gs_val array, whose elements are not addressable from Go.
+func argsAt(args *C.gs_val, i int) *C.gs_val {
+	return (*C.gs_val)(unsafe.Pointer(uintptr(unsafe.Pointer(args)) +
+		uintptr(i)*unsafe.Sizeof(C.gs_val{})))
 }
 
 // gs_register makes a compiled procedure reachable from Scheme.

@@ -153,6 +153,25 @@ func (m *Machine) ApplyWithMulti(proc Value, args []Value, fn func(*Machine, []V
 	m.apply(proc, args)
 }
 
+// ApplySync calls proc with args and returns its first value.
+//
+// It is the one call that does not go through a continuation, because its caller
+// is not written in Scheme: a compiled procedure that reaches a procedure the
+// compiler could not emit needs an answer before it can continue, and there is
+// no frame to resume into.  The nested loop runs the call to completion and
+// leaves the machine where it found it, which is what makes it safe to call from
+// the middle of an evaluation.
+//
+// A continuation captured inside the call cannot escape it — the extent it would
+// return to is this Go frame, and that frame is gone once the call returns.
+// `call/cc` reaching a compiled caller is therefore not supported, and the
+// procedures the compiler emits are the ones that cannot contain it.
+func (m *Machine) ApplySync(proc Value, args []Value) (Value, error) {
+	baseStack, baseWinds, baseHands := len(m.stack), len(m.winds), len(m.hands)
+	m.apply(proc, args)
+	return m.runLoop(baseStack, baseWinds, baseHands)
+}
+
 // EvalWithMulti evaluates expr and hands every value to fn.
 func (m *Machine) EvalWithMulti(expr Value, env *Env, fn func(*Machine, []Value)) {
 	m.stack = append(m.stack, &fMultiGeneric{fn: fn})

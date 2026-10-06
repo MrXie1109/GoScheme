@@ -105,6 +105,9 @@ type irModule struct {
 	strings   map[string]string // a string constant, and the global holding it
 	nextReg   int
 	nextLabel int
+	// nextString counts the string constants, so that two of them interned with
+	// the same hint get different names.
+	nextString int
 }
 
 func newIRModule() *irModule {
@@ -373,13 +376,23 @@ func (g *irGen) program(forms []Value) error {
 	for name := range g.pure {
 		visit(name)
 	}
+	// Emit, keeping only what was actually emitted.
+	//
+	// A body can pass the scan and still fail to generate — an operator the
+	// emitter does not handle after all, a type it cannot express — and such a
+	// procedure has no function in the module.  Registering it would put a name
+	// and an address in the program for a symbol that does not exist, which is
+	// not a slower program but a module the assembler rejects.
+	var emitted []string
 	for _, name := range order {
 		p := g.pure[name]
 		if err := g.emitPureFunction(p.name, p.formals, p.body, p.calls); err != nil {
 			// Not a reason to fail the compile: the procedure runs, it just
 			// runs interpreted.
 			g.refused = append(g.refused, name+": "+err.Error())
+			continue
 		}
+		emitted = append(emitted, name)
 	}
 	// Register every native body with the runtime, so that a call the
 	// interpreter makes reaches the machine code.
@@ -389,7 +402,7 @@ func (g *irGen) program(forms []Value) error {
 	// runtime is told the name and the address, and a procedure call whose name
 	// matches goes to the native body instead of walking the interpreter's
 	// closure.
-	for _, name := range order {
+	for _, name := range emitted {
 		lit := m.stringLiteral(name, "proc"+name)
 		fmt.Fprintf(&body, "  call void @gs_register(i8* %s, i64 %d, i8* bitcast (%s (i64, %s*)* @%s to i8*))\n",
 			lit, len(g.pure[name].formals), gsVal, gsVal, mangle(name))
@@ -423,12 +436,19 @@ func (m *irModule) stringLiteral(s, hint string) string {
 	if g, ok := m.strings[s]; ok {
 		return g
 	}
-	// The hint comes from a Scheme name as often as not — a procedure called
-	// `positive?` gives `procpositive?` — and `?` is not legal in an LLVM
-	// global name, so it is mangled here rather than at every call site.  This
-	// is the only place a hint becomes an identifier, which is what makes it
-	// the right place to do it.
-	name := "@." + mangleName(hint)
+	// The hint is a hint: two constants may be interned with the same one, and
+	// `(display "n=")` beside `(display " sq=")` does exactly that.  The cache
+	// above is keyed by content, so equal strings share a global, but unequal
+	// ones must not — which means the name has to carry a counter as well as
+	// the hint.
+	//
+	// The hint also comes from a Scheme name as often as not — a procedure
+	// called `positive?` gives `procpositive?` — and `?` is not legal in an
+	// LLVM global name, so it is mangled here rather than at every call site.
+	// This is the only place a hint becomes an identifier, which is what makes
+	// it the right place to do both.
+	m.nextString++
+	name := fmt.Sprintf("@.%s%d", mangleName(hint), m.nextString)
 	m.strings[s] = name
 	// The bytes, escaped for LLVM assembly, then a NUL so that the constant is
 	// also usable as a C string when its length is not needed.

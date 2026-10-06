@@ -63,21 +63,24 @@ func TestIRPureProceduresBecomeNative(t *testing.T) {
 	}
 }
 
-// TestIRRefusesWhatItCannotEmit checks that a body outside the accepted set is
-// left to the interpreter rather than emitted wrongly.
+// TestIRRefusesWhatItCannotEmit checks that a body the generator cannot express
+// is left to the interpreter rather than emitted wrongly.
 //
 // The compiler's contract is that a program means the same thing compiled or
 // not, and the way that is kept is by refusing anything the generator cannot
 // express exactly.  A refusal is not an error — the procedure still runs.
+//
+// What is *not* refused is a call into the runtime: `(display x)` compiles, with
+// the display performed by the interpreter and the rest of the body in machine
+// code.  Those cases are in TestIRPartiallyCompilableBodies below.
 func TestIRRefusesWhatItCannotEmit(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		src  string
 	}{
-		{"a call into the library", `(define (f x) (display x))`},
-		{"a pair", `(define (f x) (cons x x))`},
+		{"a global read", `(define (f x) (+ x y))`},
 		{"set!", `(define (f x) (set! x 1))`},
-		{"a string", `(define (f x) (string-append "a" x))`},
+		{"an operator used as a value", `(define (f x) (map + x))`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p, err := CompileToIR(tc.src, "test")
@@ -89,6 +92,64 @@ func TestIRRefusesWhatItCannotEmit(t *testing.T) {
 			}
 			if len(p.Refused) == 0 {
 				t.Errorf("%s was refused without a reason", tc.name)
+			}
+		})
+	}
+}
+
+// TestIRPartiallyCompilableBodies checks the middle ground: a body with one part
+// the generator cannot emit and one part it can is compiled, with the first part
+// performed by the runtime.
+//
+// This is the difference between compiling a procedure and compiling a
+// procedure's arithmetic.  Refusing the whole body because of `display` would
+// give up the multiplication beside it for nothing, and a Scheme program is
+// mostly made of such bodies — with per-procedure fallback the compiler would
+// accept only the handful of procedures that touch nothing but numbers.
+func TestIRPartiallyCompilableBodies(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		src  string
+		want []string // what the module must contain
+	}{
+		{
+			name: "output beside arithmetic",
+			src:  `(define (f n) (begin (display n) (* n n)))`,
+			want: []string{"@gs_lam_f", "@gs_call", "@llvm.smul.with.overflow.i64"},
+		},
+		{
+			name: "a library call as an operand",
+			src:  `(define (f n) (+ (* n n) (string-length "abc")))`,
+			want: []string{"@gs_lam_f", "@gs_call", "@llvm.sadd.with.overflow.i64"},
+		},
+		{
+			name: "a procedure that only calls out",
+			src:  `(define (f n) (display n))`,
+			want: []string{"@gs_lam_f", "@gs_call"},
+		},
+		{
+			name: "a call with no arguments",
+			src:  `(define (f) (newline))`,
+			want: []string{"@gs_lam_f", "@gs_call"},
+		},
+		{
+			name: "a string literal is boxed",
+			src:  `(define (f) (string-length "hello"))`,
+			want: []string{"@gs_lam_f", "@gs_box_literal"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := CompileToIR(tc.src, "test")
+			if err != nil {
+				t.Fatalf("compiling %q: %v", tc.src, err)
+			}
+			if p.Native != 1 {
+				t.Fatalf("%s was not compiled: %v", tc.name, p.Refused)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(p.IR, want) {
+					t.Errorf("%s is missing from the module:\n%s", want, p.IR)
+				}
 			}
 		})
 	}
@@ -258,15 +319,22 @@ func TestIRACycleIsRefusedEvenWhenTheBodiesAreOtherwiseFine(t *testing.T) {
 // a silent refusal is the one answer that cannot be acted on.
 func TestIRRefusedIsReported(t *testing.T) {
 	p, err := CompileToIR(`(define (pure x) (+ x 1))
-(define (impure x) (display x))`, "test")
+(define (global-reader x) (+ x y))
+(define (setter x) (set! x 1))`, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if p.Native != 1 {
-		t.Errorf("compiled %d procedures natively, want 1", p.Native)
+		t.Errorf("compiled %d procedures natively, want 1: %v", p.Native, p.Refused)
 	}
-	if len(p.Refused) != 1 || !strings.Contains(p.Refused[0], "impure") {
-		t.Errorf("refusals = %v, want one naming impure", p.Refused)
+	if len(p.Refused) != 2 {
+		t.Fatalf("refusals = %v, want one per refused procedure", p.Refused)
+	}
+	joined := strings.Join(p.Refused, "\n")
+	for _, want := range []string{"global-reader", "setter"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("no refusal names %s: %v", want, p.Refused)
+		}
 	}
 }
 

@@ -90,6 +90,10 @@ type pureReport struct {
 	why string
 	// self is the name being defined, so that a recursive call is allowed.
 	self string
+	// runtimeCalls are the procedures this body calls that are the runtime's to
+	// run rather than this generator's to emit.  They are recorded so that a
+	// report can say what a compiled procedure reaches outside itself.
+	runtimeCalls []string
 	// known is the set of other procedures in the program that are candidates
 	// for native compilation.  A call to one of them is allowed — whether it
 	// ends up native is settled later, when the call graph is closed — while a
@@ -190,25 +194,49 @@ func (r *pureReport) scanCombination(x *Pair, local map[string]bool) {
 			r.scan(a, local)
 		}
 	default:
-		// A call: an operation this generator can emit, the procedure calling
-		// itself, or another procedure in the program that is a candidate for
-		// native compilation.  Anything else is the runtime's.
+		// A call, in one of three kinds.
+		//
+		// An operator is inlined.  A call to another procedure in the program
+		// is a native call, provided that procedure is compiled too.  Anything
+		// else — display, cons, a library procedure, a global — is not refused:
+		// it becomes a call into the runtime, and the parts of the body around
+		// it stay native.
+		//
+		// That last part is the difference between compiling a procedure and
+		// compiling a procedure's arithmetic.  `(define (f n) (begin (display
+		// n) (* n n)))` has one part this cannot emit and one part it can, and
+		// refusing the whole body because of the first would give up the second
+		// for nothing.  What has to be true is only that the *results* agree,
+		// and a runtime call returns the same value the interpreter would.
 		isSelf := r.self != "" && head.Name == r.self
 		isKnown := r.known[head.Name]
-		if !pureOperator(head.Name) && !isSelf && !isKnown {
-			r.stop("%s is not an operation this can compile", head.Name)
+		// A form rather than a procedure: `set!`, `lambda`, `do`, a macro that
+		// was not expanded.  It is refused here, where the reason can say so,
+		// rather than left to the emitter to trip over.
+		if isSyntax(head.Name) {
+			r.stop("%s is a form, not a call this can compile", head.Name)
 			return
 		}
 		for _, a := range args {
 			r.scan(a, local)
+			if !r.ok {
+				return
+			}
 		}
-		// An operator is inlined rather than called, so it is not a
-		// dependency of this procedure: only a call to another procedure
-		// becomes a call instruction, and only that has to exist in the
-		// module first.
-		if !isSelf && !pureOperator(head.Name) {
+		if pureOperator(head.Name) {
+			return
+		}
+		if isSelf {
+			return
+		}
+		if isKnown {
 			r.calls = append(r.calls, head.Name)
+			return
 		}
+		// A runtime call.  Its arguments are values this body computed, so they
+		// have to be boxed to cross the boundary — which is what makes it a
+		// call and not a refusal.
+		r.runtimeCalls = append(r.runtimeCalls, head.Name)
 	}
 }
 
@@ -459,8 +487,35 @@ func (f *irFunc) emitExpr(e Value) (irVal, error) {
 	case *Pair:
 		return f.emitForm(x)
 	default:
+		// Any other self-evaluating literal — a string, a character, a float, a
+		// rational, a vector — is boxed by its source text and handed over as a
+		// handle.
+		//
+		// The generated code cannot build one, because that would mean this
+		// knowing how each is represented, but it does not have to: the literal
+		// is already written down, and the runtime can read what the compiler
+		// read.  Without this, `(string-length "abc")` would refuse a body over
+		// an argument rather than over what the body does.
+		if isSelfEvaluating(e) {
+			return f.boxedLiteral(WriteToString(e))
+		}
 		return irVal{}, fmt.Errorf("ir: cannot emit %s", typeName(e))
 	}
+}
+
+// isSelfEvaluating reports whether a value stands for itself, so that writing it
+// out and reading it back gives the same value.
+//
+// A symbol does not — it is a name, and the one it refers to is the runtime's
+// business — and neither does a pair, which is a form to be evaluated.  Every
+// other literal does, which is what makes boxing one safe.
+func isSelfEvaluating(v Value) bool {
+	switch v.(type) {
+	case *Integer, *Float, *Rational, *Complex, *String, *Char, *Boolean,
+		*Vector, *Bytevector:
+		return true
+	}
+	return false
 }
 
 // emitForm handles a call form.
@@ -493,7 +548,38 @@ func (f *irFunc) emitForm(x *Pair) (irVal, error) {
 		}
 		return f.emitQuoted(args[0])
 	}
+	// Anything else is a call — unless it is a form rather than a procedure.
+	// `set!`, `lambda`, `define` and the rest are syntax, not values, so
+	// emitting one as a call would ask the runtime for a procedure that does
+	// not exist.  The scan already refuses these; this is the same check at the
+	// place that would otherwise get it wrong.
+	if isSyntax(head.Name) {
+		return irVal{}, fmt.Errorf("ir: %s is a form, not a call this can emit", head.Name)
+	}
 	return f.emitCall(head.Name, args)
+}
+
+// isSyntax reports whether a name is a special form or a macro rather than a
+// procedure.
+//
+// The list is the one the interpreter's own reader works from, so a form added
+// to the language is refused here too rather than quietly becoming a call to a
+// procedure of the same name.  A macro is included because a `let-syntax` body
+// has been expanded by the time a top-level procedure is compiled, and one that
+// has not is not something this can emit.
+func isSyntax(name string) bool {
+	switch name {
+	case "quote", "quasiquote", "unquote", "unquote-splicing",
+		"if", "set!", "define", "lambda", "begin", "let", "let*", "letrec",
+		"letrec*", "let-values", "let*-values", "define-values", "do", "cond",
+		"case", "when", "unless", "and", "or", "delay", "delay-force",
+		"parameterize", "guard", "assert", "define-syntax", "let-syntax",
+		"letrec-syntax", "syntax-rules", "define-record-type", "case-lambda",
+		"cons-stream", "the-environment", "define-library", "import",
+		"include", "include-ci", "cond-expand", "else", "=>":
+		return true
+	}
+	return false
 }
 
 // mangle turns a Scheme procedure name into the LLVM symbol its native body is
@@ -695,9 +781,6 @@ func (f *irFunc) reg() string {
 // what makes it safe to compile a procedure natively without proving anything
 // about the size of its values.
 func (f *irFunc) emitCall(op string, args []Value) (irVal, error) {
-	if len(args) == 0 {
-		return irVal{}, fmt.Errorf("ir: %s takes at least one argument", op)
-	}
 	vals := make([]irVal, 0, len(args))
 	for _, a := range args {
 		v, err := f.emitExpr(a)
@@ -705,6 +788,13 @@ func (f *irFunc) emitCall(op string, args []Value) (irVal, error) {
 			return irVal{}, err
 		}
 		vals = append(vals, v)
+	}
+	// The operators are inlined, so their arity is checked here rather than by
+	// the runtime that would otherwise catch it.  A call to anything else may
+	// have any number of arguments, including none — `(newline)` is a call like
+	// any other.
+	if pureOperator(op) && len(vals) == 0 {
+		return irVal{}, fmt.Errorf("ir: %s takes at least one argument", op)
 	}
 	switch op {
 	case "+", "-", "*":
@@ -795,13 +885,59 @@ func (f *irFunc) emitCall(op string, args []Value) (irVal, error) {
 		}
 		return acc, nil
 	}
-	// A call to another procedure.  It is native only if that procedure was
-	// compiled; otherwise the whole body would not have been accepted, since
-	// the scan only allows operators it knows.
-	if !f.known(op) && op != f.self {
-		return irVal{}, fmt.Errorf("ir: %s is not a native procedure", op)
+	// A call to another procedure: native when that procedure was compiled,
+	// and a call into the runtime when it was not.  The runtime call is what
+	// lets a body with one unemittable part still be compiled: `(begin (display
+	// n) (* n n))` runs `display` through the interpreter and multiplies in
+	// machine code.
+	if f.known(op) || op == f.self {
+		return f.emitNativeCall(op, vals)
 	}
-	return f.emitNativeCall(op, vals)
+	return f.emitRuntimeCall(op, vals)
+}
+
+// emitRuntimeCall calls a procedure the runtime owns, by name.
+//
+// The arguments are boxed to cross the boundary and the result is read back,
+// which is the same translation every other runtime entry point does.  Looking
+// the procedure up by name on every call is the cost of not knowing at compile
+// time what it is; it is a map lookup, and the alternative — refusing the body
+// — gives up the machine code around the call as well.
+func (f *irFunc) emitRuntimeCall(op string, vals []irVal) (irVal, error) {
+	f.want(gsVal + " @gs_call(i8*, i64, " + gsVal + "*)")
+	name := f.mod.stringLiteral(op, "call"+op)
+	slot := f.allocaArray(len(vals))
+	for i, v := range vals {
+		f.storeArg(slot, i, v)
+	}
+	out := f.reg()
+	fmt.Fprintf(&f.body, "  %s = call %s @gs_call(i8* %s, i64 %d, %s* %s)\n",
+		out, gsVal, name, len(vals), gsVal, slot)
+	return f.loadVal(out), nil
+}
+
+// storeArg writes one tagged value into an argument array.
+func (f *irFunc) storeArg(slot string, i int, v irVal) {
+	gp := f.reg()
+	fmt.Fprintf(&f.body, "  %s = getelementptr %s, %s* %s, i64 %d\n",
+		gp, gsVal, gsVal, slot, i)
+	bp := f.reg()
+	fmt.Fprintf(&f.body, "  %s = getelementptr %s, %s* %s, i64 0, i32 0\n",
+		bp, gsVal, gsVal, gp)
+	fmt.Fprintf(&f.body, "  store i64 %s, i64* %s\n", v.bits, bp)
+	tp := f.reg()
+	fmt.Fprintf(&f.body, "  %s = getelementptr %s, %s* %s, i64 0, i32 1\n",
+		tp, gsVal, gsVal, gp)
+	fmt.Fprintf(&f.body, "  store i64 %s, i64* %s\n", v.tag, tp)
+}
+
+// loadVal takes a gs.val apart into the two registers the emitter carries.
+func (f *irFunc) loadVal(v string) irVal {
+	bits := f.reg()
+	fmt.Fprintf(&f.body, "  %s = extractvalue %s %s, 0\n", bits, gsVal, v)
+	tag := f.reg()
+	fmt.Fprintf(&f.body, "  %s = extractvalue %s %s, 1\n", tag, gsVal, v)
+	return irVal{bits: bits, tag: tag}
 }
 
 // emitNativeCall calls another compiled procedure.
@@ -812,26 +948,12 @@ func (f *irFunc) emitCall(op string, args []Value) (irVal, error) {
 func (f *irFunc) emitNativeCall(op string, vals []irVal) (irVal, error) {
 	slot := f.allocaArray(len(vals))
 	for i, v := range vals {
-		gp := f.reg()
-		fmt.Fprintf(&f.body, "  %s = getelementptr %s, %s* %s, i64 %d\n",
-			gp, gsVal, gsVal, slot, i)
-		bp := f.reg()
-		fmt.Fprintf(&f.body, "  %s = getelementptr %s, %s* %s, i64 0, i32 0\n",
-			bp, gsVal, gsVal, gp)
-		fmt.Fprintf(&f.body, "  store i64 %s, i64* %s\n", v.bits, bp)
-		tp := f.reg()
-		fmt.Fprintf(&f.body, "  %s = getelementptr %s, %s* %s, i64 0, i32 1\n",
-			tp, gsVal, gsVal, gp)
-		fmt.Fprintf(&f.body, "  store i64 %s, i64* %s\n", v.tag, tp)
+		f.storeArg(slot, i, v)
 	}
 	out := f.reg()
 	fmt.Fprintf(&f.body, "  %s = call %s @%s(i64 %d, %s* %s)\n",
 		out, gsVal, mangle(op), len(vals), gsVal, slot)
-	bits := f.reg()
-	fmt.Fprintf(&f.body, "  %s = extractvalue %s %s, 0\n", bits, gsVal, out)
-	tag := f.reg()
-	fmt.Fprintf(&f.body, "  %s = extractvalue %s %s, 1\n", tag, gsVal, out)
-	return irVal{bits: bits, tag: tag}, nil
+	return f.loadVal(out), nil
 }
 
 // truthOf turns a tagged value into an i1 a branch can use.
