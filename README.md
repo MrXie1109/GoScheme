@@ -33,13 +33,12 @@ $ goscheme -e '(display (map (lambda (x) (* x x)) (list 1 2 3 4))) (newline)'
 - [Examples](#examples)
 - [Command line](#command-line)
 - [Standalone executables](#standalone-executables)
+- [Native compilation](#native-compilation)
+  - [What it compiles and what it cannot](docs/compile.md)
 - [Repository layout](#repository-layout)
 - [Language coverage](#language-coverage)
 - [Extension and SRFI reference](docs/extensions/README.md)
 - [Implementation notes](#implementation-notes)
-- [The bytecode VM](docs/bytecode.md)
-  - [The format, the machine and the numbers](docs/bytecode-internals.md)
-  - [Obfuscating a compiled program](docs/obfuscate.md)
 - [Performance against C, Python and Guile](docs/performance.md)
 - [Performance](#performance)
 - [Testing](#testing)
@@ -120,7 +119,7 @@ as much as run; `examples/README.md` says what each one shows.  A Go test runs
 them all, so they cannot quietly rot.  Two are worth calling out:
 
 * `examples/libraries/main.scm` imports `(lib greet)` from `lib/greet.sld`, and
-  `goscheme build -static` turns it into one executable that needs no library
+  `goscheme pack -static` turns it into one executable that needs no library
   files at all;
 * `examples/script-args.scm` shows the shape of `(command-line)`, why the
   interpreter's own name is not in it, and how `(assert ...)` and
@@ -156,10 +155,12 @@ could measure.  The two subcommands that produce a program of their own are:
 * **`goscheme compile`** writes a genuine **native executable**, through LLVM —
   see [Native compilation](#native-compilation).
 
-With neither a file nor `-e`, the interpreter starts a REPL.
-
 With neither a file nor `-e`, the interpreter starts a REPL.  The primary
-prompt is `>>> `, and `... ` appears while a form is still open.
+prompt is `>>> `, and `... ` appears while a form is still open.  The REPL runs
+on the **tree-walking interpreter** rather than the VM, deliberately: it is the
+slower engine, and a line typed by a person is not where speed matters.  It is
+also the engine that is complete on its own, which is what makes the promise
+below — that Ctrl-C can abandon *any* operation — keepable.
 
 On a terminal the REPL switches the terminal into raw mode and provides the
 editing keys one expects: cursor movement (arrows, Home/End, Ctrl-A/E/B/F),
@@ -182,7 +183,9 @@ lines rather than overwriting one another:
 ```
 
 Ctrl-C abandons the line being edited; while a form is running it aborts that
-form and returns to the prompt.  A mistyped expression that blocks forever —
+form and returns to the prompt.  Any operation can be interrupted, including a
+long computation such as `(expt 2 10000000)` and a `(sleep 30000)` that would
+otherwise leave the prompt dead.  A mistyped expression that blocks forever —
 say a `chan-recv!` nobody will ever satisfy — therefore waits instead of taking
 the session down, and a Go panic inside an evaluation is reported as a single
 line rather than a stack dump.
@@ -194,12 +197,12 @@ line-oriented reader.
 
 `(command-line)` is the **script name followed by the user's arguments** — the
 interpreter's own name never appears, so `(cdr (command-line))` is the argument
-list whether the script is interpreted or has been bound into an executable by
-`goscheme build`:
+list whether the script is interpreted or has been packed into an executable by
+`goscheme pack`:
 
 ```sh
 $ goscheme a.scm 1 2 3     ; (command-line) => ("a.scm" "1" "2" "3")
-$ goscheme build a.scm
+$ goscheme pack a.scm
 $ ./a.out 1 2 3            ; (command-line) => ("./a.out" "1" "2" "3")
 ```
 
@@ -211,17 +214,28 @@ for an uncaught error.
 
 ## Standalone executables
 
-`goscheme build` turns a script into a single self-contained executable by
+`goscheme pack` turns a script into a single self-contained executable by
 **binding an interpreter to it**: it copies the interpreter and appends the
-script, compiled, so the result needs neither Go nor goscheme on the machine
-that runs it and starts without reading source.
+script, **packed**, so the result needs neither Go nor goscheme on the machine
+that runs it.
 
 ```sh
-$ goscheme build hello.scm        # writes ./a.out, as a C compiler would
+$ goscheme pack hello.scm         # writes ./a.out, as a C compiler would
 $ ./a.out world
 hello from a bundled program
 argv: ("./hello" "world")
 ```
+
+Packing is a **read/write round trip, not a text edit**: the program is read
+into data and written back with its comments and layout gone.  What survives is
+the program; what does not is indentation, the choice between `'x` and
+`(quote x)`, and any comment meant for a person.  The round trip is the point —
+a program that removes "everything from a semicolon to the end of the line"
+removes the semicolons inside string literals too, and one that collapses
+whitespace collapses the newline inside a string; reading and writing cannot
+make either mistake, because the reader is what decides what a comment is.
+`internal/scheme/pack.go` (`PackSource`, `UnpackCheck`) is the whole of it, and
+`UnpackCheck` is what proves the packed form reads back as the same data.
 
 The result is an ordinary interpreter image with a trailer:
 
@@ -235,11 +249,11 @@ which at startup checks its own tail and, finding a program there, runs that
 instead of the command line.  Nothing is recompiled on the user's machine, and
 a bundle is exactly `interpreter + payload + trailer` bytes.
 
-The payload is the script's **bytecode**, written at build time; a script the
-build machine cannot compile — because it imports a library that is only there
-when the program runs — is stored as source instead, and `goscheme build` says
-so.  Either way the forms that have to be evaluated as source — an `import`, a
-`define-syntax`, an `include` — are run the same way they are from a file.
+The payload is the **packed source**, and a script that does not read is stored
+as it was written — a program whose problem is a syntax error should report it
+when it runs, not when it is packed.  Either way the forms that have to be
+evaluated as source — an `import`, a `define-syntax`, an `include` — are run the
+same way they are from a file.
 
 * `-o, --output FILE` names the executable.  Like a C compiler, the default is
   `a.out` in the current directory — or `a.exe` when the bound interpreter is a
@@ -253,13 +267,104 @@ so.  Either way the forms that have to be evaluated as source — an `import`, a
   beside it — and a library that cannot be found is a build error rather than a
   surprise on the user's machine.  Without it, a bundle looks for its libraries
   next to the executable (see [Loading libraries from files](#loading-libraries-from-files)).
-* A bundled program's `(command-line)` is `(program arg ...)`, the program as
+* A packed program's `(command-line)` is `(program arg ...)`, the program as
   it was invoked — see above — and `include` / `load` resolve relative to the
   executable, so data files can be shipped beside it.
 * On macOS the appended data invalidates the code signature the linker
-  produced, so `goscheme build` re-signs the result ad hoc
+  produced, so `goscheme pack` re-signs the result ad hoc
   (`codesign --force --sign -`) when it can, and warns when it cannot: Apple
   silicon refuses to run a modified, unsigned binary.
+
+## Native compilation
+
+`goscheme compile` writes a **native executable**: the script becomes machine
+code through LLVM, and the result is a program rather than an interpreter
+carrying one.
+
+```sh
+$ goscheme compile prog.scm              # ./a.out
+$ goscheme compile prog.scm -o prog      # named
+$ goscheme compile prog.scm --emit-llvm  # the LLVM IR, nothing built
+$ goscheme compile prog.scm -O0          # no optimisation
+```
+
+The pipeline is: generate LLVM IR for the script, run it through `opt`, run
+that through `llc` to get an object file, and link the object against the
+GoScheme runtime — a copy of the interpreter built with `go build
+-buildmode=c-archive` from the `re/` directory.  The LLVM tools are found on
+`PATH`, and their absence is reported rather than worked around.  The output
+needs nothing but itself.
+
+* `-o, --output FILE` names the executable (default `a.out`, or `a.exe` on
+  Windows).
+* `--emit-llvm` (or `-S`) writes the generated LLVM IR and stops — no `opt`, no
+  `llc`, no link.  It is what you ask for when you want to read the code the
+  compiler produced; with no `-o` the IR goes to standard output.
+* `-O0` .. `-O3` is the optimisation level passed to `opt` (default `-O2`).
+* `--keep-temps` keeps the intermediate `.ll` and `.o` files.
+
+### The compiler is a hybrid, on purpose
+
+A **procedure whose body is a computation over its parameters, constants and
+globals** is compiled to native code: real registers, real branches.  The forms
+it accepts are pure arithmetic and comparison operators, `if` / `let` / `begin`
+/ `and` / `or` / `quote`, calls to other compiled procedures, and calls into the
+runtime.  `(define (add a b) (+ a b))` becomes a handful of instructions, and
+its integers are machine words rather than heap objects.
+
+A **call** the compiler cannot emit is not a refusal.  `(begin (display n) (* n
+n))` compiles: `display` becomes a call into the runtime and the multiplication
+is machine code, so the fallback is **per expression** and giving up the
+multiplication beside the `display` would be giving it up for nothing.
+
+A **form** it cannot emit is a refusal.  `set!`, `lambda`, `define`, `do`, a
+macro, a continuation — these are syntax, not procedures, so there is no runtime
+call to make on their behalf, and the procedure runs interpreted instead.  The
+refused body is still defined and still callable; only its native version is not
+emitted.
+
+Either way the language stays whole and the program stays correct: it runs partly
+as machine code and partly in the interpreter, `call/cc`, `dynamic-wind`, macros
+and every library keep working, and the hot path stays native.  `--emit-llvm` is
+how you see the split, and the compiler records per procedure what stopped it
+from being compiled.  The distinction is written out at length, with what is
+accepted and what is not, in [docs/compile.md](docs/compile.md).
+
+### How a value crosses the boundary
+
+A Scheme value crossing into native code is a **tagged value**,
+`%gs.val = type { i64, i64 }`: a machine word plus a tag saying what the word
+means.  The tag is a fixnum (the word *is* the number), a handle (the word is an
+index into the runtime's value table), or a boolean.
+
+That is what lets a compiled function compute in machine words while an
+unbounded Scheme exact integer still works: the generated code does its
+arithmetic in `i64` and detects overflow with LLVM's own intrinsics, and when
+one fires it calls into the runtime with the operands boxed.  Coming back is a
+tagged value, so **a result too large for a machine word becomes a handle
+instead of being truncated** — nothing is ever silently wrapped, and no case has
+to end in "this cannot be represented".
+
+Compiled procedures are also **registered with the runtime by name**
+(`gs_register`), so the interpreter — which is what actually runs the top-level
+forms — reaches the machine code instead of walking that procedure's closure.
+The interpreted definition is still there and is used whenever the native body
+declines a call, which is what makes the native path an optimization rather than
+a second implementation of the language.  `internal/scheme/ir_pure.go` and
+`re/export.go` are the two halves of this.
+
+### What it costs and what it buys
+
+The compiler **targets the host**: cross-compilation is not supported yet.
+`opt`, `llc` and a C compiler have to be on the machine that compiles, and the
+runtime archive is built and cached for that machine.
+
+On `fib`, compiled against interpreted, it is about **3.4×** faster
+(`(fib 32)`: 1.54 s interpreted, 0.45 s compiled).  The speedup is concentrated
+where a program spends its time in arithmetic over its own parameters — exactly
+what the pure-body scan accepts.  A program that spends its time in `set!`, in
+macros or in library calls sees much less, because those run in the interpreter
+either way.
 
 ## Repository layout
 
@@ -268,8 +373,9 @@ cmd/goscheme/             command line driver
   VERSION                 the version reported by -v and the REPL banner
   version.go              embeds VERSION so any build reports it
   main.go                 file execution, -e, the REPL loop
-  bundle.go               goscheme build: binding a compiled script to an interpreter
-  static.go               goscheme build -static: resolving libraries up front
+  bundle.go               goscheme pack: binding a packed script to an interpreter
+  static.go               goscheme pack -static: resolving libraries up front
+  compiler.go             goscheme compile: IR, opt, llc and the link
   ffi_cgo.go / ffi_stub.go  load-shared-library and foreign-function
   lineedit.go             raw mode line editor and bracketed paste
   term_linux.go           termios raw mode (Linux)
@@ -299,7 +405,11 @@ internal/scheme/          the interpreter
   machine.go              CEK machine, continuations, dynamic-wind, exceptions
   vm.go                   the bytecode VM: instructions, frames, cells
   compile.go              the bytecode compiler: every form of the language
-  bytecode.go             the .scmc file format: reading and writing
+  ir.go                   the LLVM IR generator: the hybrid, and the split
+  ir_pure.go              the pure-body scan and the tagged-value boundary
+  pack.go                 PackSource / UnpackCheck: the packed-source round trip
+  re.go                   building and finding the runtime archive to link
+  runforms.go             running a file's forms, one at a time
   b_system.go             files, process context, time, eval and load
   b_hashtable.go          hash tables (extension)
   b_concurrent.go         channels, (go ...), (select ...) (extension)
@@ -326,17 +436,16 @@ test/scheme/              Scheme level tests
   run-goscheme.scm
   run-concurrency.scm
 examples/                 runnable examples and their runner (see examples/README.md)
+re/                       the GoScheme Runtime Environment: the interpreter as a
+                          c-archive, which a compiled program links against
 dist/                     `make dist` output: the release binaries, which are
                           attached to GitHub Releases and not tracked by git
 scripts/build-dist.sh     cross-compilation script used by `make dist`
-scripts/scmc-disassemble.scm
-                          a .scmc disassembler, written in GoScheme: prints
-                          what a compiled file contains
-test/bytecode/v4.scmc     a file from an older bytecode version, kept so that
-                          `make check-disasm` can prove old files still read
 docs/extensions/          one reference page per (goscheme ...) library
 docs/srfi/                one reference page per (srfi N) library
 docs/ffi-design.md        the design notes behind (goscheme ffi)
+docs/compile.md           the native compiler: what it compiles, the ABI, the
+                          tagged-value boundary, and what it cannot do
 docs/development.md       building, testing and cross-compiling locally
 Makefile                  build, test and dist targets
 ```
@@ -412,7 +521,7 @@ loads is an ordinary condition, so `guard` around the `import` catches it.
 
 `cond-expand`'s `(library ...)` requirement asks whether a library is
 registered *or* findable on the search path.  A program built with
-`goscheme build` searches next to the executable, so libraries can be shipped
+`goscheme pack` searches next to the executable, so libraries can be shipped
 beside it.
 
 ### Data types
@@ -445,11 +554,19 @@ does not handle is interpreted as a whole, so the two paths agree by
 construction rather than by imitation.  Macros are expanded before compilation,
 tail calls are instructions of their own, and a continuation captured inside
 compiled code works because the VM's frames are written once and never mutated,
-exactly like the interpreted ones.  [docs/bytecode.md](docs/bytecode.md) has
-the instruction set, the `.scmc` file format and the measured numbers;
-[docs/bytecode-internals.md](docs/bytecode-internals.md) has the format byte by
-byte and what the machine does when it runs a call.  Every form the language
-has is compiled.
+exactly like the interpreted ones.  The VM's instruction set and what the
+machine does when it runs a call are described in
+[internal/scheme/vm.go](internal/scheme/vm.go), which is where the design is
+written down; the [Performance](#performance) section has the measured numbers.
+Every form the language has is compiled.
+
+A script is read and compiled **in memory**: there is no intermediate compiled
+file, because compiling one takes milliseconds and a stored format was a second
+thing to keep, version and explain for a saving nobody could measure.  The
+`-interp` flag turns the VM off and runs everything in the tree-walker, which is
+how the two engines are compared.  The REPL uses the tree-walker deliberately —
+it is the engine that is complete on its own, which is what makes Ctrl-C able to
+abandon anything.
 
 ### Proper tail calls
 
@@ -716,7 +833,7 @@ Beyond R7RS-small the interpreter also provides:
 * `(srfi 2)`, `(srfi 8)`, `(srfi 26)` and `(srfi 111)` — `and-let*`,
   `receive`, `cut`/`cute` and boxes (`box`, `unbox`, `set-box!`, `box?`).  The
   three macros are written in Scheme and embedded in the binary, so they
-  survive `goscheme build`.
+  survive `goscheme pack`.
 * `(srfi 128)` — comparators: `make-comparator`, the `=?`, `<?`, `>?`, `<=?`
   and `>=?` chains, `comparator-if<=>`, the ready-made `eq?`/`eqv?`/`equal?`
   comparators, `make-default-comparator`, and the hash functions including the
@@ -809,10 +926,14 @@ Beyond R7RS-small the interpreter also provides:
 
 ## Performance
 
-It is a tree-walking interpreter over an explicit continuation stack, so it is
-not the fastest Scheme there is; the numbers below are what the design costs,
-and `go test ./internal/scheme -bench BenchmarkPrograms` reproduces them (they
-were measured on a 12th-generation i3).
+There are **two engines and a compiler**: a tree-walking interpreter over an
+explicit continuation stack, the bytecode VM that runs a file, and the LLVM
+native compiler described above.  The VM is the default for a file; the
+tree-walker is what `-interp` selects, what the REPL uses, and what a form the
+compiler does not handle falls back to.  None of them is the fastest Scheme
+there is, and the numbers below are what the design costs:
+`go test ./internal/scheme -bench BenchmarkPrograms` reproduces them (they were
+measured on a 12th-generation i3).
 
 | Program | Time |
 |---|---|
@@ -854,22 +975,31 @@ per element, which costs about what the Scheme loop cost, so the library's
 predicates are worth using only when a builtin one will do.
 
 **The bytecode VM** is a bigger win than that, and it is the default execution
-path.  On a panel of twelve programs — calls and arithmetic, closures, global-
-and local-heavy loops, lists, vectors, strings, higher-order code, a small
-evaluator, a merge sort, tail loops and `call/cc` re-entry — it is **1.33× to
-4.99× faster** than the tree-walker (geometric mean 3.0×) and allocates **82%
-less**.  Bindings are resolved at compile time; macros are expanded once rather
-than on every evaluation; a call to a builtin such as `+` or `car` builds no
-continuation frame at all; and a call to a compiled procedure replaces the
-current activation instead of recursing, so a non-tail recursion a million deep
-costs two Go stack frames.  It also means a program can be compiled once and
-stored: `goscheme compile script.scm` writes a `.scmc` file that runs without
-being parsed as source.  [docs/bytecode.md](docs/bytecode.md) has the table and
-the caveats; [docs/bytecode-internals.md](docs/bytecode-internals.md) is the
-reference underneath it — the file format byte by byte, the instruction set,
-what the machine does when it runs a call, and the measured difference.  Every
-form the language has is compiled; what is left to the tree-walker is a form
-that is *data* — `eval`, or `load` of a source file.
+path for a *file*.  On a panel of twelve programs — calls and arithmetic,
+closures, global- and local-heavy loops, lists, vectors, strings, higher-order
+code, a small evaluator, a merge sort, tail loops and `call/cc` re-entry — it is
+**1.33× to 4.99× faster** than the tree-walker (geometric mean 3.0×) and
+allocates **82% less**.  Bindings are resolved at compile time; macros are
+expanded once rather than on every evaluation; a call to a builtin such as `+`
+or `car` builds no continuation frame at all; and a call to a compiled procedure
+replaces the current activation instead of recursing, so a non-tail recursion a
+million deep costs two Go stack frames.  Every form the language has is
+compiled; what is left to the tree-walker is a form that is *data* — `eval`, or
+`load` of a source file.  The comparison figures below (`16×` CPython, `1.68×`
+Guile) are against this VM, which is what runs a file.
+
+There is no compiled file to write, so a program compiled once and stored is not
+a thing any more: what `goscheme compile` produces instead is a native
+executable, and a program that only needs to be started without source is what
+`goscheme pack` is for.  Both are above.
+
+**The native compiler** is the third engine, and on the workload it is built for
+it is the fastest of the three: `(fib 32)` takes **1.54 s interpreted and 0.45 s
+compiled**, about **3.4×**.  It is not a comparison with the VM row above — the
+panel runs through the VM, and the compiler only takes the procedures whose
+bodies are pure computations, so what it buys depends on how much of a program's
+time is spent there.  [docs/performance.md](docs/performance.md) says what the
+number does and does not mean.
 
 A frame takes its lock only while more than one interpreter thread is running,
 which is what makes the common single-threaded case free; `(go ...)` and the
@@ -988,8 +1118,15 @@ Build flags: `GOOS=<os> GOARCH=<arch> CGO_ENABLED=<0|1> go build -trimpath
   what is provided beyond R7RS-small is the hash-table extension and the SRFIs
   listed under [Extensions](#extensions) (SRFI-1, 2, 8, 26, 111, 128 and 133 so
   far).
-* It is a tree-walking interpreter — there is no compiler or JIT. Tail calls
-  are proper, but deep non-tail recursion allocates heap frames.
+* The native compiler is **partial and host-only**.  It compiles a procedure
+  whose body is a pure computation over its parameters, constants and globals,
+  and hands everything else to the runtime; a program therefore runs partly as
+  machine code and partly in the interpreter, and the speedup is concentrated in
+  arithmetic-heavy code.  Cross-compilation is not supported: `goscheme compile`
+  targets the host, and it needs `opt`, `llc` and a C compiler at build time.
+  The VM is still what runs a file, and it is still a bytecode machine rather
+  than a JIT.  Tail calls are proper in every engine, but deep non-tail
+  recursion allocates heap frames.
 * Inexact numbers are printed with Go's shortest round-trip representation, and
   symbols that merely look like numbers (for example `+NaN.0abc`) are quoted
   with `|…|` by `write`.

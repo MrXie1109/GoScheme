@@ -16,18 +16,27 @@ make build                        # produces .build/goscheme
 
 A script is compiled to bytecode and run on a stack machine where the compiler
 understands it, and interpreted where it does not; `-interp` forces the
-tree-walker, which is how the two are compared.  `goscheme compile` writes the
-compiled program to a `.scmc` file, and a `.scmc` file runs without being parsed
-as source:
+tree-walker, which is how the two are compared.  A script is read, compiled in
+memory and run — **there is no intermediate compiled file to write out and hand
+back**, because compiling takes milliseconds.  What produces a program of its own
+is a subcommand, and there are two:
 
 ```sh
-./.build/goscheme compile tool.scm -o tool.scmc
-./.build/goscheme tool.scmc
-./.build/goscheme -interp tool.scm     # the tree-walker, for comparison
+./.build/goscheme pack tool.scm -o tool      # one executable, source packed in
+./.build/goscheme -interp tool.scm           # the tree-walker, for comparison
+
+./.build/goscheme compile tool.scm -o tool   # machine code, through LLVM
+./.build/goscheme compile tool.scm --emit-llvm   # the LLVM IR, to read
 ```
 
-[docs/bytecode.md](../bytecode.md) has the details: what compiles, what is left
-to the interpreter, the file format, and the measured numbers.
+`pack` is the portable one: a copy of the interpreter with the program's *source*
+appended, comments and layout stripped.  `compile` is the fast one, and the
+hybrid — it compiles the procedures whose bodies are pure computations and hands
+everything else to the interpreter linked into the program, so part of the
+program is machine code and part is interpreted.  [docs/compile.md](../compile.md)
+has what it accepts, what it refuses, and why; [the README](../README.md#native-compilation)
+has the options; [docs/performance.md](../performance.md) has the measured
+numbers for both engines.
 
 `(command-line)` is the **script name followed by the user's arguments** — the
 interpreter's own name never appears, which is the deliberate departure from
@@ -256,9 +265,14 @@ A tiny server, and the client that talks to it:
 
 ## 7. Performance
 
-The interpreter is a tree-walker over an explicit continuation stack, so it is
-not the fastest Scheme; the README's
-[Performance section](../README.md#performance) has the measurements.
+There are two ways to run a program and they differ by about 3×, so it is worth
+knowing which one you are measuring.  A **file** goes through the bytecode VM by
+default, and `-interp` sends it through the tree-walker instead; the VM is the
+faster of the two on everything in the benchmark panel.  The README's
+[Performance section](../README.md#performance) has the measurements, and
+[docs/performance.md](../performance.md) has them against C, Python and Guile
+alongside the numbers for `goscheme compile`.
+
 `(goscheme fast)` is where the slow jobs went, and the rule that decides
 whether it helps is simple:
 
@@ -285,18 +299,31 @@ is wall-clock, `monotonic-millisecond` is the right one for a duration.
 (car (timed (lambda () (length (sort (iota 20000))))))
 ```
 
-## 8. Embedding and building
+## 8. Embedding, packing and compiling
 
-`goscheme build` turns a script into an executable with the interpreter and the
-source inside it; `-o` names the output (default `a.out`, or `a.exe` on
+`goscheme pack` turns a script into an executable with the interpreter and the
+packed source inside it; `-o` names the output (default `a.out`, or `a.exe` on
 Windows) and `-static` resolves the libraries up front so the program cannot
 fail on a missing file at run time.
 
 ```sh
-./.build/goscheme build script.scm -o mytool
-./.build/goscheme build -static server.scm -o server
+./.build/goscheme pack script.scm -o mytool
+./.build/goscheme pack -static server.scm -o server
 ./dist/goscheme-linux-amd64 program.scm
 ```
+
+`goscheme compile` turns it into machine code instead — a native program rather
+than an interpreter carrying one.  It is the faster of the two where the compiler
+can take the work, and it needs the LLVM toolchain on the machine that builds it:
+
+```sh
+./.build/goscheme compile script.scm -o mytool      # -O2 by default
+./.build/goscheme compile script.scm -O0 -o mytool  # no optimisation
+```
+
+Pack when the result should run anywhere the interpreter runs; compile when it
+should run fast and the machine that builds it has `opt`, `llc` and a C compiler.
+Neither needs Go or goscheme on the machine that *runs* the result.
 
 The interpreter is also a Go package; the README's
 [Embedding section](../README.md#embedding-in-a-go-program) and

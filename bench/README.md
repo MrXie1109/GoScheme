@@ -11,14 +11,31 @@ make build
 bench/run.sh 5        # best of five, prints the table
 ```
 
+`bench/run-native.sh` is the second question, and a separate script rather than
+another column: it times the **native compiler** against the interpreter, on the
+same twelve programs.
+
+```sh
+bench/run-native.sh 5 # compiled against interpreted, with the native count
+```
+
+The compiler is a hybrid — it emits machine code for a procedure whose body is a
+computation over its parameters, constants and globals, and hands everything else
+to the runtime — so the answer varies wildly by program, and that script prints
+the number of procedures it compiled beside each ratio.  A row reading `0` there
+is a compiled *image* with nothing compiled in it, and its ratio is startup cost
+rather than speed.
+
 `bench/time.scm` is the timer, and it is itself a GoScheme program: the shell's
 clock has a 10 ms resolution and most of these programs finish sooner than that,
 so timing has to come from inside something with a nanosecond clock.
 
 Read [docs/performance.md](../docs/performance.md) for the numbers and
-what they mean.  The short version: **66× slower than C doing the same work**,
-and **14.4× slower than CPython 3.12**, with eight of the twelve rows within ten
-of Python.  The target was 10×.
+what they mean.  The short version: **75× slower than C doing the same work**,
+and **16× slower than CPython 3.12**, with eight of the twelve rows within ten
+of Python; against Guile, a compiled Scheme, **1.68×**.  The compiled path is
+**3.4×** the interpreter on `fib` and much less on programs the hybrid cannot
+take.  The original target was 10× against C, and that is not met.
 
 Two things to know before changing anything here:
 

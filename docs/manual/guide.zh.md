@@ -15,17 +15,23 @@ make build                        # 生成 .build/goscheme
 ```
 
 脚本会被编译成字节码、在栈式虚拟机上执行（编译器看得懂的部分），其余回落到树遍历
-解释器；`-interp` 强制使用解释器，这也是两者对照的方式。`goscheme compile` 把编译
-结果写成 `.scmc` 文件，而 `.scmc` 直接运行、不再解析源码：
+解释器；`-interp` 强制使用解释器，这也是两者对照的方式。脚本是读进来、在内存里编译、
+然后运行的——**不存在中间的编译文件需要写出来再交回去**，因为编译只要几毫秒。真正
+产出独立程序的是两个子命令：
 
 ```sh
-./.build/goscheme compile tool.scm -o tool.scmc
-./.build/goscheme tool.scmc
-./.build/goscheme -interp tool.scm     # 用解释器跑，便于对照
+./.build/goscheme pack tool.scm -o tool      # 一个可执行文件，源码打包在里面
+./.build/goscheme -interp tool.scm           # 用解释器跑，便于对照
+
+./.build/goscheme compile tool.scm -o tool   # 机器码，经由 LLVM
+./.build/goscheme compile tool.scm --emit-llvm   # 只输出 LLVM IR，供阅读
 ```
 
-细节（哪些会编译、哪些留给解释器、文件格式、实测数字）见
-[docs/bytecode.md](../bytecode.md)。
+`pack` 是可移植的那一个：一份解释器副本，后面附上程序的**源码**（注释与排版已去掉）。
+`compile` 是快的那一个，而且是混合式的——它编译函数体是纯计算的过程，其余交给链接进
+程序里的解释器，因此程序一部分是机器码、一部分被解释执行。它接受什么、拒绝什么、为什么，
+见 [docs/compile.md](../compile.md)；选项见[主 README](../README_zh.md#本机编译)；
+两个引擎的实测数字见 [docs/performance.md](../performance.md)。
 
 `(command-line)` 是**脚本名加上用户的参数**：解释器自己的名字从不出现，这是对
 R7RS 6.14 的有意偏离，因此 `(cdr (command-line))` 就正好是参数表。
@@ -244,9 +250,13 @@ Scheme 写起来慢的整数活由 `(goscheme fast)` 补上：`expt-mod`、`isqr
 
 ## 7. 性能
 
-解释器是显式续延栈上的树遍历器，所以它不是最快的 Scheme；
-[README 的性能一节](../README_zh.md#性能)有实测数字。慢活搬进了
-`(goscheme fast)`，判断它是否划算的规则很简单：
+跑一个程序有两种方式，两者大约差 3 倍，所以值得先弄清楚你在量哪一个。**文件**默认走
+字节码虚拟机；`-interp` 改走树遍历器，而虚拟机在基准面板的每一项上都更快。
+[README 的性能一节](../README_zh.md#性能)有实测数字，
+[docs/performance.md](../performance.md) 则同时给出与 C、Python、Guile 的对比，以及
+`goscheme compile` 的数字。
+
+慢活搬进了 `(goscheme fast)`，判断它是否划算的规则很简单：
 
 * **内建**谓词或比较（`<`、`string<?`、`even?`、`string?`）在 Go 循环里直接执行，
   所以 `filter`、`sort`、`count`、`any`、`every`、`delete-duplicates` 以及用
@@ -271,17 +281,29 @@ Scheme 写起来慢的整数活由 `(goscheme fast)` 补上：`expt-mod`、`isqr
 (car (timed (lambda () (length (sort (iota 20000))))))
 ```
 
-## 8. 嵌入与打包
+## 8. 嵌入、打包与编译
 
-`goscheme build` 把脚本连同解释器打成一个可执行文件；`-o` 指定输出名（默认
+`goscheme pack` 把脚本连同解释器打成一个可执行文件；`-o` 指定输出名（默认
 `a.out`，Windows 上是 `a.exe`），`-static` 会预先解析库，使程序在运行时不会因为
 缺文件而失败。
 
 ```sh
-./.build/goscheme build script.scm -o mytool
-./.build/goscheme build -static server.scm -o server
+./.build/goscheme pack script.scm -o mytool
+./.build/goscheme pack -static server.scm -o server
 ./dist/goscheme-linux-amd64 program.scm
 ```
+
+`goscheme compile` 则把它变成机器码——一个本机程序，而不是"驮着程序"的解释器。在
+编译器接得下那份活的地方它更快，而它需要构建机上装有 LLVM 工具链：
+
+```sh
+./.build/goscheme compile script.scm -o mytool      # 默认 -O2
+./.build/goscheme compile script.scm -O0 -o mytool  # 不做优化
+```
+
+想要产物在任何能跑解释器的地方都能跑，就用 `pack`；想要它跑得快、且构建它的机器上有
+`opt`、`llc` 和 C 编译器，就用 `compile`。两者都不要求**运行**产物的机器上装 Go 或
+goscheme。
 
 解释器同时也是一个 Go 包；完整接口很小，
 [README 的嵌入一节](../README_zh.md#嵌入到-go-程序)与 `examples/embed/` 有全部细节：

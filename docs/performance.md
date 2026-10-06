@@ -1,16 +1,24 @@
 # GoScheme against C
 
 We ran the same twelve workloads in C and in GoScheme, on one machine, to find
-out how far apart they are.  The short answer: **about sixty-six times slower than C
-doing the same work**, and up to 365× on the worst workload.  The goal was to stay within
-ten.  We are not within ten, and this document says by how much, why, and what
-would have to change.
+out how far apart they are.  The short answer: **about seventy-five times slower
+than C doing the same work**, and up to 510× on the worst workload.  The goal was
+to stay within ten.  We are not within ten, and this document says by how much,
+why, and what would have to change.
+
+There is a second result in here, and it is newer.  GoScheme now has **three ways
+to run a program** — a tree-walking interpreter, the bytecode VM that runs a
+file, and an LLVM native compiler — and the compiler is measured against the
+interpreter in [Native compilation against the interpreter](#native-compilation-against-the-interpreter).
+It is **3.4×** on `fib` and much less on most other things, for a reason that is
+worth understanding rather than rounding off: the compiler is a hybrid.
 
 Everything here is reproducible:
 
 ```sh
 make build
 bench/run.sh 5          # the table below, best of five
+bench/run-native.sh 5   # compiled against interpreted
 ```
 
 ## How the comparison is set up
@@ -95,6 +103,16 @@ each C column.
 **Geometric mean: 1.68× slower than Guile, 16× slower than CPython 3.12, and
 75× slower than C doing the same work.**
 
+Those ratios are the **bytecode VM against the source**, which is the engine that
+runs a file and therefore the right one to compare an interpreter against another
+implementation.  A later run of the same script on the same machine moves them by
+a few percent in either direction (70× C, 14.8× Python, 1.60× Guile) — the machine
+is shared — and the two bracketing runs are the honest answer rather than the
+better-looking one.  Nothing here is the native compiler:
+[that is a separate comparison](#native-compilation-against-the-interpreter)
+against a different engine, and mixing the two would be the easiest way to make
+these numbers mean nothing.
+
 The Guile column is the interesting one.  Eight of the twelve rows are within
 2×, and the four that were expected to be worst — the arithmetic and
 variable-lookup loops that C folds away — are the *closest*: `locals` 1.1×,
@@ -143,10 +161,10 @@ not:
 * **It has had thirty years of profiling.**  Every one of its fast paths exists
   because someone measured that path.
 
-So the honest reading of 14.4× is: we are the same kind of program as CPython,
+So the honest reading of 16× is: we are the same kind of program as CPython,
 and we are one to two orders of magnitude behind it on the rows where it has
 specialised opcodes and we do not.  On the rows where neither has an advantage —
-`sort` (13×), `callcc` (13×), `higher-order` (21×) — we are closer, because
+`sort` (15×), `callcc` (13×), `higher-order` (22×) — we are closer, because
 those are dominated by allocation and control flow rather than by arithmetic
 dispatch.
 
@@ -187,13 +205,20 @@ where a program genuinely allocates — building a list — the gap narrows, bec
 C has to allocate too.
 
 **4. The interpreter is still an interpreter.**  The bytecode VM resolved names
-at compile time and removed the per-call environment (see
-[docs/bytecode-internals.md](bytecode-internals.md)), but a call is still a
-frame allocation and a jump through a table, and a variable is a slice index
-with a bounds check.  There is no inlining, no register allocation, no
-type specialisation, no escape analysis.  C has all of them.
+at compile time and removed the per-call environment, so a variable is a slice
+index rather than a lookup — but a call is still a frame allocation and a jump
+through a table, and that index carries a bounds check.  There is no inlining, no
+register allocation, no type specialisation, no escape analysis.  C has all of
+them.
 
-**5. Continuations are not free here, and `callcc` is 139× because of it.**  The
+This is the item the **native compiler** attacks, and
+[the section below](#native-compilation-against-the-interpreter) is what it
+managed: the arithmetic and comparison operators become machine instructions in a
+compiled procedure, and a call between two compiled procedures is a direct call.
+What it does not reach is everything else, which is why the gain is concentrated
+rather than general.
+
+**5. Continuations are not free here, and `callcc` is 161× because of it.**  The
 scheme captures the whole continuation stack; C's `setjmp` saves registers.
 This is the one row where the *feature* is the cost, and the honest reading is
 not "we are slow" but "we implement something C does not have".
@@ -222,17 +247,29 @@ and we are inside it with room to spare — the only rows outside 2× are `fib`
 Against C the target was never going to be met by an interpreter, and this
 document says so rather than dressing it up.
 
+**The native compiler is not part of this answer**, and it is worth saying why
+rather than leaving the omission to be noticed.  This table is about the
+*interpreter* — how fast the language runs when the whole program is interpreted,
+which is the like-for-like question against another implementation.  The compiler
+does not compile whole programs; it compiles the procedures it can prove and hands
+the rest to the interpreter, so quoting a compiled `fib` in this table would be
+comparing a mostly-machine-code program against Guile's and calling the
+difference a property of the interpreter.  Its own measurement is
+[above](#native-compilation-against-the-interpreter), on its own terms.
+
 ## What the numbers do not say
 
 * Nor is it "Scheme is 16× slower than Python" or "1.7× slower than Guile".  It
   is this interpreter, against these implementations, on these twelve programs.
-* This is not "Scheme is 66× slower than C".  It is "this interpreter, as it
-  stands, on these twelve programs, is 66× slower than a C compiler doing the
+* This is not "Scheme is 75× slower than C".  It is "this interpreter, as it
+  stands, on these twelve programs, is 75× slower than a C compiler doing the
   same work".  Compiled Scheme (Chez, Gambit, Racket's `raco make`) is typically
   within two to five times of C on programs like these, because it does the six
   things above that we do not.  **No such implementation was measured here** —
   none is installed on this machine, and this document does not claim a number
-  for one.
+  for one.  GoScheme's own native compiler is the nearest thing in the repository
+  to one of those, and it is a partial compiler measured against the interpreter,
+  not against C.
 * The C programs are given the same data structures on purpose, not the fastest
   possible ones.  `lists` allocates a cell per element in both languages; a C
   programmer who cared would use an array and beat our number by more.
@@ -290,13 +327,98 @@ fast path is written out inline; and the operand array must not be aliased by
 the result being appended over it, which cost every operation an allocation
 until the copy was moved to the fallback path where it is rare.
 
-## Obfuscation
+## Native compilation against the interpreter
 
-`goscheme compile -obfuscate` is separate from all of the above and costs
-nothing at run time (10.32 ms against 10.58 ms for `sort`, which is noise): it
-rewrites the *names* in a compiled file — body names, slot names, the globals
-the program defines — and shuffles the constant pools.  It is not encryption
-and does not pretend to be.  See [bytecode.md](bytecode.md).
+Everything so far measured the interpreter against other languages.  This is a
+different question: **what does `goscheme compile` buy over running the same
+program interpreted?**  The honest answer is "sometimes a lot, usually very
+little", and the reason is the design rather than the implementation.
+
+The compiler is a **hybrid**.  It emits machine code for a procedure whose body
+is a computation over its parameters, constants and globals, and hands everything
+else to the runtime — which is the interpreter, linked into the program.  So a
+compiled program runs partly as machine code and partly interpreted, and how much
+it gains depends on how much of its time is in the part that got compiled.
+[docs/compile.md](compile.md) is the long version; the short version is that
+`set!`, a closure, a macro or a library call is not compiled, while arithmetic
+and comparison are.
+
+### `fib`: the case it is built for
+
+The clean measurement, because the whole workload is a pure procedure calling
+itself:
+
+| `(fib 32)` | time |
+| --- | --- |
+| interpreted (the VM, reading the source) | **1.54 s** |
+| compiled (`goscheme compile -O2`) | **0.45 s** |
+| ratio | **3.4×** |
+
+Measured with `/usr/bin/time`, best of several, on the 12th-generation i3 the
+rest of this document uses.  It is the number to quote for the compiler, because
+it is the one where the measurement is about the compiler and not about which
+half of the program happened to fall on which side of the boundary.
+
+### The panel, which is the honest picture
+
+The same twelve workloads as everywhere else, run through both engines, with
+`bench/run-native.sh`.  The **native** column is how many procedures the compiler
+actually emitted as machine code, and it is the column to read first: a row with
+`0` has a compiled *image* with nothing compiled in it, and its ratio is startup
+cost rather than speed.
+
+| workload | interpreted | compiled | ratio | native procs |
+|---|---|---|---|---|
+| `fib` | 7.84 ms | 3.54 ms | **2.21×** | 1 |
+| `lists` | 70.79 ms | 30.61 ms | **2.31×** | 2 |
+| `tail-loop` | 48.31 ms | 46.93 ms | 1.03× | 1 |
+| `locals` | 54.24 ms | 52.52 ms | 1.03× | 0 |
+| `higher-order` | 21.83 ms | 21.25 ms | 1.03× | 2 |
+| `mini-eval` | 20.89 ms | 20.91 ms | 1.00× | 0 |
+| `globals` | 54.85 ms | 55.56 ms | 0.99× | 1 |
+| `closures` | 16.56 ms | 16.70 ms | 0.99× | 0 |
+| `sort` | 10.94 ms | 11.18 ms | 0.98× | 1 |
+| `callcc` | 10.81 ms | 11.25 ms | 0.96× | 0 |
+| `vectors` | 29.51 ms | 43.60 ms | **0.68×** | 1 |
+| `strings` | 8.70 ms | 19.61 ms | **0.44×** | 1 |
+
+Two things in that table deserve to be said plainly rather than left in the
+numbers.
+
+**Most rows are ~1.0×, and that is the hybrid working as designed, not a
+failure.**  `locals` and `closures` have nothing the compiler can take — their
+bodies use a named `let`, a `closure`, a `set!` — so the program is entirely
+interpreted while *appearing* to be compiled.  A compiled program whose
+procedures were all refused is an interpreter with a 19 MB runtime attached.
+
+**Two rows are genuinely slower, and the reason is worth writing down.**
+`strings` (0.44×) and `vectors` (0.68×) do their real work in library calls and
+builtin loop procedures, which are not compiled; what compiling bought them is a
+native stub around an interpreted body, and what it cost them is the startup of a
+19 MB program that links a copy of the Go runtime.  These are per-run times on
+workloads of a few milliseconds, so startup is visible in them.  The general
+lesson is the one `docs/compile.md` states in its limitations: **a hybrid's
+speedup depends on the program**, and a compiler that does not compile the part
+you are timing cannot make it faster.
+
+### Why compile at all, then
+
+Because the case it is built for is real and the alternative was nothing.  A
+program whose inner loop is arithmetic over its own parameters — the shape of
+`fib`, and of a great deal of numeric Scheme — gets 3.4× from a compiler that
+refuses nothing it cannot prove, and the language stays whole around it rather
+than becoming a subset with a second, disagreeing implementation.  What this
+document will not do is claim a general speedup by quoting the `fib` number next
+to the panel, which is why both are here.
+
+### Where the compiler's number would have to come from
+
+The shape of the result is clear from the design, and the missing figure is named
+rather than invented: the compiler does not inline across the boundary, does not
+infer types, and does not unbox anything beyond the fixnum case.  Those three are
+what stand between "2.2× on a recursive pure procedure" and a number
+**\[to be measured\]** that a whole program would show.  No measurement of that
+is claimed here, because none has been made.
 
 ## What was tried for the three next steps, and what the measurements said
 
@@ -445,6 +567,16 @@ against C on programs whose inner loop is arithmetic means unboxed values *and*
 inlined primitives *and* no allocation per operation, which is a compiled-Scheme
 project rather than a better interpreter.
 
+**v4 took a first step on that project rather than a sixth item on this list.**
+The native compiler does exactly what item 1 and item 2 describe, but for the
+procedures it can prove pure: their integers are machine words in SSA registers
+rather than boxed `Value`s, and their arithmetic is an instruction rather than a
+call to a primitive.  That is where `fib`'s **3.4×** comes from, and it is the
+same diagnosis this document reached from the profile — the cost is the boxing
+and the call, not the dispatch.  What it does not do is reach the programs where
+the boxing is not in a pure procedure, which is most of the panel; item 5 (type
+feedback) is the shape of what would, and it remains a project.
+
 Against Guile the first two items on that list are where the remaining 1.7×
 lives: a call that does not allocate a frame, and an integer that is not boxed
 inside the loop.  Both are work a VM can do.  Against CPython the same two items
@@ -462,4 +594,8 @@ sufficient.
 * `bench/scheme/*.scm` — the same twelve in Scheme, extracted from the panel so
   that all three sides can be read side by side.
 * `bench/time.scm` — the timer, written in GoScheme.
-* `bench/run.sh` — builds both sides, runs them, prints the table.
+* `bench/run.sh` — builds both sides, runs them, prints the interpreter's table.
+* `bench/run-native.sh` — the same twelve through `goscheme compile`, against the
+  interpreter, with the count of procedures that became machine code.
+* [docs/compile.md](compile.md) — what the compiler accepts and refuses, the ABI,
+  and the limitations, which is where the shape of the numbers above comes from.

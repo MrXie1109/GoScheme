@@ -29,6 +29,7 @@ $ goscheme -e '(display (map (lambda (x) (* x x)) (list 1 2 3 4))) (newline)'
 - [示例](#示例)
 - [命令行](#命令行)
 - [独立可执行文件](#独立可执行文件)
+- [本机编译](#本机编译)
 - [仓库结构](#仓库结构)
 - [语言覆盖](#语言覆盖)
 - [扩展库与 SRFI 接口参考](docs/extensions/README.md)
@@ -108,7 +109,7 @@ v, _ = i.Call(square, goscheme.Int(12)) // Go 调用 Scheme 过程
 所以它们不会悄悄失效。其中两个值得单独一提：
 
 * `examples/libraries/main.scm` 从 `lib/greet.sld` 导入 `(lib greet)`，用
-  `goscheme build -static` 就能变成一个完全不需要库文件的可执行文件；
+  `goscheme pack -static` 就能变成一个完全不需要库文件的可执行文件；
 * `examples/script-args.scm` 展示 `(command-line)` 的形状、解释器名字为何不在其中，
   以及 `(assert ...)` 与 `#!unspecified` 的行为。
 
@@ -116,8 +117,8 @@ v, _ = i.Call(square, goscheme.Int(12)) // Go 调用 Scheme 过程
 
 ```
 goscheme [选项] [文件] [参数 ...]
-goscheme build <脚本> [-o <输出>] [-i <解释器>]
-goscheme compile <脚本> [-o <输出.scmc>] [-obfuscate]
+goscheme pack <脚本> [-o <输出>] [-i <解释器>] [-static]
+goscheme compile <脚本> [-o <输出>] [--emit-llvm] [--keep-temps] [-O0..-O3]
 
   -e, --eval 表达式    求值表达式（可重复，按顺序求值）
   -i, --interactive    载入文件后进入 REPL
@@ -130,16 +131,20 @@ goscheme compile <脚本> [-o <输出.scmc>] [-obfuscate]
 
 脚本会被**编译成字节码并在虚拟机上执行**（编译器能处理的部分），处理不了的部分
 回落到树遍历解释器；`-interp` 强制使用解释器，这也是两者对照的方式。
-`goscheme compile` 把编译结果写成 `.scmc` 文件，而把 `.scmc` 交给解释器会直接加载
-运行、不再解析源码。细节见 [docs/bytecode.md](docs/bytecode.md)。
 
-`goscheme compile -obfuscate` 会去掉文件里的名字——函数体名、槽位名、以及程序自己
-定义的全局名——并打乱常量池，于是文件运行结果不变，但读起来不再像一份自我说明。
-**它不是加密**：程序用到的字符串和数字仍在文件里。它做到什么、防不住什么，见
-[docs/obfuscate.md](docs/obfuscate.md)。
+**不存在中间的编译文件**：交给解释器的脚本是读进来、在内存里编译、然后运行。因为
+编译只要几毫秒，而保存成一种格式意味着要多维护、多定版本、多解释一样东西，换来的
+收益却没人量得出来。真正产出独立程序的是两个子命令：
+
+* **`goscheme pack`** 把解释器连同**源码**打进一个独立可执行文件（源码经过打包）——
+  见[独立可执行文件](#独立可执行文件)。
+* **`goscheme compile`** 产出真正的**本机可执行文件**，经由 LLVM——见
+  [本机编译](#本机编译)。
 
 既没有文件也没有 `-e` 时进入 REPL。新表达式用 `>>> ` 提示，表达式尚未写完时用
-`... ` 提示。
+`... ` 提示。REPL **有意**跑在树遍历解释器上：它是两者中较慢的引擎，而一个人手敲
+的一行并不是速度重要的地方；同时它是自身完备的那一个引擎，这正是下面"Ctrl-C 能
+中断任何操作"这一承诺得以成立的原因。
 
 在终端下，REPL 会把终端切换到 raw 模式，并提供应有的编辑能力：光标移动
 （方向键、Home/End、Ctrl-A/E/B/F）、按词移动（Ctrl-左/右）、退格与删除、
@@ -160,21 +165,22 @@ Ctrl-C 放弃当前行、Ctrl-D 退出，以及上下方向键的历史记录。
 ```
 
 Ctrl-C 会放弃正在编辑的行；若此时有表达式正在求值，则中止该表达式并回到提示符。
-因此一个打错、会永久阻塞的表达式（比如没人会去满足的 `chan-recv!`）只会等待，
-而不会把整个会话打死；求值过程中若发生 Go panic，也只会打印一行提示，而不是
-堆栈转储。
+**任何操作都可以被中断**，包括 `(expt 2 10000000)` 这样的长计算，以及本来会让提示符
+假死的 `(sleep 30000)`。因此一个打错、会永久阻塞的表达式（比如没人会去满足的
+`chan-recv!`）只会等待，而不会把整个会话打死；求值过程中若发生 Go panic，也只会
+打印一行提示，而不是堆栈转储。
 
 当 stdin 不是终端（管道或重定向文件）时，不打印 banner、不打印提示符、也不做行
 编辑，所以 `echo '(+ 1 2)' | goscheme` 只会输出 `3`。在不支持 raw 模式的平台上，
 REPL 会退回到按行读取的实现。
 
 `(command-line)` 是**脚本名后接用户参数**——解释器自身的名字不会出现，因此无论
-脚本是被解释执行，还是已经用 `goscheme build` 绑定成可执行文件，
+脚本是被解释执行，还是已经用 `goscheme pack` 打包成可执行文件，
 `(cdr (command-line))` 都等于用户参数：
 
 ```sh
 $ goscheme a.scm 1 2 3     ; (command-line) => ("a.scm" "1" "2" "3")
-$ goscheme build a.scm
+$ goscheme pack a.scm
 $ ./a.out 1 2 3            ; (command-line) => ("./a.out" "1" "2" "3")
 ```
 
@@ -185,16 +191,24 @@ $ ./a.out 1 2 3            ; (command-line) => ("./a.out" "1" "2" "3")
 
 ## 独立可执行文件
 
-`goscheme build` 通过**把解释器绑定到脚本上**，把一份脚本变成单个自包含的可执行
-文件：它复制解释器、把**编译后**的脚本附加在后面，因此运行它的机器上既不需要 Go，
-也不需要 goscheme，启动时也不用再解析源码。
+`goscheme pack` 通过**把解释器绑定到脚本上**，把一份脚本变成单个自包含的可执行
+文件：它复制解释器、把**打包后**的脚本附加在后面，因此运行它的机器上既不需要 Go，
+也不需要 goscheme。
 
 ```sh
-$ goscheme build hello.scm        # 生成 ./a.out，与 C 编译器一致
+$ goscheme pack hello.scm         # 生成 ./a.out，与 C 编译器一致
 $ ./a.out world
 hello from a bundled program
 argv: ("./hello" "world")
 ```
+
+打包是**读入 / 写出的往返转换，而不是文本替换**：程序被读成数据，再写回去，注释和
+排版随之消失。留下的是程序本身；丢掉的是缩进、`'x` 与 `(quote x)` 的写法之别，以及
+任何写给人看的注释。这个往返正是关键——一个"删掉从分号到行尾的一切"的程序，会把
+字符串字面量里的分号也删掉；一个"压缩空白"的程序，会把字符串里的换行也压掉；而
+读进来再写出去两种错误都不会犯，因为定义"什么算注释"的正是读取器。
+`internal/scheme/pack.go`（`PackSource`、`UnpackCheck`）就是这件事的全部，
+`UnpackCheck` 则证明打包后的文本读回来是同一份数据。
 
 产物就是一张普通的解释器镜像加一段尾部数据：
 
@@ -207,9 +221,9 @@ argv: ("./hello" "world")
 运行程序，而不是走命令行。用户机器上不重新编译，产物大小正好是
 `解释器 + 载荷 + 尾部`。
 
-载荷是**编译后的字节码**（构建期写好）；若本机编译不了（例如脚本导入的库只在运行时
-才在可执行文件旁边），则退回存放源码，`goscheme build` 会把这一点说出来。两种情况
-下，编译器不接受的部分仍然在树遍历器上运行，与从文件运行完全一致。
+载荷是**打包后的源码**（构建期写好）；若脚本根本读不进来，就按原样存放——一个语法
+有问题的程序应该在运行时报错，而不是在打包时报错。两种情况下，必须以源码形式求值的
+表单（`import`、`define-syntax`、`include`）都与从文件运行时完全一致。
 
 * `-o, --output FILE` 指定输出名。默认与 C 编译器一致：当前目录下的 `a.out`；
   若绑定的解释器是 Windows 二进制，则为 `a.exe`。
@@ -222,9 +236,73 @@ argv: ("./hello" "world")
 * 打包程序的 `(command-line)` 是 `(program arg ...)`，即被调用时的程序名（见上）；
   `include` / `load` 相对可执行文件所在目录解析，所以可以把数据文件与它放在一起
   分发。
-* 在 macOS 上，追加数据会让链接器生成的代码签名失效，因此 `goscheme build` 会在
+* 在 macOS 上，追加数据会让链接器生成的代码签名失效，因此 `goscheme pack` 会在
   可用时用 `codesign --force --sign -` 重新做 ad-hoc 签名，做不到时给出警告：
   Apple silicon 拒绝运行被修改过且未签名的二进制。
+
+## 本机编译
+
+`goscheme compile` 产出**本机可执行文件**：脚本经由 LLVM 变成机器码，产物是一个
+程序，而不是一个"驮着程序"的解释器。
+
+```sh
+$ goscheme compile prog.scm              # ./a.out
+$ goscheme compile prog.scm -o prog      # 指定输出名
+$ goscheme compile prog.scm --emit-llvm  # 只输出 LLVM IR，不构建
+$ goscheme compile prog.scm -O0          # 不做优化
+```
+
+流水线是：为脚本生成 LLVM IR，交给 `opt` 优化，再交给 `llc` 得到目标文件，最后把
+目标文件与 GoScheme 运行时链接起来——运行时是用 `go build -buildmode=c-archive`
+从 `re/` 目录构建出来的一份解释器。LLVM 工具从 `PATH` 上查找，找不到就明确报错，
+而不是绕过去。产物只依赖它自己。
+
+* `-o, --output FILE` 指定输出名（默认 `a.out`，Windows 上是 `a.exe`）。
+* `--emit-llvm`（或 `-S`）写出生成的 LLVM IR 就停下——不跑 `opt`、不跑 `llc`、不做
+  链接。想看编译器究竟生成了什么代码时就该用它；不给 `-o` 时 IR 写到标准输出。
+* `-O0`..`-O3` 是传给 `opt` 的优化级别（默认 `-O2`）。
+* `--keep-temps` 保留中间的 `.ll` 与 `.o` 文件。
+
+### 编译器是**混合式**的，这是刻意的
+
+**函数体只由参数、常量和全局量的计算构成**的过程会被编译成本机代码：真实的寄存器、
+真实的分支。它能接受的形式是纯算术与比较运算符、`if` / `let` / `begin` / `and` /
+`or` / `quote`、对其他已编译过程的调用，以及对运行时的调用。`(define (add a b)
+(+ a b))` 会变成几条指令，其中的整数是机器字，而不是堆对象。
+
+其余一切——`set!`、`lambda`、`define`、`do`、宏、续延、对非纯内建过程的调用——
+都**交给运行时**执行，运行时就是链接进程序里的那个解释器。这是**按表达式**回退，
+而不是按过程回退：一个函数体里有一段编译不了，整个体仍然会被编译，只有那一段走
+运行时。所以编译后的程序一部分跑机器码、一部分跑解释器，而语言保持完整——`call/cc`、
+`dynamic-wind`、宏以及每一个库都照常可用，同时热路径仍是本机代码。想看清这个分界
+就用 `--emit-llvm`；编译器也会逐个过程记录是什么拦住了它。
+
+### 值如何跨越本机边界
+
+跨越本机边界的 Scheme 值是一个**带标签的值**：`%gs.val = type { i64, i64 }`，一个
+机器字加上一个说明这个字是什么意思的标签。标签取值是定点数（这个字**就是**那个数）、
+句柄（这个字是运行时值表里的下标）或布尔值。
+
+这正是"编译后的函数用机器字计算，同时 Scheme 的无界精确整数依然成立"的关键：生成的
+代码用 `i64` 做算术，并用 LLVM 自带的 intrinsic 检测溢出；一旦溢出就带着装箱后的
+操作数调回运行时。返回的同样是带标签的值，因此**大到装不进一个机器字的结果会变成
+句柄，而不是被截断**——任何情况都不会被静默回绕，也不存在哪一种情形最终只能说
+"这表示不了"。
+
+已被编译的过程还会**按名字注册到运行时**（`gs_register`），这样真正在跑顶层表单的
+解释器就会走到机器码上，而不必去遍历该过程的闭包。解释版的定义依然存在，并在本机
+代码拒绝某次调用时使用——这使得本机路径是一种优化，而不是语言的第二份实现。
+`internal/scheme/ir_pure.go` 与 `re/export.go` 是这件事的两半。
+
+### 代价与收益
+
+编译器**只面向本机**：目前不支持交叉编译。`opt`、`llc` 和 C 编译器必须在编译发生的
+机器上，运行时归档也是为那台机器构建并缓存的。
+
+在 `fib` 上，编译版相对解释版大约快 **3.4 倍**（`(fib 32)`：解释执行 1.54 秒，
+编译执行 0.45 秒）。加速集中在程序把时间花在"对自己的参数做算术"的地方——那正是
+纯函数体扫描所接受的东西。把时间花在 `set!`、宏或库调用上的程序收益小得多，因为
+那些无论如何都在解释器里跑。
 
 ## 仓库结构
 
@@ -233,8 +311,9 @@ cmd/goscheme/             命令行入口
   VERSION                 `-v` 与 REPL banner 使用的版本号
   version.go              内嵌 VERSION，使任何构建方式都能报告版本
   main.go                 文件执行、-e 求值、REPL 主循环
-  bundle.go               goscheme build：把编译后的脚本绑定到解释器
-  static.go               goscheme build -static：构建期解析全部库
+  bundle.go               goscheme pack：把打包后的脚本绑定到解释器
+  static.go               goscheme pack -static：构建期解析全部库
+  compiler.go             goscheme compile：IR、opt、llc 与链接
   ffi_cgo.go / ffi_stub.go  load-shared-library 与 foreign-function
   lineedit.go             raw 模式行编辑器与 bracketed paste
   term_linux.go           termios raw 模式（Linux）
@@ -263,7 +342,11 @@ internal/scheme/          解释器实现
   b_io.go                 端口、read 与 write
   vm.go                   字节码虚拟机：指令、帧、变量 cell
   compile.go              字节码编译器：语言里的每个表单
-  bytecode.go             .scmc 文件格式的读写
+  ir.go                   LLVM IR 生成器：混合式设计及其分界
+  ir_pure.go              纯函数体扫描与带标签值的边界
+  pack.go                 PackSource / UnpackCheck：打包源码的往返
+  re.go                   构建并定位待链接的运行时归档
+  runforms.go             逐个表单地运行文件
   b_system.go             文件、进程上下文、时间、eval 与 load
   b_hashtable.go          哈希表（扩展）
   b_concurrent.go         通道、(go ...)、(select ...)（扩展）
@@ -290,13 +373,11 @@ test/scheme/              Scheme 层测试
   run-goscheme.scm
   run-concurrency.scm
 examples/                 可直接运行的示例与运行脚本（见 examples/README_zh.md）
+re/                       GoScheme Runtime Environment：以 c-archive 形式提供的
+                          解释器，供编译产物链接
 dist/                     `make dist` 的产物：发布用二进制，只挂在 GitHub
                           Release 上，不纳入 git 跟踪
 scripts/build-dist.sh     `make dist` 使用的交叉编译脚本
-scripts/scmc-disassemble.scm
-                          用 GoScheme 写的 .scmc 反汇编器：打印编译文件里有什么
-test/bytecode/v4.scmc     一份旧字节码版本的文件，留在这里让 `make check-disasm`
-                          能证明旧文件仍读得进来
 docs/extensions/         每个 (goscheme ...) 库一页接口参考
 docs/srfi/               每个 (srfi N) 库一页接口参考
 docs/ffi-design.md       (goscheme ffi) 的设计说明
@@ -363,7 +444,7 @@ Makefile                 构建、测试与打包目标
 所以把 `import` 放进 `guard` 里可以捕获。
 
 `cond-expand` 的 `(library ...)` 要求会同时检查库是否已注册**或**在搜索路径上找得到。
-用 `goscheme build` 打包的程序会在可执行文件旁边查找，因此库可以随它一起分发。
+用 `goscheme pack` 打包的程序会在可执行文件旁边查找，因此库可以随它一起分发。
 
 ### 数据类型
 
@@ -393,9 +474,13 @@ Promise 与 `values`。
 交给一个助手。因此两条路径是"构造上一致"，而不是"互相模仿"——模式怎么匹配、哪条子句
 胜出，用的都是解释器那一份代码。宏在编译前展开，尾调用有自己的指令，而在编译代码里
 捕获的续延之所以可用，是因为虚拟机的帧与解释器的帧一样——写一次、永不修改。
-指令集、`.scmc` 文件格式与实测数字在 [docs/bytecode.md](docs/bytecode.md)，逐字节的
-格式与虚拟机执行一次调用的细节在
-[docs/bytecode-internals.md](docs/bytecode-internals.md)。
+指令集与虚拟机执行一次调用的细节写在 [internal/scheme/vm.go](internal/scheme/vm.go)
+里，实测数字见[性能](#性能)一节。
+
+脚本是**在内存里**读入并编译的：不存在中间的编译文件，因为编译只要几毫秒，而保存成
+一种格式意味着要多维护、多定版本、多解释一样东西，换来的是没人量得出的收益。
+`-interp` 关掉虚拟机、让一切都在树遍历器上运行，这也是两个引擎对照的方式。REPL 有意
+使用树遍历器——它是自身完备的那一个引擎，这正是 Ctrl-C 得以中断任何操作的原因。
 
 ### 真尾调用
 
@@ -625,7 +710,7 @@ SRFI 库则在 [`docs/srfi/`](docs/srfi/README.md)，都列出全部导出过程
   `any`、`every` 等——在两个库里是**同一个绑定**，所以同时导入也不会互相矛盾。
 * `(srfi 2)`、`(srfi 8)`、`(srfi 26)` 与 `(srfi 111)` —— `and-let*`、
   `receive`、`cut`/`cute` 以及 box（`box`、`unbox`、`set-box!`、`box?`）。
-  三个宏用 Scheme 写成并内嵌进二进制，因此 `goscheme build` 出的可执行文件里也能用。
+  三个宏用 Scheme 写成并内嵌进二进制，因此 `goscheme pack` 出的可执行文件里也能用。
 * `(srfi 128)` —— 比较器：`make-comparator`、`=?`/`<?`/`>?`/`<=?`/`>=?` 链、
   `comparator-if<=>`、现成的 `eq?`/`eqv?`/`equal?` 比较器、
   `make-default-comparator`，以及包括大小写不敏感版本在内的哈希函数；
@@ -703,8 +788,11 @@ SRFI 库则在 [`docs/srfi/`](docs/srfi/README.md)，都列出全部导出过程
 
 ## 性能
 
-它是树遍历解释器（显式续延栈），所以不是最快的 Scheme；下面是这个设计取舍的代价，
-可用 `go test ./internal/scheme -bench BenchmarkPrograms` 复现（本机为 12 代 i3）。
+现在有**两个引擎和一个编译器**：显式续延栈上的树遍历解释器、运行文件用的字节码
+虚拟机，以及上面描述的 LLVM 本机编译器。文件默认走虚拟机；树遍历器是 `-interp`
+选中的引擎、是 REPL 使用的引擎，也是编译器处理不了的表单回退到的地方。它们都不是
+最快的 Scheme，下面是这个设计取舍的代价，可用
+`go test ./internal/scheme -bench BenchmarkPrograms` 复现（本机为 12 代 i3）。
 
 | 程序 | 耗时 |
 |---|---|
@@ -738,17 +826,27 @@ BenchmarkFast` 测得，每一对的输入用同样方式构造，因此差异�
 例外是用 Scheme 写的谓词：`filter` 必须逐元素调用它，开销与手写循环相当，所以只有
 内建谓词能胜任时这套接口才划算。
 
-**字节码虚拟机**的收益比这更大，而且它已经是默认执行路径。在一组十二个程序的"面板"
-上（调用与算术、闭包、全局/局部变量密集的循环、列表、向量、字符串、高阶函数、一个小
-求值器、归并排序、尾循环、`call/cc` 重入），它比树遍历解释器**快 1.33–4.99 倍**
-（几何平均 3.0 倍），分配内存**少 82%**：绑定在编译期就解析成 (depth, slot)；宏只
-展开一次而不是每次求值都展开；`+`、`car` 这类内建过程调用完全不建续延帧；调用编译过
-的过程时直接**替换**当前活动而不是递归，因此一百万层非尾递归在 Go 栈上只占两帧。它
-还带来"编译一次、存起来"的能力：`goscheme compile script.scm` 写出 `.scmc` 文件，
-运行时**不再解析源码**。表格与注意事项在
-[docs/bytecode.md](docs/bytecode.md)；字节码的逐字节格式、指令集、虚拟机执行一次
-调用时究竟做了什么，以及实测差异，在
-[docs/bytecode-internals.md](docs/bytecode-internals.md)。
+**字节码虚拟机**的收益比这更大，而且它已经是**运行文件**时的默认执行路径。在一组
+十二个程序的"面板"上（调用与算术、闭包、全局/局部变量密集的循环、列表、向量、
+字符串、高阶函数、一个小求值器、归并排序、尾循环、`call/cc` 重入），它比树遍历
+解释器**快 1.33–4.99 倍**（几何平均 3.0 倍），分配内存**少 82%**：绑定在编译期就
+解析成 (depth, slot)；宏只展开一次而不是每次求值都展开；`+`、`car` 这类内建过程
+调用完全不建续延帧；调用编译过的过程时直接**替换**当前活动而不是递归，因此一百万层
+非尾递归在 Go 栈上只占两帧。指令集与虚拟机执行一次调用的细节写在
+[internal/scheme/vm.go](internal/scheme/vm.go) 里。语言里的每个表单都会编译；留给
+树遍历器的只是**数据**形态的表单——`eval`，或 `load` 一个源码文件。下面
+（`16×` CPython、`1.68×` Guile）的对照数字就是针对这个虚拟机测的，而文件正是由它
+运行的。
+
+既然不再写编译文件，"编译一次、存起来"也就不复存在：取而代之，`goscheme compile`
+产出本机可执行文件，而只需要"启动时不带源码"的程序则用 `goscheme pack`。两者都在
+上面。
+
+**本机编译器**是第三个引擎，在它为之前生的负载上也是三者中最快的：`(fib 32)`
+**解释执行 1.54 秒、编译执行 0.45 秒**，约 **3.4 倍**。这不是与上面虚拟机那一行的
+对比——面板是走虚拟机测的，而编译器只接手那些函数体是纯计算的过程，所以它带来多少
+收益取决于程序有多少时间花在那里。[docs/performance.md](docs/performance.md) 说明了
+这个数字意味着什么、又不意味着什么。
 
 帧只在**确实存在多个解释器线程**时才加锁，因此常见的单线程场景没有锁开销；
 `(go ...)` 与 HTTP handler 会在启动前把计数加上，共享环境照旧受锁保护。
@@ -848,8 +946,11 @@ CC_windows_amd64=x86_64-w64-mingw32-gcc make dist
   的全部内容。
 * 目标语言为 R7RS-small。R7RS-large 整体不提供；R7RS-small 之外提供的是内置
   哈希表扩展与[扩展](#扩展)小节列出的 SRFI（目前是 SRFI-1、2、8、26、111、128、133）。
-* 这是树遍历解释器，没有编译器或 JIT。尾调用是真的，但深层非尾递归会分配
-  堆上的续延帧。
+* 本机编译器是**部分的、且只面向本机**的。它只编译函数体是对参数、常量与全局量做
+  纯计算的过程，其余一律交给运行时；因此编译出的程序一部分跑机器码、一部分跑解释器，
+  加速集中在算术密集的代码上。不支持交叉编译：`goscheme compile` 面向本机，且构建
+  时需要 `opt`、`llc` 与 C 编译器。运行文件用的仍然是虚拟机，它仍是一台字节码机器
+  而不是 JIT。三个引擎里的尾调用都是真的，但深层非尾递归会分配堆上的续延帧。
 * 非精确数值采用 Go 的最短往返表示输出；形似数值的符号（例如 `+NaN.0abc`）
   会被 `write` 加 `|…|` 引用。
 * 按报告允许的行为，`write-simple` 作用于环状数据时可能不会终止；`display` 也不带
