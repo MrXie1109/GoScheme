@@ -1720,6 +1720,43 @@ func TestCompiledProgramAgreesWithTheInterpreter(t *testing.T) {
 (display (f 5))`,
 			want: "12",
 		},
+		// A closure is a value the compiled code makes and the runtime holds, and
+		// the two halves have to agree about what it is: the capture has to be
+		// read from the right place, the arity has to match, and the procedure
+		// has to be applyable by the interpreter as well — `map` and `fold`
+		// receive compiled closures and call them without knowing it.
+		{
+			name: "a closure captures and is called",
+			src: `(define (make-adder n) (lambda (x) (+ x n)))
+(display (list ((make-adder 5) 10) ((make-adder 100) 1)))`,
+			want: "(15 101)",
+		},
+		{
+			name: "a compiled closure reaches the interpreter",
+			src: `(define (make-adder n) (lambda (x) (+ x n)))
+(display (map (make-adder 10) (list 1 2 3)))`,
+			want: "(11 12 13)",
+		},
+		{
+			name: "a closure is a procedure to procedure?",
+			src: `(define (make-adder n) (lambda (x) (+ x n)))
+(display (procedure? (make-adder 1)))`,
+			want: "#t",
+		},
+		{
+			name: "a closure made in a loop captures each iteration",
+			src: `(define (f n acc)
+  (if (= n 0) acc (f (- n 1) (cons (lambda (x) (+ x n)) acc))))
+(display (map (lambda (g) (g 100)) (f 3 '())))`,
+			want: "(101 102 103)",
+		},
+		{
+			name: "a closure passed to another compiled procedure",
+			src: `(define (twice f v) (f (f v)))
+(define (make-adder n) (lambda (x) (+ x n)))
+(display (twice (make-adder 3) 10))`,
+			want: "16",
+		},
 		// The unspecified value must not be confusable with the values a program
 		// can legitimately produce, which is the whole reason it has a tag of its
 		// own rather than being the fixnum 0 or the empty list.

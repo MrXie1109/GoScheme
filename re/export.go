@@ -46,6 +46,17 @@ typedef gs_val (*gs_native_fn)(int64_t, gs_val*);
 static inline gs_val gs_call_native(gs_native_fn fn, int64_t n, gs_val *args) {
 	return fn(n, args);
 }
+
+// gs_call_addr is gs_call_native for a code pointer that arrived as an integer.
+//
+// A closure's code pointer is data on the Go side — it came out of the generated
+// code, which has no type for "function" that cgo would accept — so turning it
+// back into something callable has to happen where a cast to a function pointer
+// is legal.  Keeping it beside gs_call_native pins both spellings of the call in
+// one place, which is what the generated code's bitcast has to agree with.
+static inline gs_val gs_call_addr(uintptr_t addr, int64_t n, gs_val *args) {
+	return ((gs_native_fn)addr)(n, args);
+}
 */
 import "C"
 
@@ -418,6 +429,161 @@ func gs_set_global(name *C.char, n C.int64_t, v C.gs_val) {
 	}
 	sym := re.Intern(goString(name, int64(n)))
 	mach.Global.SetGlobal(sym, untagged(v))
+}
+
+// A compiled closure, as a Scheme procedure.
+//
+// When a compiled `lambda` captures a variable from an enclosing scope, the
+// capture has to live somewhere the generated code can reach later, and that
+// somewhere cannot be a Go pointer: cgo forbids handing one to C, and the
+// collector moves it anyway.  So the captures live here, in Go, and the generated
+// code holds a handle — the same arrangement every other crossing uses.
+//
+// **The value is a real re.Closure.** That is what makes it a procedure to
+// everything else in the runtime: `procedure?` is true of it, `display` prints
+// it, `map` accepts it, and the interpreter's own `apply` calls it without
+// knowing a compiler was involved.  The native body is hung on the clause as a
+// NativeProc, which is the same mechanism a top-level compiled procedure uses —
+// so a compiled closure and an interpreted closure are the same kind of object
+// with a different body, rather than a new kind of object everything has to
+// learn about.
+//
+// An earlier version kept its own table with handles of its own, and the two
+// namespaces collided: a closure handle was read back through the value table
+// and returned whatever unrelated value was at that index.
+type nativeClosure struct {
+	// code is the C function pointer the generated code produced, kept as an
+	// integer because that is how it crossed the boundary.  A Go field cannot
+	// hold a function pointer cgo will call; the call is made in C, by
+	// gs_call_addr.
+	code uintptr
+	// n is how many values were captured, which gs_closure_apply needs in order
+	// to build the argument list.
+	n int
+	// captures are the captured values, in the order the emitting compiler
+	// chose.  The names are gone by then: the closure body refers to them by
+	// position, which is what makes reading a capture free of a symbol lookup.
+	captures []re.Value
+	// arity is how many arguments the procedure takes, which is what the
+	// interpreter checks a call against when it applies this closure itself.
+	arity int
+}
+
+// Call runs the compiled closure with Scheme values, which is what makes it a
+// NativeProc and lets the interpreter apply it.
+//
+// The arguments are tagged into an array for the generated body, and the
+// captures are appended — the same order gs_closure_apply builds.  The two
+// paths have to agree, and they do so by both calling callCompiled.
+func (c *nativeClosure) Call(args []re.Value) (re.Value, bool) {
+	if len(args) != c.arity {
+		return nil, false // the interpreter reports the arity error
+	}
+	total := len(args) + c.n
+	taggedArgs := make([]C.gs_val, total)
+	for i, a := range args {
+		taggedArgs[i] = tagged(a)
+	}
+	for i, cap := range c.captures {
+		taggedArgs[len(args)+i] = tagged(cap)
+	}
+	out := C.gs_call_addr(C.uintptr_t(c.code), C.int64_t(total), &taggedArgs[0])
+	return untagged(out), true
+}
+
+//export gs_closure_new
+func gs_closure_new(code C.uint64_t, n C.int64_t, arity C.int64_t) C.int64_t {
+	c := &nativeClosure{code: uintptr(code), n: int(n), arity: int(arity)}
+	if n > 0 {
+		c.captures = make([]re.Value, int(n))
+	}
+	// The Scheme procedure the captures belong to.  A closure made by the
+	// compiler has no source form to fall back on, so its clause carries the
+	// native body and nothing else — a call it declines is an arity error
+	// rather than a slower answer, and returning false is how it says so.
+	proc := &re.Closure{
+		Name: "",
+		Clauses: []re.ClosureClause{{
+			Params: make([]*re.Symbol, c.arity),
+			Native: c,
+		}},
+	}
+	return C.int64_t(store(proc))
+}
+
+//export gs_closure_set
+func gs_closure_set(h C.int64_t, i C.int64_t, v C.gs_val) {
+	c, ok := closureAt(int64(h))
+	if !ok || int64(i) < 0 || int64(i) >= int64(c.n) {
+		report(fmt.Errorf("closure capture index out of range"))
+		return
+	}
+	c.captures[i] = untagged(v)
+}
+
+//export gs_closure_ref
+func gs_closure_ref(h C.int64_t, i C.int64_t) C.gs_val {
+	c, ok := closureAt(int64(h))
+	if !ok || int64(i) < 0 || int64(i) >= int64(c.n) {
+		report(fmt.Errorf("closure capture index out of range"))
+		return handle(store(re.UnspecifiedValue))
+	}
+	return tagged(c.captures[i])
+}
+
+// closureAt finds the native closure a handle names, if it names one.
+func closureAt(h int64) (*nativeClosure, bool) {
+	proc, ok := load(h).(*re.Closure)
+	if !ok || len(proc.Clauses) != 1 {
+		return nil, false
+	}
+	c, ok := proc.Clauses[0].Native.(*nativeClosure)
+	return c, ok
+}
+
+//export gs_closure_apply
+func gs_closure_apply(h C.int64_t, n C.int64_t, args *C.gs_val) C.gs_val {
+	v := load(int64(h))
+	c, isCompiled := closureAt(int64(h))
+	if !isCompiled {
+		// Not a compiled closure: an interpreted procedure, a primitive, a
+		// continuation.  The interpreter's own apply knows what to do with it,
+		// which is the point of a closure being an ordinary procedure.
+		vals := make([]re.Value, int(n))
+		for i := 0; i < int(n); i++ {
+			vals[i] = untagged(*argsAt(args, i))
+		}
+		out, err := mach.ApplySync(v, vals)
+		if err != nil {
+			report(err)
+			return handle(store(re.UnspecifiedValue))
+		}
+		return tagged(out)
+	}
+	// The caller's arguments, then the captures, which is the order the emitted
+	// body expects: its own parameters first and its captures after them.
+	//
+	// An array on this frame rather than a heap slice, because this is on the
+	// path of every call to a computed procedure and allocating per call is what
+	// the argument arrays elsewhere exist to avoid.
+	var argv [8]C.gs_val
+	var heap []C.gs_val
+	vals := argv[:0]
+	total := int(n) + c.n
+	if total > len(argv) {
+		heap = make([]C.gs_val, total)
+		vals = heap
+	}
+	for i := 0; i < int(n); i++ {
+		vals = append(vals, *argsAt(args, i))
+	}
+	for i := 0; i < c.n; i++ {
+		vals = append(vals, tagged(c.captures[i]))
+	}
+	if len(vals) == 0 {
+		return C.gs_call_addr(C.uintptr_t(c.code), 0, nil)
+	}
+	return C.gs_call_addr(C.uintptr_t(c.code), C.int64_t(len(vals)), &vals[0])
 }
 
 // gs_call applies a Scheme procedure by name, with tagged arguments.

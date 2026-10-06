@@ -355,7 +355,34 @@ func (r *pureReport) scanValue(e Value, local map[string]bool, keep bool) {
 func (r *pureReport) scanCombination(x *Pair, local map[string]bool, keep bool) {
 	head, ok := x.Car.(*Symbol)
 	if !ok {
-		r.stop("the operator is not a name")
+		// The operator is an expression rather than a name: `((make 1) 2)`, or
+		// `(f x)` where f is a parameter holding a procedure.  Both the operator
+		// and the arguments are evaluated and the callee is applied as a value,
+		// which is emitted — see emitComputedCall — so this is a call to scan
+		// rather than a form to refuse.
+		//
+		// Refusing it was the difference between `closures.scm` compiling its
+		// loop and not: the loop body was `((make i) 1)`, the only thing the
+		// scanner objected to was the operator not being a name, and the whole
+		// procedure was left to the interpreter while the `make` it called *was*
+		// compiled.  The result was slower than interpreting both, because every
+		// iteration then crossed into machine code to build a closure and back
+		// out through the boundary to call it.
+		r.scanKeep(x.Car, local, true)
+		if !r.ok {
+			return
+		}
+		args, _ := ListToSlice(x.Cdr)
+		for _, a := range args {
+			r.scanKeep(a, local, true)
+			if !r.ok {
+				return
+			}
+		}
+		// The callee is not known here, so the answer comes from outside like any
+		// other runtime call.
+		r.runtimeCalls = append(r.runtimeCalls, "a computed procedure")
+		r.runtimeCost++
 		return
 	}
 	args, ok := ListToSlice(x.Cdr)
@@ -442,6 +469,17 @@ func (r *pureReport) scanCombination(x *Pair, local map[string]bool, keep bool) 
 				if len(args) == 2 {
 					r.scanKeep(args[1], local, false)
 				}
+				return
+			}
+			// A `lambda` is emitted as a closure, and its body is scanned with
+			// its own parameters added to the locals — so a variable it closes
+			// over is captured and a variable it binds itself is not.  The body
+			// is scanned rather than skipped because a lambda whose body this
+			// cannot emit has to be refused here, where the reason can name it,
+			// rather than by the emitter halfway through generating the outer
+			// procedure.
+			if head.Name == "lambda" {
+				r.scanLambda(args, local)
 				return
 			}
 			r.stop("%s is a form, not a call this can compile", head.Name)
@@ -571,4 +609,50 @@ func pureOperator(name string) bool {
 		return true
 	}
 	return false
+}
+
+// scanLambda scans a lambda body with its own parameters in scope.
+//
+// The parameters are what makes the difference between a capture and a local: a
+// name the body binds itself is not free, and one it does not is read from the
+// enclosing procedure.  Both are accepted, and a body that assigns a captured
+// variable is not — an SSA parameter cannot be assigned through, so the capture
+// would have to be boxed, and that is a different representation rather than a
+// flag on this one.  Refusing it here says so.
+func (r *pureReport) scanLambda(args []Value, outer map[string]bool) {
+	if len(args) < 2 {
+		return // malformed; the emitter reports it
+	}
+	formals, ok := ListToSlice(args[0])
+	if !ok {
+		r.stop("a lambda with a dotted parameter list")
+		return
+	}
+	local := map[string]bool{}
+	for k, v := range outer {
+		local[k] = v
+	}
+	for _, f := range formals {
+		s, ok := f.(*Symbol)
+		if !ok {
+			r.stop("a lambda parameter that is not a name")
+			return
+		}
+		local[s.Name] = true
+	}
+	// The body is scanned for what it can emit, but nothing it does makes the
+	// enclosing body worth compiling: a procedure that only makes a closure has
+	// no arithmetic to put in machine code, and counting the lambda's body
+	// toward the enclosing one would compile a body on the strength of work that
+	// happens somewhere else.  So the counters are saved and restored.
+	savedOps, savedAcc, savedFrom, savedCost := r.nativeOps, r.accumulates, r.fromCalls, r.runtimeCost
+	savedCalls := append([]string(nil), r.runtimeCalls...)
+	for _, b := range args[1:] {
+		r.scan(b, local)
+		if !r.ok {
+			return
+		}
+	}
+	r.nativeOps, r.accumulates, r.fromCalls, r.runtimeCost = savedOps, savedAcc, savedFrom, savedCost
+	r.runtimeCalls = savedCalls
 }

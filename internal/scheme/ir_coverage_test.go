@@ -173,9 +173,8 @@ func TestQuotedDerivedSyntaxIsLeftAlone(t *testing.T) {
 // `letrec` and `set!` were on this list and have left it, which is the list
 // working as intended.
 var knownGaps = []struct{ name, body string }{
-	{"lambda in an expression position", `(lambda (x) (+ x n))`},
-	{"a call to a computed procedure", `((lambda (x) (+ x n)) 1)`},
 	{"a nested define", `(define y 1) (+ n y)`},
+	{"a dotted parameter list", `(lambda (x . rest) (+ x n))`},
 }
 
 func TestTheKnownGapsAreStillGaps(t *testing.T) {
@@ -207,6 +206,9 @@ func TestTheFormerGapsNowCompile(t *testing.T) {
 		{"unless", `(unless (< n 0) (* n 2))`},
 		{"a quoted string", `(+ (* n n) (string-length "hello"))`},
 		{"a quoted list", `(+ (* n n) (length '(a b c)))`},
+		{"lambda in an expression position", `(+ (* n n) ((lambda (x) (+ x n)) 1))`},
+		{"a closure reaching a helper", `(+ (* n n) ((lambda (f) (f n)) (lambda (y) (+ y 1))))`},
+		{"a closure capturing a local", `(let ((k n)) (+ (* n n) ((lambda (x) (+ x k)) 1)))`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p, err := CompileToIR(`(define (probe n) `+tc.body+`)`, "test")

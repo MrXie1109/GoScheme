@@ -79,7 +79,6 @@ func TestIRRefusesWhatItCannotEmit(t *testing.T) {
 		src  string
 	}{
 		{"a nested define", `(define (f x) (define y 1) (+ x y))`},
-		{"a lambda", `(define (f x) (lambda (y) (+ x y)))`},
 		{"do", `(define (f n) (do ((i 0 (+ i 1))) ((= i n) i)))`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

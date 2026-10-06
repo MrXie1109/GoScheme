@@ -51,6 +51,15 @@ type irFunc struct {
 	// expression emitter is not run at all.
 	listWalkDone bool
 	listWalkVal  irVal
+	// lambdaNames gives each `lambda` emitted inside this function a distinct
+	// symbol to be emitted under, and lambdaDepth bounds how deep they may nest.
+	// See ir_closure.go.
+	lambdaNames lambdaNamer
+	lambdaDepth int
+	// captureNames is the rename in force while a lambda body is being emitted:
+	// a captured variable arrives as a parameter whose name is the original, so
+	// this is normally empty and exists for the case where it cannot be.
+	captureNames map[string]string
 	// tail is true while the expression being emitted is in tail position: its
 	// value is the value of the whole function, so a call there can be a jump
 	// rather than a call.
@@ -89,6 +98,7 @@ func (g *irGen) emitPureFunction(name string, formals []*Symbol, body []Value, c
 		locals:       map[string]irVal{},
 		calls:        calls,
 		currentBlock: "entry",
+		lambdaNames:  lambdaNamer{owner: name},
 	}
 	// Each argument arrives as two plain integers — its word and its tag —
 	// rather than as one tagged struct.
@@ -349,7 +359,10 @@ func isSelfEvaluating(v Value) bool {
 func (f *irFunc) emitForm(x *Pair) (irVal, error) {
 	head, _ := x.Car.(*Symbol)
 	if head == nil {
-		return irVal{}, fmt.Errorf("ir: the operator is not a name")
+		// The operator is an expression rather than a name: `((make 1) 2)`, or
+		// `(f x)` where f is a parameter.  It is evaluated and then called, which
+		// is the one case where the callee is not known at compile time.
+		return f.emitComputedCall(x)
 	}
 	args, _ := ListToSlice(x.Cdr)
 	switch head.Name {
@@ -419,6 +432,8 @@ func (f *irFunc) emitForm(x *Pair) (irVal, error) {
 		return f.emitQuoted(args[0])
 	case "set!":
 		return f.emitSet(args)
+	case "lambda":
+		return f.emitLambda(x)
 	}
 	// Anything else is a call — unless it is a form rather than a procedure.
 	// `set!`, `lambda`, `define` and the rest are syntax, not values, so
@@ -940,6 +955,15 @@ func (f *irFunc) emitCall(op string, args []Value) (irVal, error) {
 			acc = irVal{bits: out, tag: tag}
 		}
 		return acc, nil
+	}
+	// A name that is a local is a *value* — a procedure the body was given or
+	// made, not a procedure this can call by name.  `(let ((g (lambda (x) x)))
+	// (g 1))` has no global g, and calling one by name asked the runtime for a
+	// binding that does not exist: it reported "g: undefined" where the
+	// interpreter answered.  A local that holds a procedure is applied as the
+	// value it is.
+	if local, ok := f.locals[op]; ok {
+		return f.emitClosureApply(local, vals)
 	}
 	// A call to another procedure: native when that procedure was compiled,
 	// and a call into the runtime when it was not.  The runtime call is what
