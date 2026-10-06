@@ -290,7 +290,9 @@ func (g *irGen) program(forms []Value) error {
 		// A recognised list walk is exempt from the cost rule: the rule exists
 		// to avoid compiling a body that crosses the boundary once per element,
 		// and a walk crosses once for the whole list.
-		if _, isWalk := recogniseListWalk(p.name, p.formals, p.body); isWalk {
+		_, isListWalk := recogniseListWalk(p.name, p.formals, p.body)
+		_, isVecWalk := recogniseVecWalk(p.name, p.formals, p.body)
+		if isListWalk || isVecWalk {
 			g.pure[p.name] = &pureProc{name: p.name, formals: p.formals, body: p.body, calls: r.calls}
 			continue
 		}

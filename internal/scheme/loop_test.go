@@ -96,3 +96,78 @@ func TestListWalkKindNumbersMatchTheRuntime(t *testing.T) {
 		t.Errorf("collect walk gave %s, want (3 2 1)", got)
 	}
 }
+
+// TestRecogniseVecWalk checks the vector walk, and the shapes that look like one
+// without being one.
+func TestRecogniseVecWalk(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want loopKind
+	}{
+		{"求和", `(define (s v i n acc) (if (= i n) acc (s v (+ i 1) n (+ acc (vector-ref v i)))))`, loopSum},
+		{"计数", `(define (c v i n acc) (if (= i n) acc (c v (+ i 1) n (+ 1 acc))))`, loopCount},
+		{"收集", `(define (r v i n acc) (if (= i n) acc (r v (+ i 1) n (cons (vector-ref v i) acc))))`, loopCollect},
+		// 应当拒绝
+		{"步长不是 1", `(define (s v i n acc) (if (= i n) acc (s v (+ i 2) n (+ acc (vector-ref v i)))))`, loopNone},
+		{"边界不是 n", `(define (s v i n acc) (if (= i n) acc (s v (+ i 1) i (+ acc (vector-ref v i)))))`, loopNone},
+		{"测试的是别的对", `(define (s v i n acc) (if (= v n) acc (s v (+ i 1) n (+ acc (vector-ref v i)))))`, loopNone},
+		{"用 vector-length 而非参数", `(define (s v i n acc) (if (= i (vector-length v)) acc (s v (+ i 1) n (+ acc (vector-ref v i)))))`, loopNone},
+		{"不是向量取用", `(define (s v i n acc) (if (= i n) acc (s v (+ i 1) n (+ acc (car v)))))`, loopNone},
+		{"五个参数", `(define (s v i n acc k) (if (= i n) acc (s v (+ i 1) n (+ acc (vector-ref v i)) k)))`, loopNone},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			forms, err := NewStringReader(c.src).ReadAll()
+			if err != nil {
+				t.Fatal(err)
+			}
+			name, formals, body, ok := topLevelProcedure(forms[0])
+			if !ok {
+				t.Fatal("不是顶层过程定义")
+			}
+			w, got := recogniseVecWalk(name, formals, body)
+			if got != (c.want != loopNone) {
+				t.Errorf("识别=%v 期望=%v", got, c.want != loopNone)
+			}
+			if got && w.kind != c.want {
+				t.Errorf("kind=%v 期望=%v", w.kind, c.want)
+			}
+		})
+	}
+}
+
+// TestVecWalkIsEmittedAsOneCall checks the vector walk becomes one call.
+func TestVecWalkIsEmittedAsOneCall(t *testing.T) {
+	p, err := CompileToIR(`(define (vsum v i n acc) (if (= i n) acc (vsum v (+ i 1) n (+ acc (vector-ref v i)))))`, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Native != 1 {
+		t.Fatalf("the walk was not compiled: %v", p.Refused)
+	}
+	// One declare, one call.
+	if got := strings.Count(p.IR, "@gs_vecwalk("); got != 2 {
+		t.Errorf("gs_vecwalk mentioned %d times, want 2:\n%s", got, p.IR)
+	}
+	if strings.Contains(p.IR, "@gs_call") {
+		t.Errorf("the walk still crosses through gs_call:\n%s", p.IR)
+	}
+}
+
+// TestVecWalkOutOfRangeRaises checks that an index the caller got wrong raises
+// rather than being quietly ignored.
+//
+// The interpreted `(vector-ref v i)` raises, so a walk that read past the end
+// would be a compiled program that silently returned something where the
+// interpreter reported an error — the disagreement the whole design is meant to
+// prevent.
+func TestVecWalkOutOfRangeRaises(t *testing.T) {
+	v := &Vector{Items: []Value{Int(1), Int(2)}}
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("reading past the end of a vector did not raise")
+		}
+	}()
+	RunVecWalk(walkSum, v, Int(0), Int(5), Int(0))
+}

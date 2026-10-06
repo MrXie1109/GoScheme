@@ -643,6 +643,9 @@ func (g *irGen) emitPureFunction(name string, formals []*Symbol, body []Value, c
 	if w, ok := recogniseListWalk(name, formals, body); ok {
 		f.emitListWalk(w, formals)
 	}
+	if w, ok := recogniseVecWalk(name, formals, body); ok {
+		f.emitVecWalk(w, formals)
+	}
 
 	// The body is in tail position: whatever it evaluates to is what the
 	// function returns, so a call at the end of it can be a jump.

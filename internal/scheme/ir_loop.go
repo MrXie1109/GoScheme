@@ -42,7 +42,7 @@ const (
 	loopCollect
 )
 
-// listWalk is a recognised loop.
+// listWalk is a recognised list walk.
 type listWalk struct {
 	name string
 	// list and acc are the two parameters, in the order the procedure takes
@@ -50,6 +50,24 @@ type listWalk struct {
 	listParam *Symbol
 	accParam  *Symbol
 	kind      loopKind
+}
+
+// vecWalk is a recognised vector walk: the same idea as a list walk, with an
+// index that advances to a bound instead of a cdr that reaches the empty list.
+//
+//	(define (vsum v i n acc)
+//	  (if (= i n) acc (vsum v (+ i 1) n (+ acc (vector-ref v i)))))
+//
+// The bound is a parameter rather than the vector's own length, which is what
+// the shape below requires: a walk that recomputes `(vector-length v)` for every
+// element would be a different body and is not recognised.
+type vecWalk struct {
+	name    string
+	vecParm *Symbol
+	idxParm *Symbol
+	endParm *Symbol
+	accParm *Symbol
+	kind    loopKind
 }
 
 // recogniseListWalk reports whether a procedure is a list walk this can run in
@@ -370,4 +388,215 @@ func (f *irFunc) emitListWalk(w listWalk, formals []*Symbol) {
 	fmt.Fprintf(&f.body, "  %s = extractvalue %s %s, 1\n", tag, gsVal, out)
 	f.listWalkDone = true
 	f.listWalkVal = irVal{bits: bits, tag: tag}
+}
+
+// ---------------------------------------------------------------------------
+// Recognising a vector walk
+// ---------------------------------------------------------------------------
+
+// recogniseVecWalk reports whether a procedure walks a vector by index.
+//
+// The accepted body is exactly
+//
+//	(if (= IDX END) ACC (NAME VEC (+ IDX 1) END COMBINE))
+//
+// where VEC, IDX, END and ACC are four of the parameters, COMBINE folds the
+// element at IDX into ACC, and NAME is the procedure itself.  The bound END is
+// a parameter the loop counts up to, not the vector's length: the shape is
+// checked, not inferred, and a loop that asked for the length each time is a
+// different program.
+//
+// The element arrives as `(vector-ref VEC IDX)`, which is the vector's
+// counterpart of `(car LIST)` and is why the walks below can share the
+// accumulator arithmetic with the list ones.
+func recogniseVecWalk(name string, formals []*Symbol, body []Value) (vecWalk, bool) {
+	var none vecWalk
+	if len(formals) != 4 || len(body) != 1 {
+		return none, false
+	}
+	// Find the four parameters by the roles they play.
+	ifForm, ok := body[0].(*Pair)
+	if !ok || !isForm(ifForm, "if") {
+		return none, false
+	}
+	parts, _ := ListToSlice(ifForm.Cdr)
+	if len(parts) != 3 {
+		return none, false
+	}
+	test, then, alt := parts[0], parts[1], parts[2]
+
+	// (if (= IDX END) ACC ...)
+	testForm, ok := test.(*Pair)
+	if !ok || !isForm(testForm, "=") {
+		return none, false
+	}
+	testArgs, _ := ListToSlice(testForm.Cdr)
+	if len(testArgs) != 2 {
+		return none, false
+	}
+	idxSym, ok := testArgs[0].(*Symbol)
+	if !ok {
+		return none, false
+	}
+	endSym, ok := testArgs[1].(*Symbol)
+	if !ok || endSym.Name == idxSym.Name {
+		return none, false
+	}
+	accSym, ok := then.(*Symbol)
+	if !ok || accSym.Name == idxSym.Name || accSym.Name == endSym.Name {
+		return none, false
+	}
+
+	// (NAME VEC (+ IDX 1) END COMBINE)
+	callForm, ok := alt.(*Pair)
+	if !ok {
+		return none, false
+	}
+	callHead, ok := callForm.Car.(*Symbol)
+	if !ok || callHead.Name != name {
+		return none, false
+	}
+	callArgs, _ := ListToSlice(callForm.Cdr)
+	if len(callArgs) != 4 {
+		return none, false
+	}
+	vecSym, ok := callArgs[0].(*Symbol)
+	if !ok {
+		return none, false
+	}
+	// The index advances by one and nothing else.
+	if !isPlusOne(callArgs[1], idxSym) {
+		return none, false
+	}
+	if !isSameSymbol(callArgs[2], endSym) {
+		return none, false
+	}
+	kind, ok := recogniseVecCombine(callArgs[3], accSym, vecSym, idxSym)
+	if !ok {
+		return none, false
+	}
+	for _, s := range []*Symbol{vecSym, idxSym, endSym, accSym} {
+		if !hasParam(formals, s) {
+			return none, false
+		}
+	}
+	return vecWalk{name: name, vecParm: vecSym, idxParm: idxSym, endParm: endSym, accParm: accSym, kind: kind}, true
+}
+
+// isPlusOne reports whether a value is (+ IDX 1).
+func isPlusOne(v Value, idx *Symbol) bool {
+	p, ok := v.(*Pair)
+	if !ok || !isForm(p, "+") {
+		return false
+	}
+	args, _ := ListToSlice(p.Cdr)
+	if len(args) != 2 {
+		return false
+	}
+	if isSameSymbol(args[0], idx) && isOne(args[1]) {
+		return true
+	}
+	return isOne(args[0]) && isSameSymbol(args[1], idx)
+}
+
+// isVecRefOf reports whether a value is (vector-ref VEC IDX).
+func isVecRefOf(v Value, vec, idx *Symbol) bool {
+	p, ok := v.(*Pair)
+	if !ok || !isForm(p, "vector-ref") {
+		return false
+	}
+	args, _ := ListToSlice(p.Cdr)
+	return len(args) == 2 && isSameSymbol(args[0], vec) && isSameSymbol(args[1], idx)
+}
+
+// recogniseVecCombine classifies the fold, which is the same set as the list
+// walks' with the element read from a vector.
+func recogniseVecCombine(e Value, accSym, vecSym, idxSym *Symbol) (loopKind, bool) {
+	form, ok := e.(*Pair)
+	if !ok {
+		return loopNone, false
+	}
+	head, ok := form.Car.(*Symbol)
+	if !ok {
+		return loopNone, false
+	}
+	args, _ := ListToSlice(form.Cdr)
+	switch head.Name {
+	case "+":
+		if len(args) != 2 {
+			return loopNone, false
+		}
+		if isSameSymbol(args[0], accSym) && isVecRefOf(args[1], vecSym, idxSym) {
+			return loopSum, true
+		}
+		if isOne(args[0]) && isSameSymbol(args[1], accSym) {
+			return loopCount, true
+		}
+		if isSameSymbol(args[0], accSym) && isOne(args[1]) {
+			return loopCount, true
+		}
+	case "cons":
+		if len(args) != 2 {
+			return loopNone, false
+		}
+		if isVecRefOf(args[0], vecSym, idxSym) && isSameSymbol(args[1], accSym) {
+			return loopCollect, true
+		}
+	}
+	return loopNone, false
+}
+
+// RunVecWalk performs a recognised vector walk.
+//
+// The bound is the one the procedure was given, and the elements are read with
+// the runtime's own vector access, so an index the caller got wrong raises the
+// same error the interpreted loop would raise rather than reading past the end.
+func RunVecWalk(kind int, vec, from, end, acc Value) Value {
+	v, ok := vec.(*Vector)
+	if !ok {
+		return acc
+	}
+	lo, _ := from.(*Integer)
+	hi, _ := end.(*Integer)
+	if lo == nil || hi == nil || !lo.small || !hi.small {
+		return acc
+	}
+	i, n := lo.i, hi.i
+	for ; i < n; i++ {
+		if i < 0 || i >= int64(len(v.Items)) {
+			// Out of range: the interpreted (vector-ref v i) would have raised,
+			// so this must too rather than quietly stopping.
+			panic(errf("vector-ref", "index %d out of range for vector of length %d", i, len(v.Items)))
+		}
+		switch kind {
+		case walkSum:
+			acc = NumAdd(acc, v.Items[i])
+		case walkCount:
+			acc = NumAdd(acc, Int(1))
+		case walkCollect:
+			acc = Cons(v.Items[i], acc)
+		}
+	}
+	return acc
+}
+
+// emitVecWalk writes a recognised vector walk as one call into the runtime.
+//
+// The four arguments and the kind are handed over together; RunVecWalk does the
+// counting, so nothing crosses per element.
+func (f *irFunc) emitVecWalk(w vecWalk, formals []*Symbol) {
+	f.want(gsVal + " @gs_vecwalk(i32, " + gsVal + "*)")
+	slot := f.allocaArray(4)
+	params := []*Symbol{w.vecParm, w.idxParm, w.endParm, w.accParm}
+	for i, p := range params {
+		f.storeArg(slot, i, irVal{
+			bits: "%p_" + p.Name + ".bits",
+			tag:  "%p_" + p.Name + ".tag",
+		})
+	}
+	out := f.reg()
+	fmt.Fprintf(&f.body, "  %s = call %s @gs_vecwalk(i32 %d, %s* %s)\n",
+		out, gsVal, int(w.kind), gsVal, slot)
+	f.listWalkDone = true
+	f.listWalkVal = f.loadVal(out)
 }

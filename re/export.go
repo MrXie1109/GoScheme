@@ -251,6 +251,28 @@ func gs_walk(kind C.int32_t, list C.gs_val, acc C.gs_val) C.gs_val {
 	return tagged(scheme.RunListWalk(int(int32(kind)), untagged(list), untagged(acc)))
 }
 
+// gs_vecwalk runs a whole vector walk in one call.
+//
+// The vector counterpart of gs_walk, and there for the same reason: a loop that
+// indexes a vector element by element would cross the boundary per element.
+//
+// The arguments come through an array rather than as four tagged values.  Four
+// struct arguments plus the kind exceed what the platform passes in registers,
+// and the generated code and cgo then disagree about where the rest goes — the
+// call returned the accumulator unchanged, which looks like a loop that ran
+// zero times.  An array has one address whatever the arity, which is the same
+// reason the compiled bodies take their arguments that way.
+//
+//export gs_vecwalk
+func gs_vecwalk(kind C.int32_t, args *C.gs_val) C.gs_val {
+	if mach == nil {
+		gs_init(0, nil)
+	}
+	return tagged(scheme.RunVecWalk(int(int32(kind)),
+		untagged(*argsAt(args, 0)), untagged(*argsAt(args, 1)),
+		untagged(*argsAt(args, 2)), untagged(*argsAt(args, 3))))
+}
+
 // gs_global reads a top-level binding by name, as a tagged value.
 //
 // A compiled body reads a global where the name appears, not once at entry,
