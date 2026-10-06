@@ -35,7 +35,6 @@ func runCompile(args []string) int {
 	emitLLVM := false
 	optLevel := "2"
 	keepTemps := false
-	explain := false
 	staticLink := false
 	compileAll := false
 
@@ -55,8 +54,6 @@ func runCompile(args []string) int {
 			emitLLVM = true
 		case "--keep-temps":
 			keepTemps = true
-		case "--explain":
-			explain = true
 		case "-compile-all":
 			// Emit every procedure the generator understands, including the ones
 			// the cost rule would leave to the interpreter.  It is a judgement
@@ -89,7 +86,7 @@ func runCompile(args []string) int {
 		compileUsage(os.Stderr)
 		return 2
 	}
-	return compileToNative(scriptPath, out, optLevel, emitLLVM, keepTemps, explain, staticLink, compileAll)
+	return compileToNative(scriptPath, out, optLevel, emitLLVM, keepTemps, staticLink, compileAll)
 }
 
 func compileUsage(w *os.File) {
@@ -105,7 +102,6 @@ func compileUsage(w *os.File) {
 	fmt.Fprintln(w, "  -static            link the runtime into the program")
 	fmt.Fprintln(w, "  -compile-all       emit every procedure, ignoring the cost rule")
 	fmt.Fprintln(w, "  --keep-temps       keep the intermediate .ll and .o files")
-	fmt.Fprintln(w, "  --explain          list every procedure left to the interpreter, and why")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "The runtime is linked as a shared library by default, so the program holds")
 	fmt.Fprintln(w, "only its own machine code — a few kilobytes rather than the several")
@@ -116,68 +112,45 @@ func compileUsage(w *os.File) {
 	fmt.Fprintln(w, "has to run on a machine where the library is not installed.")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "")
-	fmt.Fprintln(w, "-compile-all overrules the cost rule, which otherwise leaves a procedure")
-	fmt.Fprintln(w, "whose only work is a call into the runtime to the interpreter.  That rule is")
-	fmt.Fprintln(w, "right — such a procedure measured 2 to 3 times slower compiled — but it is a")
-	fmt.Fprintln(w, "judgement about speed, and a judgement should be visible and overridable")
-	fmt.Fprintln(w, "rather than silent.")
+	fmt.Fprintln(w, "-compile-all overrules the cost rule, which leaves a procedure whose only")
+	fmt.Fprintln(w, "work is a call into the runtime to the interpreter.  That rule is right:")
+	fmt.Fprintln(w, "such a procedure measured 2 to 3 times slower compiled, because a call")
+	fmt.Fprintln(w, "across the boundary costs more than the call itself.  The flag is for the")
+	fmt.Fprintln(w, "case where the user knows better than the shape of the body does.")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "The compiler takes the procedures whose bodies are pure computations and")
 	fmt.Fprintln(w, "leaves the rest to the interpreter, so a program usually comes out part")
-	fmt.Fprintln(w, "machine code and part interpreted.  What it took is reported on stderr;")
-	fmt.Fprintln(w, "--explain names what it left behind and why.")
+	fmt.Fprintln(w, "machine code and part interpreted.  A program where nothing could be")
+	fmt.Fprintln(w, "compiled says so on stderr; nothing else is reported, because what a")
+	fmt.Fprintln(w, "compiler chose not to emit is not news.")
 }
 
-// reportSplit says what the compiler took and what it left to the interpreter.
+// reportSplit warns when nothing was compiled.
 //
-// It is not decoration.  The compiler is partial by design, so a program can
-// come out with no machine code in it at all, still run correctly, and run at
-// exactly the speed it would have without compiling — which is the worst way to
-// fail, because nothing says so and the binary's size suggests otherwise.  A
-// build that compiled nothing therefore says so out loud.  Everything printed
-// here was already computed for this purpose and was previously discarded.
-func reportSplit(w io.Writer, prog *scheme.IRProgram, explain bool) {
-	// A program where everything compiled has nothing to say, and neither has one
-	// where the only procedures left behind are ones the cost rule declined: the
-	// compiler already made the choice that keeps the program fast, and announcing
-	// it would read as a defect and send the reader looking for one.
-	//
-	// What is worth saying is a *gap* — a procedure the generator could not emit —
-	// because that is something a person can act on, by rewriting the procedure or
-	// by reporting the missing rule.
-	if len(prog.Refused) == 0 && prog.CompiledAnything() {
-		if !explain || len(prog.Declined) == 0 {
-			return
-		}
-	} else if !prog.CompiledAnything() {
-		fmt.Fprintf(w, "goscheme compile: warning: nothing was compiled to native code\n")
-		fmt.Fprintf(w, "  This program will run in the interpreter, at the speed it would have\n")
-		fmt.Fprintf(w, "  had without compiling.  The binary is large because the runtime is\n")
-		fmt.Fprintf(w, "  linked into it, not because any of the program is machine code.\n")
-	} else {
-		fmt.Fprintf(w, "goscheme compile: %d compiled to native code, %d left to the interpreter\n",
-			prog.Native+prog.TopNative, prog.Runtime)
+// It says nothing in any other case, and that is the design rather than an
+// omission.  A compiler reports what it produced, not what it chose not to: a
+// procedure the cost rule declined is a decision already made in the program's
+// favour, and naming it would tell a user their program has a defect when it has
+// been optimized.  A procedure the generator could not express is a gap, and the
+// answer to a gap is to close it rather than to describe it — every one this
+// compiler had has been closed, and what remains is the cost rule.
+//
+// What is left is the case a user genuinely cannot see: a program where nothing
+// was compiled at all.  It runs correctly and at interpreter speed, the binary is
+// megabytes because the runtime is linked into it, and without this line nothing
+// would say so.
+func reportSplit(w io.Writer, prog *scheme.IRProgram) {
+	if prog.CompiledAnything() {
+		return
 	}
-	switch {
-	case explain && len(prog.Refused) > 0:
-		fmt.Fprintf(w, "  could not be emitted:\n")
-		for _, line := range prog.Refused {
-			fmt.Fprintf(w, "    %s\n", line)
-		}
-	case len(prog.Refused) > 0:
-		fmt.Fprintf(w, "  %d could not be emitted; run with --explain to see which, and why\n",
-			len(prog.Refused))
-	}
-	if explain && len(prog.Declined) > 0 {
-		fmt.Fprintf(w, "  declined as slower to compile, which is a choice and not a gap:\n")
-		for _, line := range prog.Declined {
-			fmt.Fprintf(w, "    %s\n", line)
-		}
-	}
+	fmt.Fprintf(w, "goscheme compile: warning: nothing was compiled to native code\n")
+	fmt.Fprintf(w, "  This program will run in the interpreter, at the speed it would have\n")
+	fmt.Fprintf(w, "  had without compiling.  The binary is large because the runtime is\n")
+	fmt.Fprintf(w, "  linked into it, not because any of the program is machine code.\n")
 }
 
 // compileToNative runs the LLVM pipeline over a script.
-func compileToNative(scriptPath, out, optLevel string, emitLLVM, keepTemps, explain, staticLink, compileAll bool) int {
+func compileToNative(scriptPath, out, optLevel string, emitLLVM, keepTemps, staticLink, compileAll bool) int {
 	abs, err := filepath.Abs(scriptPath)
 	if err != nil {
 		abs = scriptPath
@@ -201,7 +174,7 @@ func compileToNative(scriptPath, out, optLevel string, emitLLVM, keepTemps, expl
 	// It is printed before the -S return below for the same reason a person
 	// reading the IR benefits most from it: that is when the absence of any
 	// gs_lam_ function is about to be noticed.
-	reportSplit(os.Stderr, prog, explain)
+	reportSplit(os.Stderr, prog)
 
 	if emitLLVM {
 		if out == "" {

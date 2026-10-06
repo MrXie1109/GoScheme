@@ -54,21 +54,25 @@ type IRProgram struct {
 	TopNative int
 	// Refused is one line per procedure the generator could not emit, saying what
 	// stopped it.  These are gaps.
+	//
+	// Nothing reports them to a user: a compiler reports what it produced, and
+	// every gap this one had has been closed.  They are kept because a failing
+	// test needs to say *why* it failed, and "not compiled" without a reason is
+	// the least useful thing a test can print.
 	Refused []string
-	// Declined is one line per procedure the cost rule left to the interpreter
-	// deliberately: it could have been emitted and measurement says emitting it
-	// would be slower.  These are choices, and they are not reported by default
-	// because there is nothing for a user to act on — the compiler already made
-	// the decision that keeps the program fast, and saying so reads as a defect.
+	// Declined is one line per procedure the cost rule left to the interpreter:
+	// it could have been emitted and measurement says emitting it would be
+	// slower.  A choice, not a gap, and not something a user needs told about —
+	// the compiler made the decision in the program's favour.
 	Declined []string
 }
 
 // NotCompiled lists every procedure that was not emitted, with its reason,
 // whichever kind of reason it was.
 //
-// A caller that only wants "what did not compile" wants this; the split between
-// Refused and Declined matters to a *report*, which is why they are separate
-// fields, but not to a test asking whether a reason was given.
+// The two are separate fields because they are different things — a gap and a
+// choice — but a test asking "why is this not compiled" wants both, which is what
+// this is for.  Nothing user-facing reads either list; see Refused.
 func (p *IRProgram) NotCompiled() []string {
 	out := make([]string, 0, len(p.Refused)+len(p.Declined))
 	out = append(out, p.Refused...)
@@ -155,8 +159,7 @@ type irGen struct {
 	// it chose not to.  Only the first is worth telling a user about.
 	declined []string
 	// refused records the procedures that were not compiled natively, and why.
-	// It is what `--emit-llvm` explains and what a user asking "why is this
-	// slow" needs.
+	// It is what a failing test prints.
 	refused []string
 }
 

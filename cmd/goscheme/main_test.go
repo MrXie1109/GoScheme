@@ -1583,7 +1583,7 @@ func TestCompileProducesARunningProgram(t *testing.T) {
 		t.Fatal(err)
 	}
 	bin := filepath.Join(dir, "prog")
-	if code := compileToNative(src, bin, "2", false, false, false, false, false); code != 0 {
+	if code := compileToNative(src, bin, "2", false, false, false, false); code != 0 {
 		t.Fatalf("compiling failed with code %d", code)
 	}
 	if _, err := os.Stat(bin); err != nil {
@@ -1849,7 +1849,7 @@ func TestCompiledProgramAgreesWithTheInterpreter(t *testing.T) {
 				t.Fatalf("the interpreter printed %q, want %q", got, tc.want)
 			}
 			bin := filepath.Join(dir, "prog")
-			if code := compileToNative(src, bin, "2", false, false, false, false, false); code != 0 {
+			if code := compileToNative(src, bin, "2", false, false, false, false); code != 0 {
 				t.Fatalf("compiling failed with code %d", code)
 			}
 			if got := runNative(t, bin); got != tc.want {
@@ -1872,7 +1872,7 @@ func TestCompileEmitLLVMStopsBeforeTheToolchain(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := filepath.Join(dir, "prog.ll")
-	if code := compileToNative(src, out, "2", true, false, false, false, false); code != 0 {
+	if code := compileToNative(src, out, "2", true, false, false, false); code != 0 {
 		t.Fatalf("--emit-llvm failed with code %d", code)
 	}
 	ir, err := os.ReadFile(out)
@@ -2004,7 +2004,7 @@ func TestCompiledTailCallsDoNotGrowTheStack(t *testing.T) {
 		t.Fatalf("the interpreter printed %q, want %q", got, want)
 	}
 	bin := filepath.Join(dir, "tail")
-	if code := compileToNative(src, bin, "2", false, false, false, false, false); code != 0 {
+	if code := compileToNative(src, bin, "2", false, false, false, false); code != 0 {
 		t.Fatalf("compiling failed with code %d", code)
 	}
 	if got := runNative(t, bin); got != want {
@@ -2037,7 +2037,7 @@ func TestCompiledTailCallKeepsEveryArgumentEager(t *testing.T) {
 	}
 	want := "100000000000000000000000000000000000000000000\n"
 	bin := filepath.Join(dir, "nest")
-	if code := compileToNative(src, bin, "2", false, false, false, false, false); code != 0 {
+	if code := compileToNative(src, bin, "2", false, false, false, false); code != 0 {
 		t.Fatalf("compiling failed with code %d", code)
 	}
 	if got := runNative(t, bin); got != want {
@@ -2120,7 +2120,7 @@ func TestCompiledListWalkAgreesWithTheInterpreter(t *testing.T) {
 				t.Fatalf("the interpreter printed %q, want %q", got, tc.want)
 			}
 			bin := filepath.Join(dir, "prog")
-			if code := compileToNative(src, bin, "2", false, false, false, false, false); code != 0 {
+			if code := compileToNative(src, bin, "2", false, false, false, false); code != 0 {
 				t.Fatalf("compiling failed with code %d", code)
 			}
 			if got := runNative(t, bin); got != tc.want {
@@ -2185,7 +2185,7 @@ func TestCompiledTopLevelCallKeepsLaterForms(t *testing.T) {
 		t.Fatalf("the interpreter printed %q, want %q", got, want)
 	}
 	bin := filepath.Join(dir, "prog")
-	if code := compileToNative(src, bin, "2", false, false, false, false, false); code != 0 {
+	if code := compileToNative(src, bin, "2", false, false, false, false); code != 0 {
 		t.Fatalf("compiling failed with code %d", code)
 	}
 	if got := runNative(t, bin); got != want {
@@ -2261,7 +2261,7 @@ func TestCompileLinksTheRuntimeBothWays(t *testing.T) {
 	const want = "42\n"
 
 	shared := filepath.Join(dir, "shared")
-	if code := compileToNative(src, shared, "2", false, false, false, false, false); code != 0 {
+	if code := compileToNative(src, shared, "2", false, false, false, false); code != 0 {
 		t.Fatalf("the default (shared) link failed with code %d", code)
 	}
 	if got := runNative(t, shared); got != want {
@@ -2269,7 +2269,7 @@ func TestCompileLinksTheRuntimeBothWays(t *testing.T) {
 	}
 
 	static := filepath.Join(dir, "static")
-	if code := compileToNative(src, static, "2", false, false, false, true, false); code != 0 {
+	if code := compileToNative(src, static, "2", false, false, true, false); code != 0 {
 		t.Fatalf("the static link failed with code %d", code)
 	}
 	if got := runNative(t, static); got != want {
@@ -2396,7 +2396,7 @@ func TestCompileAllOverrulesTheCostRule(t *testing.T) {
 	}
 	want := runScriptFile(t, path)
 	bin := filepath.Join(dir, "prog")
-	if code := compileToNative(path, bin, "2", false, false, false, false, true); code != 0 {
+	if code := compileToNative(path, bin, "2", false, false, false, true); code != 0 {
 		t.Fatalf("compiling with -compile-all failed with code %d", code)
 	}
 	if got := runNative(t, bin); got != want {

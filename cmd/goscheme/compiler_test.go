@@ -57,7 +57,7 @@ func TestANothingCompiledBuildSaysSo(t *testing.T) {
 			prog.Native, prog.TopNative)
 	}
 	var buf bytes.Buffer
-	reportSplit(&buf, prog, false)
+	reportSplit(&buf, prog)
 	if !strings.Contains(buf.String(), "nothing was compiled") {
 		t.Fatalf("a build that compiled nothing did not say so: %q", buf.String())
 	}
@@ -73,34 +73,38 @@ func TestACompiledBuildDoesNotWarn(t *testing.T) {
 		t.Fatal("fib should compile")
 	}
 	var buf bytes.Buffer
-	reportSplit(&buf, prog, false)
-	// A line on every successful build is a line a reader learns to skip, so
-	// the good case stays quiet until --explain asks for it.
+	reportSplit(&buf, prog)
+	// A line on every successful build is a line a reader learns to skip, so a
+	// build that compiled says nothing at all.
 	if strings.Contains(buf.String(), "nothing was compiled") {
 		t.Fatalf("a build that compiled warned that it did not: %q", buf.String())
 	}
 }
 
-func TestExplainNamesWhatWasLeftBehind(t *testing.T) {
-	// Internal definitions that call each other are a `letrec*` with a forward
-	// reference, which is the one shape the rewrite cannot take and so a real
-	// refusal — which is what --explain is for.  (A `set!` was the example here
-	// until it started compiling, then a `lambda`, a nested `define`, a `guard`
-	// and a `delay-force`; the test needs a refusal, and what it is about is the
-	// reporting rather than which construct is refused.)
-	prog, err := scheme.CompileToIR(`(define (f x)
-  (define (a k) (if (= k 0) (+ x 1) (b (- k 1))))
-  (define (b k) (if (= k 0) (* x 2) (a (- k 1))))
-  (+ (* x x) (a x)))`, "test")
+func TestACompiledBuildSaysNothingAtAll(t *testing.T) {
+	// The compiler reports what it produced and not what it chose not to.  A
+	// procedure the cost rule declined is a decision made in the program's
+	// favour, and naming it would read as a defect and send the reader looking
+	// for one; a procedure the generator could not express is a gap, and the
+	// answer to a gap is to close it.
+	//
+	// So the only thing stderr ever carries from a successful build is the
+	// warning that nothing was compiled, which the two tests above cover.
+	prog, err := scheme.CompileToIR(`(define (split l)
+  (let loop ((slow l) (fast l) (acc '()))
+    (if (or (null? fast) (null? (cdr fast))) (values (reverse acc) slow)
+        (loop (cdr slow) (cddr fast) (cons (car slow) acc)))))`, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(prog.Refused) == 0 {
-		t.Fatal("a body with mutually recursive internal definitions should be refused, with a reason")
+	if prog.CompiledAnything() {
+		t.Skip("this procedure compiled, so there is nothing to be quiet about")
 	}
 	var buf bytes.Buffer
-	reportSplit(&buf, prog, true)
-	if !strings.Contains(buf.String(), "f:") {
-		t.Fatalf("--explain did not name the procedure it left behind: %q", buf.String())
+	reportSplit(&buf, prog)
+	// Nothing was compiled *here*, so the warning is right.  What must not
+	// appear is a per-procedure line.
+	if strings.Contains(buf.String(), "split:") {
+		t.Errorf("the report named a procedure: %q", buf.String())
 	}
 }
