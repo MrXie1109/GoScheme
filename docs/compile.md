@@ -37,8 +37,7 @@ its constants and its globals:
 | `quote` of a literal | the literal itself |
 | a call to another compiled procedure | a direct machine call |
 | self-recursion | a direct machine call |
-| a recognised list or vector walk | one runtime call for the whole loop |
-| a recognised counting loop | one runtime call for the whole loop |
+| a recognised loop — list walk, vector walk, count up or down, `do`, named `let`, optionally filtered | one runtime call for the whole loop |
 | a top-level call to a compiled procedure, with literal arguments | a direct machine call |
 | a call to anything else | a call into the runtime |
 | a global read | a read from the runtime, at the point of use |
