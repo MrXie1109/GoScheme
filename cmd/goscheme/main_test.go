@@ -2018,3 +2018,47 @@ func TestCompiledTopLevelCallKeepsLaterForms(t *testing.T) {
 		t.Errorf("the compiled program printed %q, want %q", got, want)
 	}
 }
+
+// The REPL evaluates with the tree-walker and everything it does must be
+// interruptible, which together are the two halves of one decision: a REPL
+// evaluates one form with no idea what comes next, and a person who has just
+// typed an accidental infinite loop needs to be able to stop it.
+//
+// Both are easy to lose.  Routing the REPL through the bytecode compiler would
+// be faster and would break the first; wiring Ctrl-C to cancel the *line* rather
+// than the evaluation would look like it works and break the second.  This
+// checks the second, which is the one a test can check: the loop below never
+// returns on its own, so if the machine were not watching the cancel channel the
+// test would hang until the timeout rather than pass.
+func TestTheREPLCanInterruptALoopThatNeverEnds(t *testing.T) {
+	m := scheme.NewMachine()
+	cancel := make(chan struct{})
+	m.SetCancel(cancel)
+	forms, err := re.NewStringReader(`(let loop () (loop))`).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := m.Run(forms[0], m.Global)
+		done <- err
+	}()
+	// Long enough that the loop is certainly running, short enough that the
+	// test is not slow: the machine checks the channel on every step, so the
+	// margin is enormous either way.
+	time.Sleep(100 * time.Millisecond)
+	close(cancel)
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("an endless loop returned normally")
+		}
+		if !errors.Is(err, scheme.ErrInterrupted) {
+			t.Fatalf("interrupted with %v, want ErrInterrupted", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled within 100ms and still running after 5s: the loop is not interruptible")
+	}
+}

@@ -109,3 +109,53 @@ func mustEval(t *testing.T, m *Machine, src string) Value {
 	}
 	return out
 }
+
+// TestRunIsTheTreeWalker pins the engine the REPL uses.
+//
+// Machine.Run is what the REPL evaluates with, and it must be the tree-walker
+// rather than the bytecode VM: a REPL reads one form with no idea what comes
+// next, and the tree-walker is the engine that is complete on its own — every
+// form, every macro, every library.  Compiling what the REPL is handed would put
+// a second engine in the middle of a session.
+//
+// The property that distinguishes them is that the tree-walker works with the
+// bytecode compiler turned off, which `-interp` does and which has to be
+// possible: the compiler is an optimisation, and the REPL is not optional.  With
+// the compiler disabled, a Run that had been rerouted through it would have
+// nothing to fall back on.  The construct below is one the compiler cannot
+// compile — a `define-syntax` is an effect on the environment, not code — so it
+// exercises the whole path rather than the part that happens to agree.
+func TestRunIsTheTreeWalker(t *testing.T) {
+	// compileDisabled is package-wide, so it is restored before the test ends
+	// even if it fails.  Tests in this package do not run in parallel.
+	compileDisabled = true
+	defer func() { compileDisabled = false }()
+
+	m := NewMachine()
+	const src = `
+(define-syntax be-like-begin1
+  (syntax-rules ()
+    ((be-like-begin1 name)
+     (define-syntax name
+       (syntax-rules ()
+         ((name expr (... ...))
+          (begin expr (... ...))))))))
+(be-like-begin1 sequence)
+(define x 0)
+(sequence (set! x 1) (set! x (+ x 41)))
+x`
+	forms, err := NewStringReader(src).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v Value
+	for _, f := range forms {
+		v, err = m.Run(f, m.Global)
+		if err != nil {
+			t.Fatalf("Run with the compiler disabled: %v", err)
+		}
+	}
+	if n, ok := v.(*Integer); !ok || n.String() != "42" {
+		t.Fatalf("got %v, want 42", WriteToString(v))
+	}
+}
