@@ -233,6 +233,24 @@ func gs_box_literal(text *C.char, n C.int64_t) C.int64_t {
 	return C.int64_t(store(forms[0]))
 }
 
+// gs_walk runs a whole list walk in one call.
+//
+// The generated code recognises the loop and asks for it here instead of
+// crossing the boundary once per element.  kind is one of the walks, and the
+// two arguments are the list and the starting accumulator.
+//
+// This is the entry point that makes a compiled list walk faster than the
+// interpreter rather than slower: the loop runs where the data already is, and
+// nothing crosses per element.
+//
+//export gs_walk
+func gs_walk(kind C.int32_t, list C.gs_val, acc C.gs_val) C.gs_val {
+	if mach == nil {
+		gs_init(0, nil)
+	}
+	return tagged(scheme.RunListWalk(int(int32(kind)), untagged(list), untagged(acc)))
+}
+
 // gs_global reads a top-level binding by name, as a tagged value.
 //
 // A compiled body reads a global where the name appears, not once at entry,
@@ -279,11 +297,26 @@ func gs_call(name *C.char, n C.int64_t, args *C.gs_val, cache *C.int64_t) C.gs_v
 		report(fmt.Errorf("%s: undefined", C.GoString(name)))
 		return handle(store(scheme.UnspecifiedValue))
 	}
-	argv := make([]scheme.Value, 0, int(n))
-	for i := 0; i < int(n); i++ {
-		argv = append(argv, untagged(*argsAt(args, i)))
+	// The arguments go into an array on this frame rather than a slice on the
+	// heap.  A compiled loop that calls a builtin once per iteration was
+	// allocating once per iteration for something it immediately threw away,
+	// which is a large part of why such a loop ran slower than the interpreter.
+	//
+	// An array rather than a shared buffer, because gs_call can be re-entered:
+	// a builtin that calls back into Scheme — `map`, `call-with-values` — reaches
+	// a compiled procedure, which calls gs_call again.  A package-level buffer
+	// would be silently corrupted by that, and the saving would not be worth it.
+	var argv [8]scheme.Value
+	var heap []scheme.Value
+	vals := argv[:0]
+	if int(n) > len(argv) {
+		heap = make([]scheme.Value, int(n))
+		vals = heap
 	}
-	v, err := mach.ApplySync(proc, argv)
+	for i := 0; i < int(n); i++ {
+		vals = append(vals, untagged(*argsAt(args, i)))
+	}
+	v, err := mach.ApplySync(proc, vals)
 	if err != nil {
 		report(err)
 		return handle(store(scheme.UnspecifiedValue))

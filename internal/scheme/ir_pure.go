@@ -545,6 +545,11 @@ type irFunc struct {
 	// arity is how many arguments this function takes, which `musttail` has to
 	// match.
 	arity int
+	// listWalkResult is set when the body was recognised as a list walk and
+	// emitted as one call into the runtime, in which case the ordinary
+	// expression emitter is not run at all.
+	listWalkDone bool
+	listWalkVal  irVal
 	// tail is true while the expression being emitted is in tail position: its
 	// value is the value of the whole function, so a call there can be a jump
 	// rather than a call.
@@ -632,12 +637,25 @@ func (g *irGen) emitPureFunction(name string, formals []*Symbol, body []Value, c
 	// redefinition error — which `opt -passes=verify` said the first time this
 	// was tried, and is the reason the check is part of the build below.
 
+	// A body that is a whole list walk is emitted as one call that runs the walk
+	// in the runtime, rather than as a loop that crosses the boundary for every
+	// element.  This is checked first because it replaces the body entirely.
+	if w, ok := recogniseListWalk(name, formals, body); ok {
+		f.emitListWalk(w, formals)
+	}
+
 	// The body is in tail position: whatever it evaluates to is what the
 	// function returns, so a call at the end of it can be a jump.
-	f.tail = true
-	val, err := f.emitExpr(Cons(Intern("begin"), listFromSlice(body)))
-	if err != nil {
-		return err
+	var val irVal
+	var err error
+	if f.listWalkDone {
+		val = f.listWalkVal
+	} else {
+		f.tail = true
+		val, err = f.emitExpr(Cons(Intern("begin"), listFromSlice(body)))
+		if err != nil {
+			return err
+		}
 	}
 	// A tail call has already returned, by jumping — an ordinary `ret` after it
 	// would be unreachable, and LLVM rejects a `musttail` that is not followed

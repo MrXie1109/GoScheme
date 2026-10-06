@@ -287,6 +287,13 @@ func (g *irGen) program(forms []Value) error {
 			g.refused = append(g.refused, p.name+": "+r.why)
 			continue
 		}
+		// A recognised list walk is exempt from the cost rule: the rule exists
+		// to avoid compiling a body that crosses the boundary once per element,
+		// and a walk crosses once for the whole list.
+		if _, isWalk := recogniseListWalk(p.name, p.formals, p.body); isWalk {
+			g.pure[p.name] = &pureProc{name: p.name, formals: p.formals, body: p.body, calls: r.calls}
+			continue
+		}
 		if why := notWorthCompiling(r); why != "" {
 			g.refused = append(g.refused, p.name+": "+why)
 			continue

@@ -1869,3 +1869,88 @@ func TestCompiledTailCallKeepsEveryArgumentEager(t *testing.T) {
 		t.Errorf("the compiled program printed %q, want %q", got, want)
 	}
 }
+
+// TestCompiledListWalkAgreesWithTheInterpreter checks the recognised list walk.
+//
+// A loop like `(define (sum-list lst acc) (if (null? lst) acc (sum-list (cdr lst)
+// (+ acc (car lst)))))` compiled naively crosses into the runtime four times per
+// element — null?, car, cdr and + — and each crossing costs more than the
+// element's work, so it ran slower than the interpreter.  It is now recognised
+// and emitted as a single call that walks the list where the data already is.
+//
+// The cases below are the ones where a recognition mistake would be silent: the
+// accumulator starting at something other than zero, elements that are not
+// fixnums, and a list that is empty.  A walk that computed the wrong thing would
+// still print a number.
+func TestCompiledListWalkAgreesWithTheInterpreter(t *testing.T) {
+	if testing.Short() {
+		t.Skip("compile shells out to opt, llc and cc")
+	}
+	requireToolchain(t)
+
+	for _, tc := range []struct {
+		name        string
+		src         string
+		want        string
+		interpreter string
+	}{
+		{
+			name: "sum of a built list",
+			src: `(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc))))
+(define (sum-list lst acc) (if (null? lst) acc (sum-list (cdr lst) (+ acc (car lst)))))
+(display (sum-list (build 100 '()) 0))`,
+			want: "5050",
+		},
+		{
+			// The accumulator is not a fixnum: the walk must add through the
+			// runtime's own arithmetic, not as machine integers.
+			name: "sum starting from a bignum",
+			src: `(define (sum-list lst acc) (if (null? lst) acc (sum-list (cdr lst) (+ acc (car lst)))))
+(display (sum-list (list 1 2 3) 100000000000000000000))`,
+			want: "100000000000000000006",
+		},
+		{
+			// An element that does not fit a machine word.
+			name: "sum of bignum elements",
+			src: `(define (sum-list lst acc) (if (null? lst) acc (sum-list (cdr lst) (+ acc (car lst)))))
+(display (sum-list (list 100000000000000000000 1) 0))`,
+			want: "100000000000000000001",
+		},
+		{
+			name: "empty list returns the accumulator",
+			src: `(define (sum-list lst acc) (if (null? lst) acc (sum-list (cdr lst) (+ acc (car lst)))))
+(display (sum-list '() 42))`,
+			want: "42",
+		},
+		{
+			name: "counting",
+			src: `(define (count lst n) (if (null? lst) n (count (cdr lst) (+ 1 n))))
+(display (count (list 'a 'b 'c) 0))`,
+			want: "3",
+		},
+		{
+			name: "collecting reverses",
+			src: `(define (rev lst acc) (if (null? lst) acc (rev (cdr lst) (cons (car lst) acc))))
+(display (rev (list 1 2 3) '()))`,
+			want: "(3 2 1)",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			src := filepath.Join(dir, "prog.scm")
+			if err := os.WriteFile(src, []byte(tc.src), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if got := runScriptFile(t, src); got != tc.want {
+				t.Fatalf("the interpreter printed %q, want %q", got, tc.want)
+			}
+			bin := filepath.Join(dir, "prog")
+			if code := compileToNative(src, bin, "2", false, false); code != 0 {
+				t.Fatalf("compiling failed with code %d", code)
+			}
+			if got := runNative(t, bin); got != tc.want {
+				t.Errorf("the compiled program printed %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
