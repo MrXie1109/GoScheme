@@ -130,8 +130,8 @@ them all, so they cannot quietly rot.  Two are worth calling out:
 
 ```
 goscheme [options] [file] [argument ...]
-goscheme build <script> [-o <output>] [-i <interpreter>]
-goscheme compile <script> [-o <output.scmc>] [-obfuscate]
+goscheme pack <script> [-o <output>] [-i <interpreter>] [-static]
+goscheme compile <script> [-o <output>] [--emit-llvm] [--keep-temps] [-O0..-O3]
 
   -e, --eval EXPR     evaluate EXPR (may be repeated, evaluated in order)
   -i, --interactive   enter the REPL after loading FILE
@@ -144,17 +144,19 @@ goscheme compile <script> [-o <output.scmc>] [-obfuscate]
 
 A script is **compiled to bytecode and run on the VM** where the compiler
 understands it, and interpreted where it does not; `-interp` forces the
-tree-walker, which is how the two are compared.  `goscheme compile` writes the
-compiled program to a `.scmc` file, and a `.scmc` file given to the interpreter
-is loaded and run without being parsed as source.  A compiled file starts with a
-shebang and is written executable, so it can be run as it stands.
+tree-walker, which is how the two are compared.
 
-`goscheme compile -obfuscate` removes the names from the file — body names, slot
-names, and the globals the program defines — and shuffles the constant pools, so
-that the file runs the same but no longer reads like a description of itself.
-It is not encryption: the strings and numbers the program works with are still
-there.  See [docs/obfuscate.md](docs/obfuscate.md) for what it does and does not
-protect against.
+There is no intermediate compiled file.  A script given to the interpreter is
+read, compiled in memory and run, because compiling it takes milliseconds and a
+saved format was a second thing to keep, version and explain for a saving nobody
+could measure.  The two subcommands that produce a program of their own are:
+
+* **`goscheme pack`** writes a standalone executable with the interpreter and the
+  *source* inside it, packed — see [Standalone executables](#standalone-executables).
+* **`goscheme compile`** writes a genuine **native executable**, through LLVM —
+  see [Native compilation](#native-compilation).
+
+With neither a file nor `-e`, the interpreter starts a REPL.
 
 With neither a file nor `-e`, the interpreter starts a REPL.  The primary
 prompt is `>>> `, and `... ` appears while a form is still open.

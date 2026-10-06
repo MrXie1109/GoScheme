@@ -549,7 +549,7 @@ func TestBundleTrailerRoundTrip(t *testing.T) {
 	if !bytes.HasPrefix(data, []byte(fake)) {
 		t.Error("the interpreter was not copied verbatim")
 	}
-	if want := len(fake) + int(bundleHead) + len(script) + len("prog.scm") + len(bundleMagicCode) + 8; len(data) != want {
+	if want := len(fake) + int(bundleHead) + len(script) + len("prog.scm") + len(bundleMagicPacked) + 8; len(data) != want {
 		t.Errorf("bundle is %d bytes, want %d", len(data), want)
 	}
 
@@ -578,7 +578,7 @@ func TestBundleRejectsCorruptTrailer(t *testing.T) {
 
 	cases := map[string][]byte{
 		"truncated":       data[:len(data)-8],
-		"bad magic":       append(append([]byte{}, data[:len(data)-len(bundleMagicCode)-8]...), []byte("XXXXXXXXX")...),
+		"bad magic":       append(append([]byte{}, data[:len(data)-len(bundleMagicPacked)-8]...), []byte("XXXXXXXXX")...),
 		"absurd length":   nil, // built below
 		"length mismatch": nil,
 	}
@@ -586,7 +586,7 @@ func TestBundleRejectsCorruptTrailer(t *testing.T) {
 	binary.BigEndian.PutUint64(absurd[len(absurd)-8:], uint64(1)<<40)
 	cases["absurd length"] = absurd
 	mismatch := append([]byte{}, data...)
-	binary.BigEndian.PutUint64(mismatch[len(mismatch)-8-len(bundleMagicCode):], uint64(len(data))) // payloadLen way off
+	binary.BigEndian.PutUint64(mismatch[len(mismatch)-8-len(bundleMagicPacked):], uint64(len(data))) // payloadLen way off
 	cases["length mismatch"] = mismatch
 
 	for name, b := range cases {
@@ -1745,4 +1745,32 @@ func runNative(t *testing.T, bin string) string {
 		t.Fatalf("running %s: %v\nstderr: %s", bin, err, errBuf.String())
 	}
 	return out.String()
+}
+
+// TestBundleFromTheCompiledFormatIsReported checks that a bundle written by a
+// version that had a compiled file format is refused with an explanation.
+//
+// The compiled format is gone, so those bytes cannot be read — but they are
+// still inside a file that looks like a bundle, and falling through to "treat it
+// as source" would report a syntax error somewhere in the middle of binary data.
+// The user would have no way to tell that the real problem is the version.
+func TestBundleFromTheCompiledFormatIsReported(t *testing.T) {
+	dir := t.TempDir()
+	interp, err := os.Executable()
+	if err != nil {
+		t.Skip("cannot find a binary to append to")
+	}
+	out := filepath.Join(dir, "old.bundle")
+	if err := writeBundle(interp, out, "prog.scm", kindRetired, []byte("not really code")); err != nil {
+		t.Fatal(err)
+	}
+	_, err = readBundle(out)
+	if err == nil {
+		t.Fatal("a bundle from the compiled format was accepted")
+	}
+	// The message has to name the version, because "pack it again" is the only
+	// thing the user can do about it.
+	if !strings.Contains(err.Error(), "older version") {
+		t.Errorf("the error does not explain itself: %v", err)
+	}
 }

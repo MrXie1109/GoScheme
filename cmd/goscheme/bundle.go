@@ -24,18 +24,18 @@ import (
 // script into a single self-contained executable without needing a compiler,
 // or anything else, on the machine that runs it.
 //
-// The payload is bytecode when the build machine could compile the script, so
-// starting the program does not read source at all, and the script itself when
-// it could not.  Which one it is comes from the magic: bundles written before
-// there was bytecode to put in them carry the script and the older magic, and
-// are still read.
+// The payload is the script with its comments and layout removed — what
+// `goscheme pack` produces — so the program does not read the original file, and
+// the source it runs is exactly what it would have run anyway.  The magic says
+// how to read it: a bundle written before there was packing to do carries the
+// script as it was typed, and is still read.
 const (
-	// bundleMagicCode marks a bundle whose payload is a compiled program.
-	bundleMagicCode = "GOSCHEME2" // 9 bytes
-	// bundleMagicSource marks a bundle whose payload is the script text.
-	bundleMagicSource = "GOSCHEME1" // 9 bytes
+	// bundleMagicPacked marks a bundle whose payload is packed source.
+	bundleMagicPacked = "GOSCHEME2" // 9 bytes
+	// bundleMagicPlain marks a bundle whose payload is the script as typed.
+	bundleMagicPlain = "GOSCHEME1" // 9 bytes
 	// bundleTail is the fixed part of the trailer: the magic and the length.
-	bundleTail = int64(len(bundleMagicCode) + 8)
+	bundleTail = int64(len(bundleMagicPacked) + 8)
 	// bundleHead is the fixed part in front of the payload and its name: the
 	// payload length, the name length, and which kind of payload this is.
 	bundleHead = int64(17)
@@ -43,17 +43,24 @@ const (
 	bundleHeadV1 = int64(16)
 )
 
-// Payload kinds.  A payload that is not kindBytecode is source.
+// Payload kinds.
+//
+// There is one kind now that the compiled file format is gone, and the field
+// stays because it is part of the trailer's layout: a reader has to know how
+// many bytes to expect, whether or not the distinction it records still exists.
 const (
-	kindSource   = byte(0)
-	kindBytecode = byte(1)
+	kindSource = byte(0)
+	// kindRetired was the compiled format, which no longer exists.  A bundle
+	// carrying it is not readable any more, and is reported as such rather than
+	// misread as source.
+	kindRetired = byte(1)
 )
 
 var errNotBundled = errors.New("not a bundled executable")
 
 // bundleInfo is the program carried by a bundled executable.
 type bundleInfo struct {
-	// Payload is bytecode when Kind is kindBytecode, and script text otherwise.
+	// Payload is the packed script text.
 	Payload []byte
 	Name    string
 	Kind    byte
@@ -81,18 +88,18 @@ func readBundle(path string) (*bundleInfo, error) {
 	if _, err := f.ReadAt(tail, size-bundleTail); err != nil {
 		return nil, err
 	}
-	magic := string(tail[:len(bundleMagicCode)])
+	magic := string(tail[:len(bundleMagicPacked)])
 	head := bundleHeadV1
 	kind := kindSource
 	hasKind := false
 	switch magic {
-	case bundleMagicCode:
+	case bundleMagicPacked:
 		head, hasKind = bundleHead, true // the kind byte is in the trailer
-	case bundleMagicSource:
+	case bundleMagicPlain:
 	default:
 		return nil, errNotBundled
 	}
-	trailerLen := int64(binary.BigEndian.Uint64(tail[len(bundleMagicCode):]))
+	trailerLen := int64(binary.BigEndian.Uint64(tail[len(bundleMagicPacked):]))
 	if trailerLen < bundleTail+head || trailerLen > size {
 		return nil, errNotBundled
 	}
@@ -108,6 +115,14 @@ func readBundle(path string) (*bundleInfo, error) {
 	}
 	if payloadLen < 0 || nameLen < 0 || head+payloadLen+nameLen+bundleTail != trailerLen {
 		return nil, errNotBundled
+	}
+	// A bundle built by a version that had a compiled format carries that
+	// format, which this one cannot read.  Saying so is the whole job here:
+	// treating the bytes as source would report a syntax error somewhere inside
+	// a binary, which tells the user nothing about what actually happened.
+	if kind == kindRetired {
+		return nil, fmt.Errorf("%s: this file was packed by an older version, "+
+			"whose compiled format is no longer supported; pack it again", path)
 	}
 	info := &bundleInfo{
 		Payload: trailer[head : head+payloadLen],
@@ -161,7 +176,7 @@ func writeBundle(interpreter, out, name string, kind byte, payload []byte) error
 	}
 	trailerLen := bundleHead + int64(len(payload)+len(name)) + bundleTail
 	var num [8]byte
-	if _, err := io.WriteString(f, bundleMagicCode); err != nil {
+	if _, err := io.WriteString(f, bundleMagicPacked); err != nil {
 		return err
 	}
 	binary.BigEndian.PutUint64(num[:], uint64(trailerLen))
