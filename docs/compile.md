@@ -176,7 +176,12 @@ happen.
   continuation captured inside such a call cannot outlive it. The procedures the
   compiler accepts are ones that cannot contain `call/cc`.
 - **A big binary.** The linked program carries the interpreter and the Go
-  runtime: roughly 19 MB, against 11 MB for a packed script.
+  runtime: roughly 8 MB, against 8 MB for a packed script. The two are close
+  because both are mostly the same interpreter, and the runtime archive the
+  compiler links is built with `-s -w` — without it the archive was 27 MB rather
+  than 10 MB and every compiled program was 18 MB, since the linker discards
+  debug sections it was not asked to keep and they were being carried to it
+  anyway.
 - **No inlining across the boundary, no type inference, no unboxing beyond the
   fixnum case.** Each of these would be a project of its own, and each would risk
   the correctness property in §1.

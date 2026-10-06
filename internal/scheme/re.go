@@ -4,6 +4,8 @@ package scheme
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -47,16 +49,46 @@ func runtimeLibName() string {
 // runtimeCacheDir is where the runtime archive is kept: under the user's cache
 // directory, so that two checkouts do not fight over one file and a read-only
 // installation still works.
+// runtimeCacheDir is the directory a built runtime archive is cached in.
+//
+// The name carries a stamp for the flags the archive is built with, because the
+// cache previously had no key at all: it was one fixed path, and the comment
+// above claimed it was "keyed to the interpreter's own build" while nothing was
+// checking.  That is the kind of claim that is worse than none, because it
+// stops the next person looking — an archive built before a flag was added
+// stayed, and a program compiled afterwards was silently linked against the
+// older runtime.
+//
+// Stamping the flags is enough to make the cache honest about them.  It does
+// not make it react to a source change, which needs the module to be rebuilt
+// rather than relinked; `goscheme compile` after an edit to the interpreter is
+// the case to keep in mind, and the answer there is to remove the directory.
 func runtimeCacheDir() (string, error) {
 	base, err := os.UserCacheDir()
 	if err != nil {
 		base = os.TempDir()
 	}
-	dir := filepath.Join(base, "goscheme", "runtime")
+	dir := filepath.Join(base, "goscheme", "runtime-"+runtimeCacheStamp())
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
 	return dir, nil
+}
+
+// runtimeCacheStamp identifies the way the archive is built, so that changing
+// the flags produces a different cache directory rather than a stale archive.
+func runtimeCacheStamp() string {
+	sum := sha256.Sum256([]byte(strings.Join(runtimeArchiveBuildArgs(), "\x00")))
+	return hex.EncodeToString(sum[:6])
+}
+
+// runtimeArchiveBuildArgs is the command the archive is built with, in one
+// place so that the stamp above cannot describe flags the build does not use.
+//
+// It is a variable so that a test can change it and see the cache key follow,
+// which is the property the stamp exists for.
+var runtimeArchiveBuildArgs = func() []string {
+	return []string{"build", "-buildmode=c-archive", "-ldflags=-s -w"}
 }
 
 // buildRuntimeArchive compiles this package as a C archive in dir.
@@ -77,7 +109,17 @@ func buildRuntimeArchive(dir string) error {
 		return err
 	}
 	lib := filepath.Join(dir, runtimeLibName())
-	cmd := exec.Command("go", "build", "-buildmode=c-archive", "-o", lib, ".")
+	// -s -w strips the symbol table and the DWARF debug information.  Nobody
+	// debugs a compiled Scheme program through the Go runtime linked into it,
+	// and keeping them cost 10 MB of the 28 MB archive — which every compiled
+	// program paid for on disk and then threw away, because the linker discards
+	// debug sections it was not asked to keep.  Stripping the archive takes it
+	// to 10 MB and the linked program from 18 MB to 8.5 MB.
+	//
+	// It is a flag on the archive rather than on the final link because the
+	// final link is `cc`, run through RuntimeLinkFlags, and the archive is the
+	// half this program controls.
+	cmd := exec.Command("go", append(runtimeArchiveBuildArgs(), "-o", lib, ".")...)
 	cmd.Dir = pkgDir
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
 	var stderr bytes.Buffer
