@@ -153,7 +153,7 @@ func isQuoted(v Value) bool {
 // and makes every `#f` look like something the recogniser cannot read.
 func isLiteral(v Value) bool {
 	switch v.(type) {
-	case *Integer, *Float, *Rational, *String, *Char, Boolean, Empty:
+	case *Integer, Float, *Rational, *String, Char, Boolean, Empty:
 		return true
 	}
 	return false

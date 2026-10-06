@@ -221,3 +221,70 @@ func TestTheFormerGapsNowCompile(t *testing.T) {
 		})
 	}
 }
+
+// TestEveryLiteralKindIsRecognised checks that each kind of literal is accepted
+// in a body, in a form the recognisers and the emitter both see.
+//
+// It exists because the same mistake was made three times: a *value type* listed
+// in a type switch with a star, so the case matched nothing and the literal was
+// reported as "not a literal or a call".  `Boolean` and `Char` are `type ... bool`
+// and `type ... rune`; `Float` is `type ... float64`.  Only the pointer types
+// take a star, and a switch that gets it wrong fails silently — the arm is simply
+// never taken.
+//
+// A test per kind is the only way to catch it, because the compiler cannot: the
+// switch is well-formed Go either way.
+func TestEveryLiteralKindIsRecognised(t *testing.T) {
+	for _, tc := range []struct{ name, expr string }{
+		{"a small integer", `5`},
+		{"a negative integer", `-5`},
+		{"a large integer", `99999999999999999999`},
+		{"an inexact number", `1.5`},
+		{"a rational", `1/3`},
+		{"a complex", `1+2i`},
+		{"a string", `"s"`},
+		{"a character", `#\a`},
+		{"a boolean", `#t`},
+		{"the empty list", `'()`},
+		{"a quoted list", `'(1 2)`},
+		{"a vector", `'#(1 2)`},
+		{"a bytevector", `'#u8(1 2)`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The literal is combined with arithmetic so that the body is worth
+			// compiling: a body that is only a literal is refused for cost, and
+			// that refusal would hide whether the literal was understood.
+			src := `(define (probe n) (if (> n 0) (begin ` + tc.expr + ` (+ n 1)) (* n 2)))`
+			p, err := CompileToIR(src, "test")
+			if err != nil {
+				t.Fatalf("compiling %s: %v", tc.expr, err)
+			}
+			if p.Native == 0 {
+				t.Errorf("%s stopped the body compiling: %v", tc.expr, p.Refused)
+			}
+		})
+	}
+}
+
+// A literal in a recognised loop shape, which goes through the recognisers'
+// own type switches rather than the emitter's.
+func TestEveryLiteralKindIsRecognisedInALoop(t *testing.T) {
+	for _, tc := range []struct{ name, expr string }{
+		{"a character", `#\a`},
+		{"a boolean", `#t`},
+		{"a string", `"s"`},
+		{"an inexact number", `1.5`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := `(define (probe i acc)
+  (if (= i 0) acc (probe (- i 1) (if ` + tc.expr + ` (+ acc i) acc))))`
+			p, err := CompileToIR(src, "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p.Native == 0 {
+				t.Errorf("%s in a loop stopped the body compiling: %v", tc.expr, p.Refused)
+			}
+		})
+	}
+}

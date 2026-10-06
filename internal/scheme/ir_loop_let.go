@@ -48,7 +48,7 @@ func recogniseTopCall(form Value, compiled map[string]bool) (topCall, bool) {
 	}
 	for _, a := range items {
 		switch a.(type) {
-		case *Integer, Boolean, *String, *Char, *Float, *Rational:
+		case *Integer, Boolean, *String, Char, Float, *Rational:
 			// A literal the compiler can place in the module.
 		default:
 			return topCall{}, false

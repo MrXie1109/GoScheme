@@ -597,7 +597,7 @@ func vecInvariant(e Value, formals []*Symbol) bool {
 		// invariant across the loop, but it is not re-evaluated either — the
 		// emitter reads it off the activation — so it is safe here.
 		return v.Name != ""
-	case *Integer, *Float, *Rational, *String, *Char, Boolean:
+	case *Integer, Float, *Rational, *String, Char, Boolean:
 		return true
 	}
 	return isQuoted(e)

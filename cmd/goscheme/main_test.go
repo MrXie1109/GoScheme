@@ -1757,6 +1757,40 @@ func TestCompiledProgramAgreesWithTheInterpreter(t *testing.T) {
 (display (twice (make-adder 3) 10))`,
 			want: "16",
 		},
+		// A capture is a variable, and a closure that counts is the reason
+		// closures exist.  The compiled version used to return 1 on every call:
+		// the capture arrived as a parameter, so the assignment changed that
+		// call's copy and the closure's own storage was never written.  Nothing
+		// reported it, because the body compiled.
+		{
+			name: "a closure assigns what it captured",
+			src: `(define (make-counter)
+  (let ((n 0)) (lambda () (set! n (+ n 1)) n)))
+(define c (make-counter))
+(c) (c)
+(display (c))`,
+			want: "3",
+		},
+		{
+			name: "each closure has its own captured storage",
+			src: `(define (make-counter)
+  (let ((n 0)) (lambda () (set! n (+ n 1)) n)))
+(define a (make-counter))
+(define b (make-counter))
+(a) (a)
+(display (list (a) (b) (a)))`,
+			want: "(3 1 4)",
+		},
+		// A `letrec*` whose initialisers refer only to earlier names is a `let*`
+		// and compiles; one that refers forward must not, because a `let*` binds
+		// each name in its own frame and the later one does not exist yet.  The
+		// second case is the one that crashed when the rewrite was too eager.
+		{
+			name: "a letrec* referring only backwards",
+			src: `(define (f n) (letrec* ((a 1) (b (+ a n))) (* b 2)))
+(display (f 5))`,
+			want: "12",
+		},
 		// The unspecified value must not be confusable with the values a program
 		// can legitimately produce, which is the whole reason it has a tag of its
 		// own rather than being the fixnum 0 or the empty list.
@@ -2241,5 +2275,46 @@ func TestTheStaticFlagIsSpelledTheTraditionalWay(t *testing.T) {
 	// fails later with a different code; that difference is what is checked.
 	if code := runCompile([]string{"--static", "prog.scm"}); code != 2 {
 		t.Errorf("--static was accepted (exit %d); the flag is -static", code)
+	}
+}
+
+// A `letrec*` whose initialisers refer forward must not be rewritten into a
+// `let*`, and this is the test that says so with a reason.
+//
+// The rewrite is tempting and was written: a reference inside a `lambda` body is
+// deferred, so `(letrec* ((a (lambda () (b))) (b ...)) ...)` looks like a `let*`.
+// It is not.  A lambda captures its environment when it is *created*, which is
+// before the later binding exists, so the compiled program reported "b:
+// undefined" where the interpreter found b defined — and in the shape without the
+// lambda it produced a wrong number and then panicked inside the arithmetic.
+//
+// So the property is that the rewrite does not happen: the body must be left to
+// the interpreter, which shares one environment frame and can bind later.  The
+// test is on the refusal rather than on the output because the program is one
+// R7RS calls an error to run at all.
+func TestALetrecStarWithAForwardReferenceIsNotAReverseLet(t *testing.T) {
+	for _, tc := range []struct{ name, src string }{
+		{"a forward reference inside a lambda",
+			`(define (f n) (letrec* ((a (lambda () (b))) (b (lambda () (+ n 1)))) (+ (* n n) (a))))`},
+		{"a forward reference in an initialiser",
+			`(define (g n) (letrec* ((x (+ y 1)) (y 2)) (* x n)))`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := scheme.CompileToIR(tc.src, "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p.Native != 0 {
+				t.Fatal("a letrec* that refers forward was rewritten into a let*, which is not what it means")
+			}
+		})
+	}
+	// The other half: one that refers only backwards *is* a let*, and compiles.
+	p, err := scheme.CompileToIR(`(define (f n) (letrec* ((a 1) (b (+ a n))) (* b 2)))`, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Native == 0 {
+		t.Errorf("a letrec* that refers only backwards was not compiled: %v", p.Refused)
 	}
 }

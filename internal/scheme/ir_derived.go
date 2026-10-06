@@ -82,6 +82,21 @@ func expandDerived(form Value) Value {
 			if rewritten, ok := expandLetrecToNamedLet(p); ok {
 				return expandedChildren(rewritten)
 			}
+			// Not a loop, so it stays a binding form.  `letrec*` is the one the
+			// emitter can do directly: its initialisers run in order and each
+			// sees the ones before it, which is exactly `let*`.  The difference
+			// is that a `letrec*` name is bound *before* its initialiser runs, so
+			// a closure written in an initialiser may refer to a later name — and
+			// a closure that refers to a *later* name cannot be a `let*`, because
+			// there the name is not bound yet.
+			//
+			// So this is offered only when no initialiser refers forward, and
+			// expandLetrecToLet checks that.  A plain `letrec` evaluates its
+			// initialisers in an unspecified order and none of them may refer to
+			// another's value at all, so the same reading is sound for it.
+			if rewritten, ok := expandLetrecToLet(p); ok {
+				return expandedChildren(rewritten)
+			}
 			return form
 		case "when":
 			if rewritten, ok := expandWhenUnless(p, false); ok {
@@ -457,6 +472,184 @@ func callsNameIn(v Value, name string) bool {
 	case *Vector:
 		for _, a := range x.Items {
 			if callsNameIn(a, name) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// expandLetrecToLet rewrites a `letrec` or `letrec*` whose initialisers never
+// refer forward into the `let*` it is equivalent to.
+//
+//	(letrec* ((a 1) (b (+ a n))) BODY ...)  =>  (let* ((a 1) (b (+ a n))) BODY ...)
+//
+// The check is the whole point: an initialiser that mentions a name bound later
+// is the one case where the two differ, because `let*` would not have bound it
+// yet.  Refusing those is not a gap — a `letrec` that depends on its own
+// unspecified order is a program whose meaning the report declines to define, and
+// leaving it to the interpreter is the honest answer.
+//
+// Forward reference is checked textually over the whole form, which is
+// conservative in the right direction: a name that *is* bound later but appears
+// only inside a nested lambda's body would in fact be fine, and this declines it
+// anyway.  Declining costs a slower correct answer; accepting wrongly would cost
+// a wrong one.
+func expandLetrecToLet(form *Pair) (Value, bool) {
+	items, _ := ListToSlice(form.Cdr)
+	if len(items) < 1 {
+		return nil, false
+	}
+	binds, ok := ListToSlice(items[0])
+	if !ok {
+		return nil, false
+	}
+	// Names in order, so that "later" is well defined.
+	names := make([]string, 0, len(binds))
+	initExprs := make([]Value, 0, len(binds))
+	for _, b := range binds {
+		bp, ok := b.(*Pair)
+		if !ok {
+			return nil, false
+		}
+		parts, _ := ListToSlice(bp)
+		if len(parts) != 2 {
+			return nil, false
+		}
+		s, ok := parts[0].(*Symbol)
+		if !ok {
+			return nil, false
+		}
+		names = append(names, s.Name)
+		initExprs = append(initExprs, parts[1])
+	}
+	for i, init := range initExprs {
+		later := map[string]bool{}
+		for _, n := range names[i+1:] {
+			later[n] = true
+		}
+		if len(later) == 0 {
+			continue
+		}
+		if mentionsAny(init, later) {
+			return nil, false
+		}
+	}
+	return Cons(Intern("let*"), listFromSlice(items)), true
+}
+
+// mentionsAny reports whether an expression names any of these identifiers.
+//
+// A quoted datum is data and is skipped, and so is a nested `lambda`'s parameter
+// list — a binding of the same name shadows it, so the occurrence is not a
+// reference to the outer one.
+func mentionsAny(v Value, names map[string]bool) bool {
+	switch x := v.(type) {
+	case *Symbol:
+		return names[x.Name]
+	case *Pair:
+		if isForm(x, "quote") {
+			return false
+		}
+		args, _ := ListToSlice(x.Cdr)
+		if s, ok := x.Car.(*Symbol); ok && s.Name == "lambda" && len(args) >= 1 {
+			formals, _ := ListToSlice(args[0])
+			shadowed := map[string]bool{}
+			for _, f := range formals {
+				if fs, ok := f.(*Symbol); ok {
+					shadowed[fs.Name] = true
+				}
+			}
+			rest := map[string]bool{}
+			for n := range names {
+				if !shadowed[n] {
+					rest[n] = true
+				}
+			}
+			for _, b := range args[1:] {
+				if mentionsAny(b, rest) {
+					return true
+				}
+			}
+			return false
+		}
+		items, _ := ListToSlice(x)
+		for _, a := range items {
+			if mentionsAny(a, names) {
+				return true
+			}
+		}
+	case *Vector:
+		for _, a := range x.Items {
+			if mentionsAny(a, names) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// A forward reference **anywhere** in an initialiser stops the rewrite, including
+// one inside a lambda — and that is not over-caution, it is a bug that was
+// written and caught here.
+//
+// The tempting argument is that a reference inside a lambda body is deferred: the
+// body runs after every initialiser has finished, so `(letrec* ((a (lambda () (b)))
+// (b ...)) ...)` looks like a `let*`.  It is not, and the compiled program said
+// so: the lambda *captures its environment when it is created*, which is before
+// `b` is bound, so calling it found `b` undefined where the interpreter found it
+// defined.  Deferring the read does not defer the capture.
+//
+// The interpreter can do this because it shares one environment frame that the
+// later binding is added to.  `let*` gives each binding its own frame, which is
+// what makes it fast and what makes the rewrite wrong for this shape.
+//
+// So the check is textual over the whole initialiser and pointedly includes
+// lambda bodies.  It declines some programs that would have worked; declining
+// costs a slower correct answer, and accepting wrongly cost a crash.
+// mentionsAnyNow reports whether an expression names any of these identifiers
+// *before* the binding form has finished.
+//
+// A reference inside a `lambda` body is deferred: the body runs when the closure
+// is called, which is after every initialiser has run, so a `letrec*` that
+// mentions a later name only from inside a lambda is still a `let*`.  That is not
+// a technicality — it is the common case, and the R7RS test suite's `means` is
+// exactly it:
+//
+//	(letrec* ((mean (lambda (f g) (f (/ (sum g ton) n))))   ; sum and n come later
+//	          (sum  (lambda (g ton) ...))
+//	          (n    (sum (lambda (x) 1) ton)))
+//	  ...)
+//
+// `mean` names `sum` and `n`, both bound after it, and the program is correct
+// because neither name is *read* until `mean` is called.  A reference that is
+// evaluated as the initialiser runs — `(n (sum ...))` above, which calls `sum` —
+// is not deferred and is why `n` must come last.
+//
+// So a lambda is looked through rather than into: its parameters shadow, and its
+// body does not count as a use here.  The nested lambda is still rewritten by
+// expandDerived, so nothing inside it escapes the traversal.
+func mentionsAnyNow(v Value, names map[string]bool) bool {
+	switch x := v.(type) {
+	case *Symbol:
+		return names[x.Name]
+	case *Pair:
+		if isForm(x, "quote") {
+			return false
+		}
+		if s, ok := x.Car.(*Symbol); ok && s.Name == "lambda" {
+			// Deferred: the body runs after the binding form has finished.
+			return false
+		}
+		items, _ := ListToSlice(x)
+		for _, a := range items {
+			if mentionsAnyNow(a, names) {
+				return true
+			}
+		}
+	case *Vector:
+		for _, a := range x.Items {
+			if mentionsAnyNow(a, names) {
 				return true
 			}
 		}

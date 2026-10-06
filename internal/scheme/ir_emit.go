@@ -357,7 +357,9 @@ func (f *irFunc) emitExpr(e Value) (irVal, error) {
 // other literal does, which is what makes boxing one safe.
 func isSelfEvaluating(v Value) bool {
 	switch v.(type) {
-	case *Integer, *Float, *Rational, *Complex, *String, *Char, Boolean,
+	// A character is a value type — `type Char rune` — so it is listed as
+	// itself and not as *Char, which matches nothing.
+	case *Integer, Float, *Rational, *Complex, *String, Char, Boolean,
 		*Vector, *Bytevector:
 		return true
 	}

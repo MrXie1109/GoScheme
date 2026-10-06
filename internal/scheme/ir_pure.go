@@ -313,7 +313,7 @@ func isCounting(op string, p *Pair) bool {
 		other = args[1]
 	}
 	switch other.(type) {
-	case *Integer, *Float, *Rational:
+	case *Integer, Float, *Rational:
 		return true
 	}
 	return false
@@ -342,10 +342,17 @@ func (r *pureReport) scanValue(e Value, local map[string]bool, keep bool) {
 			return
 		}
 		r.globals = append(r.globals, x.Name)
-	case *Integer, *Float, *Rational, *String, Boolean, *Char, Empty:
-		// A literal: it computes nothing.  Boolean is a value type, not a
-		// pointer, so it is listed without a star — with one it matches nothing
-		// and every `#f` in a body looks like something unreadable.
+	case *Integer, Float, *Rational, *Complex, *String, Boolean, Char, Empty:
+		// A literal: it computes nothing.  Boolean and Char are value types
+		// rather than pointers — `type Boolean bool` and `type Char rune` — so
+		// they are listed without a star.  With one they match nothing, and the
+		// symptom is a body that looks unreadable for no stated reason: `#f`
+		// reported as "not a literal or a call" while the comment beside it said
+		// booleans were handled, and the same for `#\a`, which is why `(if (char?
+		// #\a) ...)` could not be compiled.
+		//
+		// This is the second time this mistake was made in this line.  A value
+		// type in a type switch has to be listed as itself.
 	default:
 		r.stop("the body contains %s, which is not a literal or a call", TypeName(e))
 	}
