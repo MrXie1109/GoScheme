@@ -369,20 +369,20 @@ cost rather than speed.
 
 | workload | interpreted | compiled | ratio | native procs |
 |---|---|---|---|---|
-| `tail-loop` | 46.55 ms | 12.16 ms | **3.83×** | 2 |
-| `fib` | 8.38 ms | 2.25 ms | **3.72×** | 2 |
-| `locals` | 52.45 ms | 21.43 ms | **2.45×** | 2 |
-| `lists` | 67.67 ms | 48.04 ms | 1.41× | 4 |
-| `sort` | 11.41 ms | 9.10 ms | 1.25× | 4 |
-| `globals` | 54.25 ms | 44.21 ms | 1.23× | 2 |
-| `higher-order` | 19.18 ms | 15.73 ms | 1.22× | 2 |
-| `closures` | 17.03 ms | 16.76 ms | 1.02× | 0 |
-| `vectors` | 29.80 ms | 29.30 ms | 1.02× | 0 |
-| `callcc` | 11.64 ms | 11.73 ms | 0.99× | 0 |
-| `mini-eval` | 20.74 ms | 21.37 ms | 0.97× | 0 |
-| `strings` | 9.39 ms | 9.77 ms | 0.96× | 0 |
+| `fib` | 10.00 ms | 2.37 ms | **4.21×** | 2 |
+| `tail-loop` | 55.70 ms | 13.34 ms | **4.18×** | 2 |
+| `locals` | 67.53 ms | 23.34 ms | **2.89×** | 2 |
+| `lists` | 72.56 ms | 54.40 ms | 1.33× | 4 |
+| `globals` | 62.01 ms | 49.36 ms | 1.26× | 2 |
+| `sort` | 12.44 ms | 10.12 ms | 1.23× | 4 |
+| `higher-order` | 21.84 ms | 19.03 ms | 1.15× | 2 |
+| `strings` | 14.13 ms | 12.84 ms | 1.10× | 0 |
+| `vectors` | 33.06 ms | 33.70 ms | 0.98× | 0 |
+| `closures` | 20.26 ms | 21.04 ms | 0.96× | 0 |
+| `callcc` | 12.56 ms | 13.03 ms | 0.96× | 0 |
+| `mini-eval` | 23.05 ms | 24.74 ms | 0.93× | 0 |
 
-**Three rows are 2.4× or better** and nothing is meaningfully below the
+**Three rows are 2.8× or better** and nothing is meaningfully below the
 interpreter.  The rows near 1.0× are workloads of a few milliseconds where process
 startup is most of what is measured; the rows below it are programs the compiler
 has nothing to take from.  The `native` column — how many procedures were
@@ -393,6 +393,77 @@ does not.  `vectors` calls a *user* procedure once per element, so there is
 nothing to sink: the loop would have to call back into Scheme per iteration, which
 is the crossing the whole arrangement exists to remove.  `mini-eval` is an
 interpreter, and its inner loop dispatches on the shape of a datum — not a walk.
+
+### Doing the loop in one call, which is where the speed comes from
+
+A loop written in Scheme over a list, a vector or a counter was the case the
+compiler was *worst* at, and it is the case most programs are made of:
+
+```scheme
+(define (sum-list lst acc)
+  (if (null? lst) acc (sum-list (cdr lst) (+ acc (car lst)))))
+```
+
+Compiled naively this crosses into the runtime four times per element — for
+`null?`, `car`, `cdr` and `+` — and a crossing costs more than the element's
+work.  Measured over a million elements: **260 ms element by element against
+3.6 ms for the loop run in Go**.  The compiled version was slower than the
+interpreter, and a 300000-element walk took 0.22 s interpreted and 0.23 s
+compiled.
+
+The loop is now recognised and emitted as **one call**.  Eight shapes are accepted:
+
+| shape | example | what it does |
+|---|---|---|
+| list walk | `(if (null? lst) acc (f (cdr lst) (+ acc (car lst))))` | sums, counts or reverses a list |
+| vector walk | `(if (= i n) acc (f v (+ i 1) n (+ acc (vector-ref v i))))` | the same over a vector |
+| count down | `(if (= n 0) acc (f (- n 1) (cons n acc)))` | counts down and folds the counter in |
+| count up | `(if (= i n) acc (f (+ i 1) (+ acc i)))` | what a `do` loop is |
+| search | `(if (null? lst) #f (if (even? (car lst)) (car lst) (f (cdr lst))))` | stops at the first element a test accepts |
+| merge | `(cond ((null? a) b) ((null? b) a) ((< (car b) (car a)) (cons (car b) (f a (cdr b)))) (else …))` | the core of a merge sort |
+| build | `(if (null? l) '() (cons (car l) (f (cdr l))))` | copy, append, `map` or `filter` |
+| any fold, filtered | `(if (even? (car lst)) (+ 1 n) n)` | folds only the elements a builtin accepts |
+
+and a loop written as a **named let** is the same loop spelled the idiomatic way:
+
+```scheme
+(define (loop i)
+  (let ((a 1) (b 2))
+    (let inner ((j i) (acc 0))
+      (if (= j 0) acc (inner (- j 1) (+ acc a b))))))
+```
+
+The enclosing `let`'s bindings are the loop's invariants — a `let` binds once and
+nothing in the loop's scope can assign it — so their values are computed once and
+handed to the runtime.  Only an enclosing `let` is accepted for that: a global
+would usually be constant too, but `set!` could change it between iterations and
+the compiled loop would use a stale value.
+
+Measured, one call against the interpreter: a million-element list walk 0.33 s
+against **0.07 s**; the same for a vector, 0.31 s against 0.03 s; a two-million
+element counting loop 0.67 s against 0.21 s; two million `do` iterations 0.73 s
+against 0.13 s; a two-million element search 0.68 s against 0.21 s; a
+500000-element append 0.41 s against 0.11 s; a 20000-element merge sort 0.25 s
+against 0.16 s.
+
+The shape is checked part by part rather than matched loosely, and that is not
+fussiness: a body that merely *looks* like a walk would compute something else if
+it were run this way.  The tests cover a walk that tests the wrong parameter,
+advances the wrong one, returns something other than the accumulator in its base
+case, combines with `-` instead of `+`, is not tail recursive, calls a procedure
+that is not itself, or takes the wrong number of arguments — and for the merge, a
+body missing one of its two empty-list tests, returning the wrong list at the end,
+taking an element it did not test, or testing the comparison the other way round.
+Every one is refused, and a refused walk takes the ordinary path and stays
+correct.
+
+The predicates must be **builtins**, which is a consequence of the idea rather
+than a limitation of it: a builtin is one the loop can apply itself, while a
+procedure written by the programmer would have to be called back into Scheme for
+every element — the crossing the whole arrangement exists to remove.
+
+This is the idea `(goscheme fast)` already used, applied to a loop the
+*programmer* wrote instead of one of the library's procedures.
 
 ### Doing the loop in one call, which is where the speed comes from
 
