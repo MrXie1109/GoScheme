@@ -41,15 +41,29 @@ import (
 type IRProgram struct {
 	// IR is the module, as LLVM assembly.
 	IR string
-	// Native is how many procedures were compiled to native code, and Runtime
-	// how many were handed to the runtime library.  A caller reports the split,
-	// because "why is this program not fast" is usually answered by it.
-	Native  int
+	// Native is how many procedures were compiled to native code.
+	Native int
+	// Runtime is how many top-level forms were left to the interpreter, which
+	// is the other half of the split.  A caller reports both, because "why is
+	// this program not fast" is usually answered by them.
 	Runtime int
+	// TopNative is how many top-level forms were emitted as a call into
+	// compiled code rather than handed to the interpreter.  It is counted apart
+	// from Native, which counts procedures, because a form that runs natively
+	// is not a procedure and the two numbers answer different questions.
+	TopNative int
 	// Refused is one line per procedure that was not compiled natively, saying
 	// what stopped it.
 	Refused []string
 }
+
+// CompiledAnything reports whether any of the program became machine code.
+//
+// A program can have no compiled procedures and still have compiled top-level
+// forms — `(loop 200000 0)` after a definition is exactly that — so both counts
+// are part of the answer.  This is the question a caller has to ask before it
+// can tell a user that nothing was compiled.
+func (p *IRProgram) CompiledAnything() bool { return p.Native > 0 || p.TopNative > 0 }
 
 // CompileToIR reads a script and generates a native program for it.
 //
@@ -69,10 +83,11 @@ func CompileToIR(source, name string) (*IRProgram, error) {
 		return nil, err
 	}
 	return &IRProgram{
-		IR:      g.module.String(),
-		Native:  g.native,
-		Runtime: g.runtime,
-		Refused: g.refused,
+		IR:        g.module.String(),
+		Native:    g.native,
+		Runtime:   g.runtime,
+		TopNative: g.topNative,
+		Refused:   g.refused,
 	}, nil
 }
 
@@ -81,6 +96,11 @@ type irGen struct {
 	module  *irModule
 	native  int
 	runtime int
+	// topNative counts the top-level forms emitted as a call into compiled
+	// code.  Such a form is part of the program that runs natively even though
+	// it is not a procedure, which is why it is counted apart from native:
+	// native is the number the panel means by "native procedures".
+	topNative int
 	// pure holds the procedures that can be compiled natively, by name, and is
 	// what the dependency order is computed from.
 	pure map[string]*pureProc
@@ -448,6 +468,7 @@ func (g *irGen) program(forms []Value) error {
 		if c, ok := recogniseTopCall(form, compiled); ok {
 			m.declare("i64 @gs_box_literal(i8*, i64)")
 			g.emitTopCall(c, g.pure[c.name].formals, &body, m.reg)
+			g.topNative++
 			continue
 		}
 		src := WriteToString(form)
@@ -456,6 +477,10 @@ func (g *irGen) program(forms []Value) error {
 		name := m.stringLiteral(fmt.Sprintf("<top level %d>", i+1), fmt.Sprintf("name%d", i))
 		fmt.Fprintf(&body, "  %s = call i64 @gs_eval_source(i8* %s, i64 %d, i8* %s)\n",
 			m.reg(), lit, len(src), name)
+		// This form is the interpreter's.  Counting it is what lets a caller
+		// say that a program came out with nothing compiled instead of leaving
+		// the size of the binary to imply otherwise.
+		g.runtime++
 	}
 	// A pure procedure defined at the top level also gets a native body, and
 	// the runtime is told about it: the count is what `--emit-llvm`'s reader

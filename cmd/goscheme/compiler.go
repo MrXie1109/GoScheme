@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,6 +35,7 @@ func runCompile(args []string) int {
 	emitLLVM := false
 	optLevel := "2"
 	keepTemps := false
+	explain := false
 
 	for i := 0; i < len(args); i++ {
 		switch a := args[i]; a {
@@ -51,6 +53,8 @@ func runCompile(args []string) int {
 			emitLLVM = true
 		case "--keep-temps":
 			keepTemps = true
+		case "--explain":
+			explain = true
 		case "-O0", "-O1", "-O2", "-O3":
 			optLevel = a[2:]
 		case "-h", "--help":
@@ -73,7 +77,7 @@ func runCompile(args []string) int {
 		compileUsage(os.Stderr)
 		return 2
 	}
-	return compileToNative(scriptPath, out, optLevel, emitLLVM, keepTemps)
+	return compileToNative(scriptPath, out, optLevel, emitLLVM, keepTemps, explain)
 }
 
 func compileUsage(w *os.File) {
@@ -87,10 +91,56 @@ func compileUsage(w *os.File) {
 	fmt.Fprintln(w, "  --emit-llvm, -S    write the LLVM IR instead of building anything")
 	fmt.Fprintln(w, "  -O0..-O3           optimisation level passed to opt (default: -O2)")
 	fmt.Fprintln(w, "  --keep-temps       keep the intermediate .ll and .o files")
+	fmt.Fprintln(w, "  --explain          list every procedure left to the interpreter, and why")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "The compiler takes the procedures whose bodies are pure computations and")
+	fmt.Fprintln(w, "leaves the rest to the interpreter, so a program usually comes out part")
+	fmt.Fprintln(w, "machine code and part interpreted.  What it took is reported on stderr;")
+	fmt.Fprintln(w, "--explain names what it left behind and why.")
+}
+
+// reportSplit says what the compiler took and what it left to the interpreter.
+//
+// It is not decoration.  The compiler is partial by design, so a program can
+// come out with no machine code in it at all, still run correctly, and run at
+// exactly the speed it would have without compiling — which is the worst way to
+// fail, because nothing says so and the binary's size suggests otherwise.  A
+// build that compiled nothing therefore says so out loud.  Everything printed
+// here was already computed for this purpose and was previously discarded.
+func reportSplit(w io.Writer, prog *scheme.IRProgram, explain bool) {
+	// Silence is right when the program compiled and the interpreter kept
+	// nothing: that is the good case, and a line on every build would train the
+	// reader to skip it.
+	if !prog.CompiledAnything() {
+		fmt.Fprintf(w, "goscheme compile: warning: nothing was compiled to native code\n")
+		fmt.Fprintf(w, "  This program will run in the interpreter, at the speed it would have\n")
+		fmt.Fprintf(w, "  had without compiling.  The binary is large because the runtime is\n")
+		fmt.Fprintf(w, "  linked into it, not because any of the program is machine code.\n")
+	} else {
+		if prog.Runtime == 0 {
+			// Everything compiled: no news, which is the good case, unless the
+			// caller asked for the details.
+			if !explain || len(prog.Refused) == 0 {
+				return
+			}
+		} else {
+			fmt.Fprintf(w, "goscheme compile: %d compiled to native code, %d left to the interpreter\n",
+				prog.Native+prog.TopNative, prog.Runtime)
+		}
+	}
+	switch {
+	case explain && len(prog.Refused) > 0:
+		fmt.Fprintf(w, "  left to the interpreter:\n")
+		for _, line := range prog.Refused {
+			fmt.Fprintf(w, "    %s\n", line)
+		}
+	case len(prog.Refused) > 0:
+		fmt.Fprintf(w, "  run with --explain to list what was left behind, and why\n")
+	}
 }
 
 // compileToNative runs the LLVM pipeline over a script.
-func compileToNative(scriptPath, out, optLevel string, emitLLVM, keepTemps bool) int {
+func compileToNative(scriptPath, out, optLevel string, emitLLVM, keepTemps, explain bool) int {
 	abs, err := filepath.Abs(scriptPath)
 	if err != nil {
 		abs = scriptPath
@@ -108,6 +158,13 @@ func compileToNative(scriptPath, out, optLevel string, emitLLVM, keepTemps bool)
 		fmt.Fprintf(os.Stderr, "goscheme compile: %v\n", err)
 		return 1
 	}
+
+	// The report goes to stderr, so writing the IR to stdout stays pure IR and
+	// `goscheme compile -S x.scm > x.ll` still produces a file LLVM accepts.
+	// It is printed before the -S return below for the same reason a person
+	// reading the IR benefits most from it: that is when the absence of any
+	// gs_lam_ function is about to be noticed.
+	reportSplit(os.Stderr, prog, explain)
 
 	if emitLLVM {
 		if out == "" {
