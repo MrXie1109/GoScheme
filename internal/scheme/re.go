@@ -94,13 +94,81 @@ func buildRuntimeArchive(dir string) error {
 
 // runtimePackageDir is the directory of the runtime environment package, which
 // is what gets built into the archive a compiled program links against.
+//
+// Locating it is awkward because a released binary is built with -trimpath,
+// which rewrites the recorded source path to a module-relative one
+// (github.com/MrXie1109/GoScheme/internal/scheme) that is not a real directory.
+// So the recorded path is tried first, and when it is not there the module is
+// asked where it lives — `go list -m` resolves the module by import path from
+// inside any directory belonging to it, which is exactly what the trimmed path
+// still tells us.
 func runtimePackageDir() (string, error) {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
 		return "", fmt.Errorf("cannot find the interpreter package directory")
 	}
 	// This file lives in internal/scheme; the runtime is ../../re.
-	return filepath.Join(filepath.Dir(file), "..", "..", "re"), nil
+	if dir := filepath.Join(filepath.Dir(file), "..", "..", "re"); dirExists(dir) {
+		return dir, nil
+	}
+	// The path was trimmed.  Walk up from the executable, and from the working
+	// directory, looking for a module root that the Go tool recognises.
+	for _, start := range candidateRoots() {
+		dir, err := goListModuleDir(start)
+		if err != nil {
+			continue
+		}
+		if re := filepath.Join(dir, "re"); dirExists(re) {
+			return re, nil
+		}
+	}
+	return "", fmt.Errorf("cannot find the runtime package (re); build from a source checkout")
+}
+
+// candidateRoots are the places a module root might be, in the order worth
+// trying: the executable's directory and its parents, then the working
+// directory and its parents.
+func candidateRoots() []string {
+	var roots []string
+	if exe, err := os.Executable(); err == nil {
+		roots = append(roots, parents(filepath.Dir(exe))...)
+	}
+	if wd, err := os.Getwd(); err == nil {
+		roots = append(roots, parents(wd)...)
+	}
+	return roots
+}
+
+// parents returns dir and each of its ancestors, nearest first.
+func parents(dir string) []string {
+	var out []string
+	for {
+		out = append(out, dir)
+		up := filepath.Dir(dir)
+		if up == dir {
+			return out
+		}
+		dir = up
+	}
+}
+
+// goListModuleDir asks the Go tool for the directory of this module, run from
+// inside dir.
+func goListModuleDir(dir string) (string, error) {
+	cmd := exec.Command("go", "list", "-m", "-f", "{{.Dir}}")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOFLAGS=")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// dirExists reports whether path is a directory.
+func dirExists(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.IsDir()
 }
 
 // RuntimeLinker is the program that links a compiled program: the C compiler,

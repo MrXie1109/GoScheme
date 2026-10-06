@@ -328,6 +328,29 @@ type ClosureClause struct {
 	// Code, when not nil, is the compiled body: applying this clause runs it
 	// on the bytecode VM instead of walking Body.
 	Code *Code
+	// Native, when not nil, is machine code the compiler produced for this
+	// clause.  It is tried first, and a call it declines falls back to
+	// interpreting Body, which is still there and still correct.
+	//
+	// The field is an interface rather than a function pointer so that the
+	// interpreter, which is what makes the call, does not have to know how a
+	// compiled procedure is represented.  The runtime environment installs it
+	// (see re/).
+	Native NativeProc
+}
+
+// NativeProc is a procedure the compiler turned into machine code, as the
+// interpreter sees it.
+//
+// It is deliberately Scheme values in and out.  The compiled code's own
+// representation — tagged words in an argument array — is the runtime
+// environment's business, and nothing above this interface needs to know about
+// it, which is what keeps the interpreter free of the ABI.
+type NativeProc interface {
+	// Call runs the compiled body.  ok is false when the call cannot be taken
+	// natively, which is what makes a fallback to the interpreted body
+	// expressible rather than an error.
+	Call(args []Value) (Value, bool)
 }
 
 // Primitive is a procedure implemented in Go.

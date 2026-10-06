@@ -600,8 +600,35 @@ type vmCallee struct {
 // decide: one clause, compiled, and the arity fits.  Everything else — clause
 // selection, an interpreted body, an arity error — goes the long way round
 // through apply.
-func compiledClause(proc Value, args []Value) (vmCallee, bool) {
+// callNative runs a call whose callee has machine code, and reports whether it
+// could.
+//
+// Both engines consult this — the bytecode VM here at its own call site, and the
+// tree walker through applyClosure — because a compiled procedure has to run as
+// machine code whichever engine reaches it.  A procedure may carry machine code
+// for one arity and not another, which is why the clause is looked up rather
+// than assumed, and why a miss is an ordinary `false` rather than an error.
+func callNative(proc Value, args []Value) (Value, bool) {
 	c, ok := proc.(*Closure)
+	if !ok {
+		return nil, false
+	}
+	for i := range c.Clauses {
+		cl := &c.Clauses[i]
+		if cl.Native == nil || !arityMatches(cl, len(args)) {
+			continue
+		}
+		if v, ok := cl.Native.Call(args); ok {
+			return v, true
+		}
+		// The native body declined, and the interpreted one is the fallback —
+		// so this call is not natively taken, but it is not an error either.
+		return nil, false
+	}
+	return nil, false
+}
+
+func compiledClause(proc Value, args []Value) (vmCallee, bool) {	c, ok := proc.(*Closure)
 	if !ok || len(c.Clauses) != 1 {
 		return vmCallee{}, false
 	}
@@ -878,6 +905,16 @@ func vmRun(m *Machine, code *Code, ip int, env *vmEnv, globals *Env, vals []Valu
 			args := vals[len(vals)-n:]
 			proc := vals[len(vals)-n-1]
 			vals = vals[:len(vals)-n-1]
+			// A procedure the compiler turned into machine code runs here,
+			// before any of the interpreted paths get a chance: this is the
+			// call site the compiler generated, so it is the one that should
+			// reach the compiled body.  A decline falls through to the
+			// ordinary call below, which is still correct because the
+			// interpreted body was never removed.
+			if v, ok := callNative(proc, args); ok {
+				vals = append(vals, v)
+				continue
+			}
 			if v, res := m.callSyncPrimitive(proc, args); res != syncNone {
 				if res == syncValue {
 					vals = append(vals, v)

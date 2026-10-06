@@ -578,6 +578,19 @@ func (m *Machine) applyClosure(c *Closure, args []Value) {
 		}
 		return
 	}
+	// A compiled body is tried before anything else, and it is allowed to say
+	// no: a native procedure computes pure arithmetic and cannot run a
+	// continuation, call a procedure that was not compiled, or handle an
+	// argument list it was not built for.  Declining falls through to the
+	// interpreted body below, which is still present — that is what makes the
+	// native path an optimization rather than a second implementation of the
+	// language.
+	if clause.Native != nil {
+		if v, ok := clause.Native.Call(args); ok {
+			m.Return(v)
+			return
+		}
+	}
 	if clause.Code != nil {
 		m.applyCompiled(c, clause, args)
 		return
