@@ -332,6 +332,21 @@ func gs_search(pred C.int32_t, args *C.gs_val, wantElement C.int32_t) C.gs_val {
 		int(int32(wantElement))))
 }
 
+// gs_merge merges two lists in one call.
+//
+// The core of every sort written in Scheme, and like the other walks it runs
+// where the data is rather than crossing per element.  The comparison is a code
+// rather than a procedure because a comparison written by the programmer would
+// have to be called back into Scheme for every element.
+//
+//export gs_merge
+func gs_merge(cmp C.int32_t, a C.gs_val, b C.gs_val) C.gs_val {
+	if mach == nil {
+		gs_init(0, nil)
+	}
+	return tagged(scheme.RunMerge(int(int32(cmp)), untagged(a), untagged(b)))
+}
+
 // gs_global reads a top-level binding by name, as a tagged value.
 //
 // A compiled body reads a global where the name appears, not once at entry,

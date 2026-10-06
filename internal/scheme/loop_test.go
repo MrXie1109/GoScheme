@@ -611,3 +611,138 @@ func TestBooleanIsAValueNotAPointer(t *testing.T) {
 		t.Errorf("the boolean tag is not carried through the join:\n%s", p.IR)
 	}
 }
+
+// TestRecogniseMerge checks the merge, which is the core of every sort written
+// in Scheme.
+func TestRecogniseMerge(t *testing.T) {
+	good := `(define (merge a b)
+	  (cond ((null? a) b) ((null? b) a)
+	        ((< (car b) (car a)) (cons (car b) (merge a (cdr b))))
+	        (else (cons (car a) (merge (cdr a) b)))))`
+	// The same merge written with the recursive call's arguments the other way
+	// round, which is just as natural to write and is the same call.
+	swapped := `(define (merge a b)
+	  (cond ((null? a) b) ((null? b) a)
+	        ((< (car b) (car a)) (cons (car b) (merge (cdr b) a)))
+	        (else (cons (car a) (merge b (cdr a))))))`
+	for _, tc := range []struct {
+		name string
+		src  string
+		want bool
+	}{
+		{"cond 写法", good, true},
+		{"递归参数互换", swapped, true},
+		{"缺一个空表测试", `(define (merge a b) (cond ((null? a) b) ((< (car b) (car a)) (cons (car b) (merge a (cdr b)))) (else (cons (car a) (merge (cdr a) b)))))`, false},
+		{"空表返回自己", `(define (merge a b) (cond ((null? a) a) ((null? b) a) ((< (car b) (car a)) (cons (car b) (merge a (cdr b)))) (else (cons (car a) (merge (cdr a) b)))))`, false},
+		{"取的不是 car", `(define (merge a b) (cond ((null? a) b) ((null? b) a) ((< (car b) (car a)) (cons (cdr b) (merge a (cdr b)))) (else (cons (car a) (merge (cdr a) b)))))`, false},
+		{"比较方向颠倒", `(define (merge a b) (cond ((null? a) b) ((null? b) a) ((< (car a) (car b)) (cons (car b) (merge a (cdr b)))) (else (cons (car a) (merge (cdr a) b)))))`, false},
+		{"递归推进别的", `(define (merge a b) (cond ((null? a) b) ((null? b) a) ((< (car b) (car a)) (cons (car b) (merge a a))) (else (cons (car a) (merge (cdr a) b)))))`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			forms, err := NewStringReader(tc.src).ReadAll()
+			if err != nil {
+				t.Fatal(err)
+			}
+			name, formals, body, ok := topLevelProcedure(forms[0])
+			if !ok {
+				t.Fatal("不是顶层过程定义")
+			}
+			_, got := recogniseMerge(name, formals, body)
+			if got != tc.want {
+				t.Errorf("识别=%v 期望=%v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCondToIf checks the reader that lets a merge be written as a cond.
+//
+// It handles only the clause shapes a merge uses, and returns the form unchanged
+// for anything else — a reader for one shape, not a second implementation of
+// cond.  Returning something wrong here would make the recognisers below accept
+// a body they should not.
+func TestCondToIf(t *testing.T) {
+	got := WriteToString(condToIf(mustRead2(t, `(cond (a b) (c d) (else e))`)))
+	want := "(if a b (if c d e))"
+	if got != want {
+		t.Errorf("condToIf = %s, want %s", got, want)
+	}
+	// Not a cond: unchanged.
+	plain := `(if a b c)`
+	if WriteToString(condToIf(mustRead2(t, plain))) != plain {
+		t.Errorf("a non-cond was rewritten")
+	}
+	// A clause with several expressions is left alone rather than guessed at.
+	multi := `(cond (a b c) (else d))`
+	if WriteToString(condToIf(mustRead2(t, multi))) != multi {
+		t.Errorf("a multi-expression clause was rewritten")
+	}
+}
+
+// mustRead2 reads exactly one datum.
+func mustRead2(t *testing.T, src string) Value {
+	t.Helper()
+	forms, err := NewStringReader(src).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(forms) != 1 {
+		t.Fatalf("expected one datum, got %d", len(forms))
+	}
+	return forms[0]
+}
+
+// TestRunMergeAgreesWithASort checks the merge against the same merge written in
+// Go, on lists that exercise both branches and the two ends.
+func TestRunMergeAgreesWithASort(t *testing.T) {
+	for _, tc := range []struct{ a, b []int64 }{
+		{[]int64{1, 3, 5}, []int64{2, 4, 6}},
+		{[]int64{}, []int64{1, 2}},
+		{[]int64{1, 2}, []int64{}},
+		{[]int64{}, []int64{}},
+		{[]int64{1, 1, 1}, []int64{1, 1}},
+		{[]int64{5, 6, 7}, []int64{1, 2, 3}},
+	} {
+		la := intList(tc.a)
+		lb := intList(tc.b)
+		want := append(append([]int64{}, tc.a...), tc.b...)
+		sortInts(want)
+		got := RunMerge(mergeLt, la, lb)
+		if WriteToString(got) != WriteToString(intList(want)) {
+			t.Errorf("merge(%v, %v) = %s, want %v", tc.a, tc.b, WriteToString(got), want)
+		}
+		// `<=` takes from b on a tie, which is a different merge on equal
+		// elements — and the point of having two codes at all.
+		gotLe := RunMerge(mergeLe, la, lb)
+		var listLe []int64
+		for p := gotLe; ; {
+			pr, ok := p.(*Pair)
+			if !ok {
+				break
+			}
+			n, _ := pr.Car.(*Integer)
+			listLe = append(listLe, n.i)
+			p = pr.Cdr
+		}
+		sortInts(listLe)
+		if len(listLe) != len(want) {
+			t.Errorf("<= merge lost elements: %v", listLe)
+		}
+	}
+}
+
+func intList(xs []int64) Value {
+	out := Value(Nil)
+	for i := len(xs) - 1; i >= 0; i-- {
+		out = Cons(Int(xs[i]), out)
+	}
+	return out
+}
+
+func sortInts(xs []int64) {
+	for i := 1; i < len(xs); i++ {
+		for j := i; j > 0 && xs[j] < xs[j-1]; j-- {
+			xs[j], xs[j-1] = xs[j-1], xs[j]
+		}
+	}
+}

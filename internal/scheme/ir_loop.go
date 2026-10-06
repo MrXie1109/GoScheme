@@ -1207,6 +1207,7 @@ const (
 	shapeCount
 	shapeUp
 	shapeSearch
+	shapeMerge
 )
 
 // recogniseAnyWalk asks each recogniser in turn.
@@ -1240,6 +1241,9 @@ func recogniseAnyWalkInv(name string, formals []*Symbol, body []Value, inv map[s
 	}
 	if w, ok := recogniseSearch(name, formals, body); ok {
 		return loopNone, w.pred, shapeSearch, true
+	}
+	if _, ok := recogniseMerge(name, formals, body); ok {
+		return loopNone, predNone, shapeMerge, true
 	}
 	return loopNone, predNone, shapeNone, false
 }
@@ -1439,7 +1443,26 @@ func (f *irFunc) emitWalkCall(loopName string, vars []*Symbol, body []Value, arg
 		if w, ok := recogniseSearch(loopName, vars, body); ok {
 			f.emitSearchArgs(w, args)
 		}
+	case shapeMerge:
+		if w, ok := recogniseMerge(loopName, vars, body); ok {
+			f.emitMergeArgs(w, args)
+		}
 	}
+}
+
+// emitMergeArgs calls the merge walk with the two lists and the comparison.
+func (f *irFunc) emitMergeArgs(w mergeWalk, args []irVal) {
+	if len(args) != 2 {
+		return
+	}
+	f.want(gsVal + " @gs_merge(i32, " + gsVal + ", " + gsVal + ")")
+	a := args[0].bits0(f)
+	b := args[1].bits0(f)
+	out := f.reg()
+	fmt.Fprintf(&f.body, "  %s = call %s @gs_merge(i32 %d, %s %s, %s %s)\n",
+		out, gsVal, mergeCode(w.less), gsVal, a, gsVal, b)
+	f.listWalkDone = true
+	f.listWalkVal = f.loadVal(out)
 }
 
 // emitSearchArgs calls the search walk with the list and the two answers.
@@ -2020,4 +2043,279 @@ func walkParams(name string, formals []*Symbol, body []Value) ([]*Symbol, bool) 
 		return nil, false
 	}
 	return formals, true
+}
+
+// ---------------------------------------------------------------------------
+// Merging two lists
+// ---------------------------------------------------------------------------
+
+// mergeWalk is a loop that merges two lists, which is the core of every sort
+// written in Scheme:
+//
+//	(define (merge a b)
+//	  (cond ((null? a) b)
+//	        ((null? b) a)
+//	        ((< (car b) (car a)) (cons (car b) (merge a (cdr b))))
+//	        (else (cons (car a) (merge (cdr a) b)))))
+//
+// It is recognised because it is worth a great deal and because it is written
+// one way: two lists in, one out, one element taken per iteration.  A sort whose
+// merge is left to the interpreter is a sort the compiler has not helped.
+type mergeWalk struct {
+	name string
+	a, b *Symbol
+	// less is the comparison, applied as `(less (car b) (car a))`.
+	less string
+	// takeB says the first branch takes from b, which is what `<` does when the
+	// comparison is written the other way round.
+	takeB bool
+}
+
+// recogniseMerge reports whether a procedure merges two lists.
+//
+// The accepted body is
+//
+//	(if (null? A) B
+//	    (if (null? B) A
+//	        (if (LESS (car B) (car A))
+//	            (cons (car B) (NAME A (cdr B)))
+//	            (cons (car A) (NAME (cdr A) B)))))
+//
+// which is what the `cond` above expands to.  Both null tests have to be there
+// and both have to return the *other* list: a merge that returned something else
+// at the end would be sorting differently.
+func recogniseMerge(name string, formals []*Symbol, body []Value) (mergeWalk, bool) {
+	var none mergeWalk
+	if len(formals) != 2 || len(body) != 1 {
+		return none, false
+	}
+	aSym, bSym := formals[0], formals[1]
+	// A merge is usually written as a `cond`, because that is how it reads, and
+	// the four clauses are exactly the nesting below.  Looking through the cond
+	// rather than requiring the if-chain means the shape can be written the way
+	// people write it.
+	form := condToIf(body[0])
+	// (if (null? A) B (if (null? B) A ...))
+	l1, ok := form.(*Pair)
+	if !ok || !isForm(l1, "if") {
+		return none, false
+	}
+	p1, _ := ListToSlice(l1.Cdr)
+	if len(p1) != 3 {
+		return none, false
+	}
+	if !isNullOf(p1[0], aSym) || !isSameSymbol(p1[1], bSym) {
+		return none, false
+	}
+	l2, ok := p1[2].(*Pair)
+	if !ok || !isForm(l2, "if") {
+		return none, false
+	}
+	p2, _ := ListToSlice(l2.Cdr)
+	if len(p2) != 3 {
+		return none, false
+	}
+	if !isNullOf(p2[0], bSym) || !isSameSymbol(p2[1], aSym) {
+		return none, false
+	}
+	// (if (LESS (car B) (car A)) (cons (car B) (NAME A (cdr B))) (cons (car A) (NAME (cdr A) B)))
+	l3, ok := p2[2].(*Pair)
+	if !ok || !isForm(l3, "if") {
+		return none, false
+	}
+	p3, _ := ListToSlice(l3.Cdr)
+	if len(p3) != 3 {
+		return none, false
+	}
+	cmp, ok := p3[0].(*Pair)
+	if !ok {
+		return none, false
+	}
+	less, ok := cmp.Car.(*Symbol)
+	if !ok {
+		return none, false
+	}
+	switch less.Name {
+	case "<", "<=":
+		// takes from b when b's head is smaller
+	default:
+		return none, false
+	}
+	cargs, _ := ListToSlice(cmp.Cdr)
+	if len(cargs) != 2 || !isCarOf(cargs[0], bSym) || !isCarOf(cargs[1], aSym) {
+		return none, false
+	}
+	// The two branches take from b and a respectively.
+	// The first branch takes from b and walks on with b's tail; the second takes
+	// from a and walks on with a's tail.
+	if !isConsOfCarThen(name, p3[1], bSym, aSym) {
+		return none, false
+	}
+	if !isConsOfCarThen(name, p3[2], aSym, bSym) {
+		return none, false
+	}
+	return mergeWalk{name: name, a: aSym, b: bSym, less: less.Name, takeB: true}, true
+}
+
+// condToIf rewrites a cond into the if-chain it means, or returns the form
+// unchanged when it is not a cond.
+//
+// Only the clause shapes a merge uses are handled: `(TEST EXPR)` and
+// `(else EXPR)`.  A clause with several expressions, or one using `=>`, is left
+// alone and the recognisers downstream refuse it, which is the right answer —
+// this is a reader for one shape, not a second implementation of cond.
+func condToIf(form Value) Value {
+	p, ok := form.(*Pair)
+	if !ok || !isForm(p, "cond") {
+		return form
+	}
+	clauses, _ := ListToSlice(p.Cdr)
+	var out Value = Nil
+	// Built from the last clause backwards, so the first test ends up outermost.
+	for i := len(clauses) - 1; i >= 0; i-- {
+		cl, ok := clauses[i].(*Pair)
+		if !ok {
+			return form
+		}
+		items, _ := ListToSlice(cl)
+		if len(items) != 2 {
+			return form
+		}
+		if isElse(items[0]) {
+			// An else is the final alternative and cannot be nested inside an
+			// if's then-branch.
+			out = items[1]
+			continue
+		}
+		if out == Value(Nil) && i == len(clauses)-1 {
+			return form // no else and a final else-less clause: not this shape
+		}
+		out = List(Intern("if"), items[0], items[1], out)
+	}
+	return out
+}
+
+// isElse reports whether a value is the symbol `else`.
+func isElse(v Value) bool {
+	s, ok := v.(*Symbol)
+	return ok && s.Name == "else"
+}
+
+// isNullOf reports whether a value is (null? S).
+func isNullOf(v Value, s *Symbol) bool {
+	p, ok := v.(*Pair)
+	if !ok || !isForm(p, "null?") {
+		return false
+	}
+	args, _ := ListToSlice(p.Cdr)
+	return len(args) == 1 && isSameSymbol(args[0], s)
+}
+
+// isConsOfCarThen reports whether a value takes the head of one list and recurses
+// on the rest of it:
+//
+//	(cons (car TAKEN) (NAME (cdr TAKEN) OTHER))
+//
+// which is one step of a merge — take the smaller element, walk on.  The two
+// arguments mean what they say: TAKEN is the list the element came from, and
+// OTHER is the one left alone.  The merge's two branches are the two ways round,
+// so getting them the wrong way round makes the second branch fail.
+func isConsOfCarThen(name string, v Value, taken, other *Symbol) bool {
+	p, ok := v.(*Pair)
+	if !ok || !isForm(p, "cons") {
+		return false
+	}
+	args, _ := ListToSlice(p.Cdr)
+	if len(args) != 2 || !isCarOf(args[0], taken) {
+		return false
+	}
+	call, ok := args[1].(*Pair)
+	if !ok {
+		return false
+	}
+	head, ok := call.Car.(*Symbol)
+	if !ok || head.Name != name {
+		return false
+	}
+	cargs, _ := ListToSlice(call.Cdr)
+	if len(cargs) != 2 {
+		return false
+	}
+	// The recursive call advances the taken list and leaves the other alone, in
+	// whichever order the two were written: `(merge a (cdr b))` and
+	// `(merge (cdr b) a)` are the same call, and both spellings appear because
+	// the merge is symmetrical in the arguments it passes and not in the ones it
+	// tests.
+	advance, keep := cargs[0], cargs[1]
+	if isSameSymbol(cargs[0], other) {
+		advance, keep = cargs[1], cargs[0]
+	}
+	return isCdrOf(advance, taken) && isSameSymbol(keep, other)
+}
+
+// isCdrOf reports whether a value is (cdr S).
+func isCdrOf(v Value, s *Symbol) bool {
+	p, ok := v.(*Pair)
+	if !ok || !isForm(p, "cdr") {
+		return false
+	}
+	args, _ := ListToSlice(p.Cdr)
+	return len(args) == 1 && isSameSymbol(args[0], s)
+}
+
+// RunMerge merges two lists the way the loop does.
+//
+// The comparison is a code rather than a procedure, for the same reason the
+// other walks' predicates are: a comparison written by the programmer would have
+// to be called back into Scheme for every element, and that call is the cost
+// this exists to avoid.  The two accepted ones are `<` and `<=`.
+func RunMerge(cmp int, a, b Value) Value {
+	// The result is built forward and reversed once at the end, rather than
+	// consed onto the answer as the loop goes: the loop is not in tail position,
+	// so building it backwards would mean rebuilding it, and one reverse at the
+	// end is cheaper than the intermediate lists.
+	var out []Value
+	for {
+		ap, aok := a.(*Pair)
+		bp, bok := b.(*Pair)
+		if !aok {
+			return appendList(out, b)
+		}
+		if !bok {
+			return appendList(out, a)
+		}
+		takeB := NumCmp(bp.Car, ap.Car) < 0
+		if cmp == mergeLe {
+			takeB = NumCmp(bp.Car, ap.Car) <= 0
+		}
+		if takeB {
+			out = append(out, bp.Car)
+			b = bp.Cdr
+		} else {
+			out = append(out, ap.Car)
+			a = ap.Cdr
+		}
+	}
+}
+
+// merge comparison codes.
+const (
+	mergeLt = 0
+	mergeLe = 1
+)
+
+// mergeCode maps a comparison name to its code.
+func mergeCode(name string) int {
+	if name == "<=" {
+		return mergeLe
+	}
+	return mergeLt
+}
+
+// appendList conses a slice onto a list, reusing the tail rather than copying it.
+func appendList(items []Value, tail Value) Value {
+	for i := len(items) - 1; i >= 0; i-- {
+		tail = Cons(items[i], tail)
+	}
+	return tail
 }
