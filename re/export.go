@@ -287,11 +287,17 @@ func gs_vecwalk(kind C.int32_t, pred C.int32_t, args *C.gs_val) C.gs_val {
 // accumulator are handed over.
 //
 //export gs_countloop
-func gs_countloop(kind C.int32_t, n C.gs_val, acc C.gs_val) C.gs_val {
+func gs_countloop(kind C.int32_t, args *C.gs_val, nextra C.int32_t) C.gs_val {
 	if mach == nil {
 		gs_init(0, nil)
 	}
-	return tagged(scheme.RunCountLoop(int(int32(kind)), untagged(n), untagged(acc)))
+	n := untagged(*argsAt(args, 0))
+	acc := untagged(*argsAt(args, 1))
+	var extras []scheme.Value
+	for i := 0; i < int(nextra); i++ {
+		extras = append(extras, untagged(*argsAt(args, 2+i)))
+	}
+	return tagged(scheme.RunCountLoopExtras(int(int32(kind)), n, acc, extras))
 }
 
 // gs_global reads a top-level binding by name, as a tagged value.

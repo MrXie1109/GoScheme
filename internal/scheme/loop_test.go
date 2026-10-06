@@ -1,6 +1,7 @@
 package scheme
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -376,5 +377,53 @@ func TestEmptyListHasItsOwnTag(t *testing.T) {
 	}
 	if len(seen) != 4 {
 		t.Errorf("two tags share a value: %v", seen)
+	}
+}
+
+// TestWalkEntryPointsAreDeclaredConsistently checks that the module's
+// declarations of the walk entry points match how it calls them.
+//
+// This is the bug that crashed: `gs_countloop` was changed from taking two
+// tagged values to taking an array, and one of the two emitters that call it was
+// updated while the other was not.  The generated code then declared and called
+// the old shape while the runtime implemented the new one, so the callee read a
+// pointer where a tag had been — a segfault in the compiled program, with
+// nothing wrong in the Scheme source and nothing in the module that looks
+// malformed.
+//
+// Two emitters for one entry point is the hazard, so what is checked is that
+// every declaration in the module agrees with the call beside it.
+func TestWalkEntryPointsAreDeclaredConsistently(t *testing.T) {
+	src := `(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc))))
+(define (sum-list lst acc) (if (null? lst) acc (sum-list (cdr lst) (+ acc (car lst)))))
+(define (vsum v i n acc) (if (= i n) acc (vsum v (+ i 1) n (+ acc (vector-ref v i)))))
+(define (count-even lst n) (if (null? lst) n (count-even (cdr lst) (if (even? (car lst)) (+ 1 n) n))))
+(define (go) (list (build 3 '()) (sum-list (list 1 2) 0)))`
+	p, err := CompileToIR(src, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Every walk entry point the module mentions has to be declared once, and
+	// the declaration has to be the shape the call uses.
+	for _, name := range []string{"gs_walk", "gs_vecwalk", "gs_countloop"} {
+		decl := regexp.MustCompile(`declare %gs\.val @` + name + `\(([^)]*)\)`).FindStringSubmatch(p.IR)
+		call := regexp.MustCompile(`call %gs\.val @` + name + `\(([^,)]*)`).FindStringSubmatch(p.IR)
+		if decl == nil || call == nil {
+			continue // this module does not use it
+		}
+		// The declarations are written with named types; what matters is the
+		// number and kind of arguments, so compare the first argument's type.
+		if !strings.Contains(decl[1], "i32") {
+			t.Errorf("%s is declared as (%s), which is not the shape it is called with", name, decl[1])
+		}
+		if !strings.HasPrefix(call[1], "i32") {
+			t.Errorf("%s is called with a %s as its first argument, but declared with i32", name, call[1])
+		}
+	}
+	// And the count loop is called with the array convention, which is the
+	// change that was half-applied.
+	if strings.Contains(p.IR, "gs_countloop") &&
+		!strings.Contains(p.IR, "@gs_countloop(i32, %gs.val*, i32)") {
+		t.Errorf("gs_countloop is not declared with the array convention:\n%s", p.IR)
 	}
 }

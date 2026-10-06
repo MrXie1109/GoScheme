@@ -644,17 +644,21 @@ func (g *irGen) emitPureFunction(name string, formals []*Symbol, body []Value, c
 	// redefinition error — which `opt -passes=verify` said the first time this
 	// was tried, and is the reason the check is part of the build below.
 
-	// A body that is a whole list walk is emitted as one call that runs the walk
-	// in the runtime, rather than as a loop that crosses the boundary for every
+	// A body that is a whole walk is emitted as one call that runs the walk in
+	// the runtime, rather than as a loop that crosses the boundary for every
 	// element.  This is checked first because it replaces the body entirely.
+	//
+	// A body written as a named let is the same loop spelled the idiomatic way,
+	// and is handled by emitting the let's *body* as the walk and passing the
+	// let's initial values as its arguments.
 	if w, ok := recogniseListWalk(name, formals, body); ok {
 		f.emitListWalk(w, formals)
-	}
-	if w, ok := recogniseVecWalk(name, formals, body); ok {
+	} else if w, ok := recogniseVecWalk(name, formals, body); ok {
 		f.emitVecWalk(w, formals)
-	}
-	if w, ok := recogniseCountLoop(name, formals, body); ok {
+	} else if w, ok := recogniseCountLoop(name, formals, body); ok {
 		f.emitCountLoop(w)
+	} else if nl, isLet := parseNamedLet(body); isLet {
+		f.emitNamedLetLoop(nl)
 	}
 
 	// The body is in tail position: whatever it evaluates to is what the

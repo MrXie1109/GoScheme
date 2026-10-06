@@ -844,6 +844,15 @@ type countLoop struct {
 	count *Symbol
 	acc   *Symbol
 	kind  loopKind
+	// extras are the loop's invariants: values the fold adds that come from an
+	// enclosing let and therefore cannot change while the loop runs.
+	//
+	// Only such bindings are accepted, and that is what makes passing them to
+	// the runtime once safe.  A global is not accepted even though it would
+	// usually be constant, because `set!` could change it between iterations
+	// and the compiled loop would then use a stale value — a wrong answer with
+	// nothing to show for it.
+	extras []*Symbol
 }
 
 // recogniseCountLoop reports whether a procedure counts a parameter down to
@@ -858,6 +867,12 @@ type countLoop struct {
 // fold uses — a loop that folded a different number would be a different
 // program and is not recognised.
 func recogniseCountLoop(name string, formals []*Symbol, body []Value) (countLoop, bool) {
+	return recogniseCountLoopInv(name, formals, body, nil)
+}
+
+// recogniseCountLoopInv is recogniseCountLoop with the loop's invariants: the
+// names an enclosing let bound, which the fold may add in.
+func recogniseCountLoopInv(name string, formals []*Symbol, body []Value, inv map[string]bool) (countLoop, bool) {
 	var none countLoop
 	if len(formals) != 2 || len(body) != 1 {
 		return none, false
@@ -911,14 +926,14 @@ func recogniseCountLoop(name string, formals []*Symbol, body []Value) (countLoop
 	if !isMinusOne(callArgs[0], countSym) {
 		return none, false
 	}
-	kind, ok := recogniseCountFold(callArgs[1], accSym, countSym)
+	kind, extras, ok := recogniseCountFoldExtras(callArgs[1], accSym, countSym, inv)
 	if !ok {
 		return none, false
 	}
 	if !hasParam(formals, countSym) || !hasParam(formals, accSym) {
 		return none, false
 	}
-	return countLoop{name: name, count: countSym, acc: accSym, kind: kind}, true
+	return countLoop{name: name, count: countSym, acc: accSym, kind: kind, extras: extras}, true
 }
 
 // isZeroLiteral reports whether a value is the literal 0.
@@ -935,6 +950,56 @@ func isMinusOne(v Value, n *Symbol) bool {
 	}
 	args, _ := ListToSlice(p.Cdr)
 	return len(args) == 2 && isSameSymbol(args[0], n) && isOne(args[1])
+}
+
+// recogniseCountFoldExtras is recogniseCountFold with the loop's invariants: the
+// variables an enclosing let bound, which the fold may add in.
+func recogniseCountFoldExtras(e Value, accSym, countSym *Symbol, inv map[string]bool) (loopKind, []*Symbol, bool) {
+	form, ok := e.(*Pair)
+	if !ok {
+		return loopNone, nil, false
+	}
+	head, ok := form.Car.(*Symbol)
+	if !ok {
+		return loopNone, nil, false
+	}
+	args, _ := ListToSlice(form.Cdr)
+	// (+ ACC x y ...) where every x is the counter or an invariant.
+	if head.Name == "+" && len(args) >= 2 && isSameSymbol(args[0], accSym) {
+		var extras []*Symbol
+		sawCounter := false
+		for _, a := range args[1:] {
+			if isOne(a) {
+				continue // counting: (+ acc 1)
+			}
+			if isSameSymbol(a, countSym) {
+				sawCounter = true
+				continue
+			}
+			sym, ok := a.(*Symbol)
+			if !ok || !inv[sym.Name] {
+				// Not something that provably cannot change during the loop.
+				return loopNone, nil, false
+			}
+			extras = append(extras, sym)
+		}
+		// The counter does not have to appear in the fold.  `(+ acc a b)` adds
+		// two invariants and never mentions the counter, and that is a perfectly
+		// ordinary loop — requiring the counter made the recogniser reject the
+		// shape it was written for.
+		//
+		// Adding only the literal one is counting, which is its own walk: it
+		// adds one per iteration whatever the counter is, so the runtime does
+		// not need the counter's value at all.
+		if !sawCounter && len(extras) == 0 {
+			return loopCount, nil, true
+		}
+		return loopSum, extras, true
+	}
+	if k, ok := recogniseCountFold(e, accSym, countSym); ok {
+		return k, nil, true
+	}
+	return loopNone, nil, false
 }
 
 // recogniseCountFold classifies what a counting loop does with the counter.
@@ -979,6 +1044,17 @@ func recogniseCountFold(e Value, accSym, countSym *Symbol) (loopKind, bool) {
 // a loop whose counter is not a number is not the shape that was recognised, and
 // guessing would be a compiled program computing something else.
 func RunCountLoop(kind int, n, acc Value) Value {
+	return RunCountLoopExtras(kind, n, acc, nil)
+}
+
+// RunCountLoopExtras is RunCountLoop with the loop's invariants.
+//
+// Each iteration adds the counter plus every invariant, which is what
+// `(+ acc n a b)` does when `a` and `b` come from an enclosing let.  The
+// invariants are passed once rather than read per iteration, which is correct
+// because a let binds them once and nothing in the loop's scope can assign
+// them — that is the property the recogniser checked before accepting them.
+func RunCountLoopExtras(kind int, n, acc Value, extras []Value) Value {
 	i, ok := n.(*Integer)
 	if !ok || !i.small || i.i < 0 {
 		return acc
@@ -987,6 +1063,9 @@ func RunCountLoop(kind int, n, acc Value) Value {
 		switch kind {
 		case walkSum:
 			acc = NumAdd(acc, Int(k))
+			for _, x := range extras {
+				acc = NumAdd(acc, x)
+			}
 		case walkCount:
 			acc = NumAdd(acc, Int(1))
 		case walkCollect:
@@ -998,21 +1077,10 @@ func RunCountLoop(kind int, n, acc Value) Value {
 
 // emitCountLoop writes a recognised counting loop as one call into the runtime.
 func (f *irFunc) emitCountLoop(w countLoop) {
-	pack := func(sym *Symbol) string {
-		a := f.reg()
-		fmt.Fprintf(&f.body, "  %s = insertvalue %s undef, i64 %%p_%s.bits, 0\n", a, gsVal, sym.Name)
-		b := f.reg()
-		fmt.Fprintf(&f.body, "  %s = insertvalue %s %s, i64 %%p_%s.tag, 1\n", b, gsVal, a, sym.Name)
-		return b
-	}
-	f.want(gsVal + " @gs_countloop(i32, " + gsVal + ", " + gsVal + ")")
-	n := pack(w.count)
-	acc := pack(w.acc)
-	out := f.reg()
-	fmt.Fprintf(&f.body, "  %s = call %s @gs_countloop(i32 %d, %s %s, %s %s)\n",
-		out, gsVal, int(w.kind), gsVal, n, gsVal, acc)
-	f.listWalkDone = true
-	f.listWalkVal = f.loadVal(out)
+	f.emitCountLoopArgs(w.kind, []irVal{
+		{bits: "%p_" + w.count.Name + ".bits", tag: "%p_" + w.count.Name + ".tag"},
+		{bits: "%p_" + w.acc.Name + ".bits", tag: "%p_" + w.acc.Name + ".tag"},
+	}, nil)
 }
 
 // ---------------------------------------------------------------------------
@@ -1099,4 +1167,343 @@ func (g *irGen) emitTopCall(c topCall, formals []*Symbol, body *strings.Builder,
 	}
 	out := reg()
 	fmt.Fprintf(body, "  %s = call %s @%s(%s)\n", out, gsVal, mangle(c.name), strings.Join(args, ", "))
+}
+
+// ---------------------------------------------------------------------------
+// Looking through a named let
+// ---------------------------------------------------------------------------
+
+// recogniseWalkIn looks for a walk in a procedure body, seeing through a named
+// let if there is one.
+//
+// It returns the shape it found, which is one of the ones the runtime can run;
+// the callers below wrap it so that each recogniser can be asked for its own
+// kind.
+func recogniseWalkIn(name string, formals []*Symbol, body []Value) (loopKind, predKind, walkShape, bool) {
+	// Directly, first: a body that is already a walk needs no rewriting.
+	if k, p, shape, ok := recogniseAnyWalk(name, formals, body); ok {
+		return k, p, shape, true
+	}
+	// Otherwise a named let, whose body is then the walk.
+	nl, ok := parseNamedLet(body)
+	if !ok {
+		return loopNone, predNone, shapeNone, false
+	}
+	inv := map[string]bool{}
+	for _, s := range nl.outer {
+		inv[s.Name] = true
+	}
+	return recogniseAnyWalkInv(nl.loop, nl.vars, nl.body, inv)
+}
+
+// walkShape says which of the recognisers matched, so that the arguments can be
+// passed to the right runtime entry point.
+type walkShape int
+
+const (
+	shapeNone walkShape = iota
+	shapeList
+	shapeVec
+	shapeCount
+)
+
+// recogniseAnyWalk asks each recogniser in turn.
+func recogniseAnyWalk(name string, formals []*Symbol, body []Value) (loopKind, predKind, walkShape, bool) {
+	return recogniseAnyWalkInv(name, formals, body, nil)
+}
+
+// recogniseAnyWalkInv is recogniseAnyWalk with the invariants an enclosing let
+// provides.
+func recogniseAnyWalkInv(name string, formals []*Symbol, body []Value, inv map[string]bool) (loopKind, predKind, walkShape, bool) {
+	if w, ok := recogniseListWalk(name, formals, body); ok {
+		return w.kind, w.pred, shapeList, true
+	}
+	if w, ok := recogniseVecWalk(name, formals, body); ok {
+		return w.kind, w.pred, shapeVec, true
+	}
+	if w, ok := recogniseCountLoopInv(name, formals, body, inv); ok {
+		return w.kind, predNone, shapeCount, true
+	}
+	return loopNone, predNone, shapeNone, false
+}
+
+// namedLetForm is a loop written as a named let, with the bindings that enclose
+// it.
+type namedLetForm struct {
+	// loop is the let's name, which is the procedure the loop calls.
+	loop string
+	// vars and body are the loop's parameters and its body.
+	vars []*Symbol
+	body []Value
+	// init are the expressions the loop's parameters start from, in order.
+	init []Value
+	// outer names the bindings of the lets that enclose the loop, and outerInit
+	// their initial expressions.  These are the loop's invariants — a let binds
+	// once and nothing in the loop's scope can assign it — so their values can
+	// be computed once and handed to the runtime.
+	outer     []*Symbol
+	outerInit []Value
+}
+
+// parseNamedLet recognises a loop written as a named let and collects the
+// bindings around it.
+//
+//	(let ((a 1) (b 2))                     ; enclosing let: invariants
+//	  (let inner ((j i) (acc 0))           ; the loop
+//	    (if (= j 0) acc (inner (- j 1) (+ acc a b)))))
+func parseNamedLet(body []Value) (namedLetForm, bool) {
+	var out namedLetForm
+	if len(body) != 1 {
+		return out, false
+	}
+	cur, ok := body[0].(*Pair)
+	if !ok || !isForm(cur, "let") {
+		return out, false
+	}
+	// Walk inward through anonymous lets, collecting their bindings.  A named
+	// let is where the walk ends.
+	for {
+		parts, _ := ListToSlice(cur.Cdr)
+		if len(parts) < 2 {
+			return out, false
+		}
+		if _, isName := parts[0].(*Symbol); isName {
+			// The loop itself.
+			if len(parts) < 3 {
+				return out, false
+			}
+			out.loop = parts[0].(*Symbol).Name
+			binds, ok := ListToSlice(parts[1])
+			if !ok {
+				return out, false
+			}
+			for _, b := range binds {
+				bp, ok := b.(*Pair)
+				if !ok {
+					return out, false
+				}
+				items, _ := ListToSlice(bp)
+				if len(items) != 2 {
+					return out, false
+				}
+				sym, ok := items[0].(*Symbol)
+				if !ok {
+					return out, false
+				}
+				out.vars = append(out.vars, sym)
+				out.init = append(out.init, items[1])
+			}
+			out.body = parts[2:]
+			return out, true
+		}
+		// An anonymous let: record its bindings, then look at its single body
+		// form, which has to be the loop for this to be the shape.
+		binds, ok := ListToSlice(parts[0])
+		if !ok {
+			return out, false
+		}
+		for _, b := range binds {
+			bp, ok := b.(*Pair)
+			if !ok {
+				return out, false
+			}
+			items, _ := ListToSlice(bp)
+			if len(items) != 2 {
+				return out, false
+			}
+			sym, ok := items[0].(*Symbol)
+			if !ok {
+				return out, false
+			}
+			out.outer = append(out.outer, sym)
+			out.outerInit = append(out.outerInit, items[1])
+		}
+		rest := parts[1:]
+		if len(rest) != 1 {
+			return out, false
+		}
+		next, ok := rest[0].(*Pair)
+		if !ok || !isForm(next, "let") {
+			return out, false
+		}
+		cur = next
+	}
+}
+
+// letBindings lists a let's binding names, and the set of them for lookup.
+func letBindings(letForm Value) ([]*Symbol, map[string]bool) {
+	p, ok := letForm.(*Pair)
+	if !ok || !isForm(p, "let") {
+		return nil, nil
+	}
+	parts, _ := ListToSlice(p.Cdr)
+	if len(parts) < 2 {
+		return nil, nil
+	}
+	// (let NAME ((v i) ...) ...) — skip the name if there is one.
+	if _, isName := parts[0].(*Symbol); isName {
+		if len(parts) < 3 {
+			return nil, nil
+		}
+		parts = parts[1:]
+	}
+	bindings, ok := ListToSlice(parts[0])
+	if !ok {
+		return nil, nil
+	}
+	var names []*Symbol
+	set := map[string]bool{}
+	for _, b := range bindings {
+		bp, ok := b.(*Pair)
+		if !ok {
+			return nil, nil
+		}
+		sym, ok := bp.Car.(*Symbol)
+		if !ok {
+			return nil, nil
+		}
+		names = append(names, sym)
+		set[sym.Name] = true
+	}
+	return names, set
+}
+
+// emitNamedLetScope evaluates the outer let's bindings that the loop uses and
+// returns them as values, in a fixed order.
+func (f *irFunc) emitNamedLetScope(names []*Symbol, _ map[string]bool) []irVal {
+	_ = names
+	return nil
+}
+
+// emitLetInits emits the initial values of a let's bindings.
+func (f *irFunc) emitLetInits(bindingsVal Value) []irVal {
+	bindings, ok := ListToSlice(bindingsVal)
+	if !ok {
+		return nil
+	}
+	out := make([]irVal, 0, len(bindings))
+	for _, b := range bindings {
+		p, ok := b.(*Pair)
+		if !ok {
+			return nil
+		}
+		items, _ := ListToSlice(p)
+		if len(items) != 2 {
+			return nil
+		}
+		v, err := f.emitExpr(items[1])
+		if err != nil {
+			return nil
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// emitWalkCall emits the walk that `body` is, called with the given argument
+// values, and records the result as the function's return value.
+func (f *irFunc) emitWalkCall(loopName string, vars []*Symbol, body []Value, args, extraVals []irVal, inv map[string]bool) {
+	k, pred, shape, ok := recogniseAnyWalkInv(loopName, vars, body, inv)
+	if !ok {
+		return
+	}
+	switch shape {
+	case shapeList:
+		f.emitListWalkArgs(k, pred, args)
+	case shapeVec:
+		f.emitVecWalkArgs(k, pred, args)
+	case shapeCount:
+		f.emitCountLoopArgs(k, args, extraVals)
+	}
+}
+
+// emitListWalkArgs calls the list walk with the list and accumulator given.
+func (f *irFunc) emitListWalkArgs(kind loopKind, pred predKind, args []irVal) {
+	if len(args) != 2 {
+		return
+	}
+	f.want(gsVal + " @gs_walk(i32, i32, " + gsVal + ", " + gsVal + ")")
+	a := args[0].bits0(f)
+	b := args[1].bits0(f)
+	out := f.reg()
+	fmt.Fprintf(&f.body, "  %s = call %s @gs_walk(i32 %d, i32 %d, %s %s, %s %s)\n",
+		out, gsVal, int(kind), int(pred), gsVal, a, gsVal, b)
+	f.listWalkDone = true
+	f.listWalkVal = f.loadVal(out)
+}
+
+// emitCountLoopArgs calls the counting walk with the count and accumulator given.
+func (f *irFunc) emitCountLoopArgs(kind loopKind, args []irVal, extras []irVal) {
+	if len(args) != 2 {
+		return
+	}
+	f.want(gsVal + " @gs_countloop(i32, " + gsVal + "*, i32)")
+	slot := f.allocaArray(2 + len(extras))
+	for i, v := range args {
+		f.storeArg(slot, i, v)
+	}
+	for i, v := range extras {
+		f.storeArg(slot, 2+i, v)
+	}
+	out := f.reg()
+	fmt.Fprintf(&f.body, "  %s = call %s @gs_countloop(i32 %d, %s* %s, i32 %d)\n",
+		out, gsVal, int(kind), gsVal, slot, len(extras))
+	f.listWalkDone = true
+	f.listWalkVal = f.loadVal(out)
+}
+
+// emitVecWalkArgs calls the vector walk with all four arguments given.
+func (f *irFunc) emitVecWalkArgs(kind loopKind, pred predKind, args []irVal) {
+	if len(args) != 4 {
+		return
+	}
+	f.want(gsVal + " @gs_vecwalk(i32, i32, " + gsVal + "*)")
+	slot := f.allocaArray(4)
+	for i, v := range args {
+		f.storeArg(slot, i, v)
+	}
+	out := f.reg()
+	fmt.Fprintf(&f.body, "  %s = call %s @gs_vecwalk(i32 %d, i32 %d, %s* %s)\n",
+		out, gsVal, int(kind), int(pred), gsVal, slot)
+	f.listWalkDone = true
+	f.listWalkVal = f.loadVal(out)
+}
+
+// emitNamedLetLoop emits a loop written as a named let.
+//
+// The loop's starting values and the enclosing lets' bindings are all ordinary
+// expressions, evaluated here in the scopes they belong to; only the *loop*
+// has to be the recognised shape.  That split matters: `(let ((a (* 2 3))) ...)`
+// is fine because evaluating `a` is something the compiler can already do, while
+// the loop body is what has to match.
+func (f *irFunc) emitNamedLetLoop(nl namedLetForm) {
+	inv := map[string]bool{}
+	for _, s := range nl.outer {
+		inv[s.Name] = true
+	}
+	if _, _, shape, ok := recogniseAnyWalkInv(nl.loop, nl.vars, nl.body, inv); !ok || shape == shapeNone {
+		return
+	}
+	// The enclosing bindings first, then the loop's own parameters: the loop
+	// body may mention both, and the enclosing ones are the invariants.
+	outerVals := make([]irVal, 0, len(nl.outerInit))
+	for _, e := range nl.outerInit {
+		v, err := f.emitExpr(e)
+		if err != nil {
+			return
+		}
+		outerVals = append(outerVals, v)
+	}
+	vals := make([]irVal, 0, len(nl.init))
+	for _, e := range nl.init {
+		v, err := f.emitExpr(e)
+		if err != nil {
+			return
+		}
+		vals = append(vals, v)
+	}
+	if len(vals) != len(nl.vars) {
+		return
+	}
+	f.emitWalkCall(nl.loop, nl.vars, nl.body, vals, outerVals, inv)
 }

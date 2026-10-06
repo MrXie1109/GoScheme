@@ -282,19 +282,18 @@ func (g *irGen) program(forms []Value) error {
 		}
 	}
 	for _, p := range procs {
+		// A recognised walk is accepted before the body is scanned, and that
+		// order matters: the scan understands the forms it can emit, and a loop
+		// written as a named let is not one of them — it is `(let NAME (...) ...)`,
+		// which the scanner calls malformed bindings.  The walk is emitted as a
+		// whole, so there is nothing in it for the scan to judge.
+		if _, _, _, isWalk := recogniseWalkIn(p.name, p.formals, p.body); isWalk {
+			g.pure[p.name] = &pureProc{name: p.name, formals: p.formals, body: p.body}
+			continue
+		}
 		r := pureBodyIn(p.name, p.formals, p.body, candidates)
 		if !r.ok {
 			g.refused = append(g.refused, p.name+": "+r.why)
-			continue
-		}
-		// A recognised list walk is exempt from the cost rule: the rule exists
-		// to avoid compiling a body that crosses the boundary once per element,
-		// and a walk crosses once for the whole list.
-		_, isListWalk := recogniseListWalk(p.name, p.formals, p.body)
-		_, isVecWalk := recogniseVecWalk(p.name, p.formals, p.body)
-		_, isCountLoop := recogniseCountLoop(p.name, p.formals, p.body)
-		if isListWalk || isVecWalk || isCountLoop {
-			g.pure[p.name] = &pureProc{name: p.name, formals: p.formals, body: p.body, calls: r.calls}
 			continue
 		}
 		if why := notWorthCompiling(r); why != "" {
