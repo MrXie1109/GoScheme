@@ -4,6 +4,7 @@ package scheme
 
 import (
 	"fmt"
+	. "github.com/MrXie1109/GoScheme/internal/re"
 	"strings"
 )
 
@@ -351,7 +352,7 @@ func paramInt(m *Machine, name string, def int64) int64 {
 	if !ok {
 		return def
 	}
-	i, ok := p.current().(*Integer)
+	i, ok := p.Current().(*Integer)
 	if !ok {
 		return def
 	}

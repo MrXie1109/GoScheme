@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/MrXie1109/GoScheme/internal/re"
 	"github.com/MrXie1109/GoScheme/internal/scheme"
 )
 
@@ -23,7 +24,7 @@ type staticBuilder struct {
 	builtin  map[string]bool // libraries compiled into the interpreter
 	emitted  map[string]bool // libraries already written to the prelude
 	visiting map[string]bool // libraries being resolved, for cycles
-	order    []scheme.Value  // the prelude, dependencies first
+	order    []re.Value      // the prelude, dependencies first
 	search   []string
 }
 
@@ -41,7 +42,7 @@ func resolveStatic(scriptPath string, script []byte, search []string) ([]byte, e
 		b.builtin[name] = true
 	}
 
-	r := scheme.NewStringReader(string(script))
+	r := re.NewStringReader(string(script))
 	r.Source = scriptPath
 	forms, err := r.ReadAll()
 	if err != nil {
@@ -58,7 +59,7 @@ func resolveStatic(scriptPath string, script []byte, search []string) ([]byte, e
 
 	var out strings.Builder
 	for _, lib := range b.order {
-		out.WriteString(scheme.WriteToString(lib))
+		out.WriteString(re.WriteToString(lib))
 		out.WriteString("\n")
 	}
 	out.Write(script)
@@ -67,7 +68,7 @@ func resolveStatic(scriptPath string, script []byte, search []string) ([]byte, e
 
 // resolve walks the forms for imports and pulls in each library's file,
 // dependencies first.
-func (b *staticBuilder) resolve(forms []scheme.Value, baseDir string) error {
+func (b *staticBuilder) resolve(forms []re.Value, baseDir string) error {
 	for _, spec := range importSpecs(forms) {
 		name := scheme.LibraryNameString(spec)
 		if name == "" || b.builtin[name] || b.emitted[name] {
@@ -107,7 +108,7 @@ func (b *staticBuilder) resolve(forms []scheme.Value, baseDir string) error {
 
 // findLibrary maps a library name to its file, the same way the interpreter
 // does at run time: (lib greet) is lib/greet.sld, .scm, .sls or .ss.
-func (b *staticBuilder) findLibrary(spec scheme.Value, baseDir string) (string, bool) {
+func (b *staticBuilder) findLibrary(spec re.Value, baseDir string) (string, bool) {
 	rel := libraryRelPath(spec)
 	if rel == "" {
 		return "", false
@@ -125,14 +126,14 @@ func (b *staticBuilder) findLibrary(spec scheme.Value, baseDir string) (string, 
 }
 
 // rewriteForms inlines every include in the forms, recursively.
-func (b *staticBuilder) rewriteForms(forms []scheme.Value, baseDir string) ([]byte, error) {
+func (b *staticBuilder) rewriteForms(forms []re.Value, baseDir string) ([]byte, error) {
 	var out strings.Builder
 	for _, f := range forms {
 		rewritten, err := b.inlineIncludes(f, baseDir)
 		if err != nil {
 			return nil, err
 		}
-		out.WriteString(scheme.WriteToString(rewritten))
+		out.WriteString(re.WriteToString(rewritten))
 		out.WriteString("\n")
 	}
 	return []byte(out.String()), nil
@@ -141,20 +142,20 @@ func (b *staticBuilder) rewriteForms(forms []scheme.Value, baseDir string) ([]by
 // inlineIncludes replaces (include "file" ...) with a begin of the file's
 // forms, so that a baked-in library needs nothing on disk.  quote and
 // quasiquote are left alone: their contents are data.
-func (b *staticBuilder) inlineIncludes(v scheme.Value, baseDir string) (scheme.Value, error) {
-	pair, ok := v.(*scheme.Pair)
+func (b *staticBuilder) inlineIncludes(v re.Value, baseDir string) (re.Value, error) {
+	pair, ok := v.(*re.Pair)
 	if !ok {
 		return v, nil
 	}
-	if s, ok := pair.Car.(*scheme.Symbol); ok {
+	if s, ok := pair.Car.(*re.Symbol); ok {
 		switch s.Name {
 		case "quote", "quasiquote":
 			return v, nil
 		case "include", "include-ci", "include-library-declarations":
 			fold := s.Name == "include-ci"
-			var forms []scheme.Value
+			var forms []re.Value
 			for _, arg := range sliceOf(pair.Cdr) {
-				name, ok := arg.(*scheme.String)
+				name, ok := arg.(*re.String)
 				if !ok {
 					return nil, fmt.Errorf("%s expects file names", s.Name)
 				}
@@ -176,7 +177,7 @@ func (b *staticBuilder) inlineIncludes(v scheme.Value, baseDir string) (scheme.V
 					forms = append(forms, inner)
 				}
 			}
-			return scheme.Cons(scheme.Intern("begin"), scheme.List(forms...)), nil
+			return re.Cons(re.Intern("begin"), re.List(forms...)), nil
 		}
 	}
 	car, err := b.inlineIncludes(pair.Car, baseDir)
@@ -187,20 +188,20 @@ func (b *staticBuilder) inlineIncludes(v scheme.Value, baseDir string) (scheme.V
 	if err != nil {
 		return nil, err
 	}
-	return scheme.Cons(car, cdr), nil
+	return re.Cons(car, cdr), nil
 }
 
 // importSpecs collects the import sets of every (import ...) form in the tree,
 // with the modifiers (only, except, prefix, rename) stripped.
-func importSpecs(forms []scheme.Value) []scheme.Value {
-	var out []scheme.Value
-	var walk func(v scheme.Value)
-	walk = func(v scheme.Value) {
-		pair, ok := v.(*scheme.Pair)
+func importSpecs(forms []re.Value) []re.Value {
+	var out []re.Value
+	var walk func(v re.Value)
+	walk = func(v re.Value) {
+		pair, ok := v.(*re.Pair)
 		if !ok {
 			return
 		}
-		if s, ok := pair.Car.(*scheme.Symbol); ok {
+		if s, ok := pair.Car.(*re.Symbol); ok {
 			switch s.Name {
 			case "quote", "quasiquote":
 				return
@@ -221,12 +222,12 @@ func importSpecs(forms []scheme.Value) []scheme.Value {
 }
 
 // baseLibraryName strips the import modifiers from an import set.
-func baseLibraryName(spec scheme.Value) scheme.Value {
-	pair, ok := spec.(*scheme.Pair)
+func baseLibraryName(spec re.Value) re.Value {
+	pair, ok := spec.(*re.Pair)
 	if !ok {
 		return spec
 	}
-	s, ok := pair.Car.(*scheme.Symbol)
+	s, ok := pair.Car.(*re.Symbol)
 	if !ok {
 		return spec
 	}
@@ -243,19 +244,19 @@ func baseLibraryName(spec scheme.Value) scheme.Value {
 
 // libraryRelPath turns a library name into a relative path: (lib greet) is
 // lib/greet.
-func libraryRelPath(spec scheme.Value) string {
-	items, ok := scheme.ListToSlice(spec)
+func libraryRelPath(spec re.Value) string {
+	items, ok := re.ListToSlice(spec)
 	if !ok || len(items) == 0 {
 		return ""
 	}
 	segs := make([]string, 0, len(items))
 	for _, it := range items {
 		switch x := it.(type) {
-		case *scheme.Symbol:
+		case *re.Symbol:
 			segs = append(segs, x.Name)
-		case *scheme.Integer:
+		case *re.Integer:
 			segs = append(segs, x.String())
-		case *scheme.String:
+		case *re.String:
 			segs = append(segs, x.Value())
 		default:
 			return ""
@@ -265,26 +266,26 @@ func libraryRelPath(spec scheme.Value) string {
 }
 
 // sliceOf returns the elements of a proper list; a non-list yields nothing.
-func sliceOf(v scheme.Value) []scheme.Value {
-	items, _ := scheme.ListToSlice(v)
+func sliceOf(v re.Value) []re.Value {
+	items, _ := re.ListToSlice(v)
 	return items
 }
 
-func parseForms(src string) ([]scheme.Value, error) {
-	r := scheme.NewStringReader(src)
+func parseForms(src string) ([]re.Value, error) {
+	r := re.NewStringReader(src)
 	return r.ReadAll()
 }
 
-func readFormsFrom(path string) ([]scheme.Value, error) {
+func readFormsFrom(path string) ([]re.Value, error) {
 	return readFormsFromFold(path, false)
 }
 
-func readFormsFromFold(path string, fold bool) ([]scheme.Value, error) {
+func readFormsFromFold(path string, fold bool) ([]re.Value, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	r := scheme.NewStringReader(string(data))
+	r := re.NewStringReader(string(data))
 	r.Source = path
 	r.FoldCase = fold
 	return r.ReadAll()

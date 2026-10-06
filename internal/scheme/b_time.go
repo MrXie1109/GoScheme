@@ -2,7 +2,10 @@
 
 package scheme
 
-import "time"
+import (
+	. "github.com/MrXie1109/GoScheme/internal/re"
+	"time"
+)
 
 // The (goscheme time) library fills in what R7RS-small leaves out: the report
 // offers current-second and current-jiffy, whose epochs are deliberately
@@ -28,7 +31,7 @@ func installTime(m *Machine) {
 	// cannot see the cancel channel has to sleep to the end, and "anything can
 	// be abandoned with Ctrl-C" is the REPL's promise.
 	m.def("sleep", 1, 1, func(m *Machine, a []Value) {
-		ms := asFloat(wantReal("sleep", a[0]))
+		ms := AsFloat(wantReal("sleep", a[0]))
 		if ms > 0 && !m.sleepFor(time.Duration(ms*float64(time.Millisecond))) {
 			m.RaiseError(interruptedErr())
 			return

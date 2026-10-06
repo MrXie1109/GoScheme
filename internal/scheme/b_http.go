@@ -3,6 +3,8 @@
 package scheme
 
 import (
+	"fmt"
+	. "github.com/MrXie1109/GoScheme/internal/re"
 	"io"
 	"net"
 	"net/http"
@@ -28,12 +30,22 @@ type HTTPRequest struct {
 	body    string
 }
 
+// SchemeDescribe prints the request; see re.Describer.
+func (r *HTTPRequest) SchemeDescribe(Printer) string {
+	return fmt.Sprintf("#<http-request %s %s>", r.method, r.path)
+}
+
 // HTTPResponse is what a handler returns.
 type HTTPResponse struct {
 	status      int64
 	body        string
 	contentType string
 	headers     map[string]string
+}
+
+// SchemeDescribe prints the response; see re.Describer.
+func (r *HTTPResponse) SchemeDescribe(Printer) string {
+	return fmt.Sprintf("#<http-response %d, %d bytes>", r.status, len(r.body))
 }
 
 // HTTPServer is a running server.
@@ -43,6 +55,11 @@ type HTTPServer struct {
 	ln       net.Listener
 	closed   bool
 	requests int64
+}
+
+// SchemeDescribe prints the server; see re.Describer.
+func (s *HTTPServer) SchemeDescribe(Printer) string {
+	return fmt.Sprintf("#<http-server %s>", s.ln.Addr().String())
 }
 
 const httpClientTimeout = 30 * time.Second

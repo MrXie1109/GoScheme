@@ -3,6 +3,7 @@
 package scheme
 
 import (
+	. "github.com/MrXie1109/GoScheme/internal/re"
 	"strings"
 	"unicode"
 	"unicode/utf8"

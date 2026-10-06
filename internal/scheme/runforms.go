@@ -2,6 +2,10 @@
 
 package scheme
 
+import (
+	. "github.com/MrXie1109/GoScheme/internal/re"
+)
+
 // Running a sequence of top-level forms.
 //
 // This is what a file, `-e`, the REPL and `load` all go through: each form is

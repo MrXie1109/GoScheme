@@ -2,7 +2,10 @@
 
 package scheme
 
-import "testing"
+import (
+	. "github.com/MrXie1109/GoScheme/internal/re"
+	"testing"
+)
 
 // The benchmark panel: the same programs run by the bytecode VM and by the
 // tree-walker, so that the two execution paths can be compared on more than one

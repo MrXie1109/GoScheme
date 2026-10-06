@@ -3,6 +3,7 @@
 package scheme
 
 import (
+	. "github.com/MrXie1109/GoScheme/internal/re"
 	"math"
 	"sort"
 )
@@ -618,7 +619,7 @@ func installFastVectors(m *Machine, lib string) {
 		vec := wantVector("vector-norm", a[0])
 		sum := 0.0
 		for _, v := range vec.Items {
-			f := asFloat(wantNumber("vector-norm", v))
+			f := AsFloat(wantNumber("vector-norm", v))
 			sum += f * f
 		}
 		return Float(math.Sqrt(sum)), nil

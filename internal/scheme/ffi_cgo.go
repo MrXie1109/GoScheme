@@ -102,6 +102,7 @@ import "C"
 
 import (
 	"fmt"
+	. "github.com/MrXie1109/GoScheme/internal/re"
 	"unsafe"
 )
 
@@ -114,6 +115,11 @@ func init() { ffiAvailable = true }
 type ForeignLibrary struct {
 	Name   string
 	handle unsafe.Pointer
+}
+
+// SchemeDescribe prints the library; see re.Describer.
+func (l *ForeignLibrary) SchemeDescribe(Printer) string {
+	return fmt.Sprintf("#<foreign-library %s>", l.Name)
 }
 
 // ffiKind is the type of one foreign argument or result.
@@ -438,7 +444,7 @@ func ffiNumber(name string, v Value) (float64, error) {
 	if !IsReal(v) {
 		return 0, errf(name, "expected a real number but got %s", WriteToString(v))
 	}
-	return asFloat(v), nil
+	return AsFloat(v), nil
 }
 
 func ffiInteger(name string, v Value) (int64, error) {

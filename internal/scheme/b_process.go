@@ -4,6 +4,7 @@ package scheme
 
 import (
 	"errors"
+	. "github.com/MrXie1109/GoScheme/internal/re"
 	"io"
 	"os"
 	"os/exec"
@@ -101,7 +102,7 @@ func installProcess(m *Machine) {
 	// the same package it reaches it straight through the port's closer.
 	m.defSimple("process-status", 1, 1, func(a []Value) (Value, error) {
 		p := wantPort("process-status", a[0])
-		ps, ok := p.closer.(*processStream)
+		ps, ok := p.Closer().(*processStream)
 		if !ok {
 			return nil, errf("process-status", "expected a port from open-input-process or open-output-process but got %s", WriteToString(a[0]))
 		}

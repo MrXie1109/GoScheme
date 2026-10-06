@@ -2,6 +2,10 @@
 
 package scheme
 
+import (
+	. "github.com/MrXie1109/GoScheme/internal/re"
+)
+
 // The comparison instructions.
 //
 // A call to < costs a type assertion on the operator, an arity check and an
@@ -46,16 +50,16 @@ func smallIntOp(op opcode, vals []Value) (int64, smallIntKind) {
 	if len(vals) == 0 {
 		return 0, smallIntNo // (=) and (<) with no arguments: the primitive's
 	}
-	prev, ok := vals[0].(*Integer)
-	if !ok || !prev.small {
+	prev, ok := smallInt(vals[0])
+	if !ok {
 		return 0, smallIntNo
 	}
 	for _, v := range vals[1:] {
-		cur, ok := v.(*Integer)
-		if !ok || !cur.small {
+		cur, ok := smallInt(v)
+		if !ok {
 			return 0, smallIntNo
 		}
-		less, equal := prev.i < cur.i, prev.i == cur.i
+		less, equal := prev < cur, prev == cur
 		ok = true
 		switch op {
 		case opNumLt:

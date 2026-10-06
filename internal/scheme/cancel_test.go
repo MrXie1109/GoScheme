@@ -4,6 +4,7 @@ package scheme
 
 import (
 	"errors"
+	. "github.com/MrXie1109/GoScheme/internal/re"
 	"testing"
 	"time"
 )

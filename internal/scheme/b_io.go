@@ -4,6 +4,7 @@ package scheme
 
 import (
 	"bufio"
+	. "github.com/MrXie1109/GoScheme/internal/re"
 	"io"
 )
 
@@ -70,11 +71,11 @@ func installIO(m *Machine) {
 	}, libBase)
 	m.defSimple("input-port-open?", 1, 1, func(a []Value) (Value, error) {
 		p := wantPort("input-port-open?", a[0])
-		return BooleanOf(p.IsInput && !p.closed), nil
+		return BooleanOf(p.IsInput && !p.Closed()), nil
 	}, libBase)
 	m.defSimple("output-port-open?", 1, 1, func(a []Value) (Value, error) {
 		p := wantPort("output-port-open?", a[0])
-		return BooleanOf(p.IsOut && !p.closed), nil
+		return BooleanOf(p.IsOut && !p.Closed()), nil
 	}, libBase)
 	m.defSimple("close-port", 1, 1, func(a []Value) (Value, error) {
 		p := wantPort("close-port", a[0])

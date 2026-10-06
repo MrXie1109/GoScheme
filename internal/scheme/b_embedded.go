@@ -2,6 +2,10 @@
 
 package scheme
 
+import (
+	. "github.com/MrXie1109/GoScheme/internal/re"
+)
+
 // Some extensions are easier to express in Scheme than in Go: a macro such as
 // with-mutex, or the whole of (goscheme match).  The helpers here load such
 // source from a string that is compiled into the binary, so a program that

@@ -3,6 +3,7 @@
 package scheme
 
 import (
+	. "github.com/MrXie1109/GoScheme/internal/re"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -36,7 +37,7 @@ func runSuiteMode(t *testing.T, file string, interpret bool) (string, int, error
 	m := NewMachine()
 	m.Interpret = interpret
 	m.CurOut = out
-	m.OutParam.values[0] = out
+	m.OutParam.Values()[0] = out
 
 	shim := filepath.Join("..", "..", "test", "scheme", "chibi", "test.scm")
 	if err := runFile(m, shim); err != nil {
@@ -261,7 +262,7 @@ func TestExamples(t *testing.T) {
 			out := NewOutputStringPort()
 			m := NewMachine()
 			m.CurOut = out
-			m.OutParam.values[0] = out
+			m.OutParam.Values()[0] = out
 			// (command-line) as the command line interpreter would set it, so
 			// an example that reports its own arguments still works.
 			m.Args = []string{file}
@@ -313,7 +314,7 @@ func TestExitRunsWindThunks(t *testing.T) {
 	out := NewOutputStringPort()
 	m := NewMachine()
 	m.CurOut = out
-	m.OutParam.values[0] = out
+	m.OutParam.Values()[0] = out
 
 	_, err := m.EvalString(`
 		(dynamic-wind
@@ -331,7 +332,7 @@ func TestExitRunsWindThunks(t *testing.T) {
 	out = NewOutputStringPort()
 	m = NewMachine()
 	m.CurOut = out
-	m.OutParam.values[0] = out
+	m.OutParam.Values()[0] = out
 	if _, err := m.EvalString(`
 		(dynamic-wind
 		  (lambda () (display "before "))
@@ -353,7 +354,7 @@ func TestExitRunsWindThunks(t *testing.T) {
 // not the other would show up as a character that prints in a form the reader
 // rejects — which is a program that writes a file it cannot read.
 func TestCharacterNamesRoundTrip(t *testing.T) {
-	for r, name := range namedChars {
+	for r, name := range NamedChars() {
 		printed := WriteToString(Char(r))
 		if printed != `#\`+name {
 			t.Errorf("printing %q gave %s, want #\\%s", string(r), printed, name)

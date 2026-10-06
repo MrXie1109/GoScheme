@@ -3,6 +3,8 @@
 package scheme
 
 import (
+	"fmt"
+	. "github.com/MrXie1109/GoScheme/internal/re"
 	"sync"
 	"sync/atomic"
 )
@@ -22,11 +24,19 @@ type Mutex struct {
 	mu sync.Mutex
 }
 
+// SchemeDescribe prints the lock; see re.Describer.
+func (*Mutex) SchemeDescribe(Printer) string { return "#<mutex>" }
+
 // WaitGroup waits for a collection of interpreter threads to finish.
 type WaitGroup struct {
 	mu    sync.Mutex
 	count int64
 	wg    sync.WaitGroup
+}
+
+// SchemeDescribe prints the group; see re.Describer.
+func (w *WaitGroup) SchemeDescribe(Printer) string {
+	return fmt.Sprintf("#<waitgroup count=%d>", w.count)
 }
 
 // Once runs a thunk the first time it is asked, and remembers the value.
@@ -36,10 +46,24 @@ type Once struct {
 	val  Value
 }
 
+// SchemeDescribe prints the once; see re.Describer.
+func (o *Once) SchemeDescribe(Printer) string {
+	state := "not run"
+	if o.done {
+		state = "done"
+	}
+	return fmt.Sprintf("#<once %s>", state)
+}
+
 // Atomic is an exact integer that may be read and changed from several
 // interpreter threads without a lock.
 type Atomic struct {
 	n atomic.Int64
+}
+
+// SchemeDescribe prints the counter; see re.Describer.
+func (a *Atomic) SchemeDescribe(Printer) string {
+	return fmt.Sprintf("#<atomic %d>", a.n.Load())
 }
 
 func installSync(m *Machine) {

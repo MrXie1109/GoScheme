@@ -3,6 +3,7 @@
 package scheme
 
 import (
+	. "github.com/MrXie1109/GoScheme/internal/re"
 	"sync"
 	"sync/atomic"
 )
@@ -150,8 +151,8 @@ func (e *Env) LookupWithFrame(sym *Symbol) (Value, *Env, bool) {
 		// definition environment; the frame found there is the one to cache
 		// against, and it is returned so that the caller invalidates on it.
 		if def := markEnvOf(sym.Mark); def != nil {
-			if sym.orig != nil {
-				if v, frame, ok := def.LookupWithFrame(sym.orig); ok {
+			if sym.Orig() != nil {
+				if v, frame, ok := def.LookupWithFrame(sym.Orig()); ok {
 					return v, frame, true
 				}
 			}
@@ -215,7 +216,7 @@ func (e *Env) Set(sym *Symbol, v Value) bool {
 	}
 	if sym.Mark != 0 {
 		if def := markEnvOf(sym.Mark); def != nil {
-			if sym.orig != nil && def.Set(sym.orig, v) {
+			if sym.Orig() != nil && def.Set(sym.Orig(), v) {
 				return true
 			}
 			return def.Set(sym.Base(), v)
@@ -241,8 +242,8 @@ func (e *Env) Lookup(sym *Symbol) (Value, bool) {
 	}
 	if sym.Mark != 0 {
 		if def := markEnvOf(sym.Mark); def != nil {
-			if sym.orig != nil {
-				if v, ok := def.Lookup(sym.orig); ok {
+			if sym.Orig() != nil {
+				if v, ok := def.Lookup(sym.Orig()); ok {
 					return v, true
 				}
 			}

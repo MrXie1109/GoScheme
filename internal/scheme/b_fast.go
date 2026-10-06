@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	. "github.com/MrXie1109/GoScheme/internal/re"
 	"sort"
 	"strings"
 	"unicode"

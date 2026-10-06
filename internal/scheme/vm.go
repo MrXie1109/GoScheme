@@ -4,6 +4,7 @@ package scheme
 
 import (
 	"fmt"
+	. "github.com/MrXie1109/GoScheme/internal/re"
 	"sync"
 )
 
@@ -259,7 +260,7 @@ var caseLambdaHelper = &Primitive{Name: "case-lambda", MinArgs: 1, MaxArgs: -1, 
 				return
 			}
 			if out.Env == nil {
-				out.Env, out.Vm, out.Name = c.Env, c.Vm, c.Name
+				out.Env, out.Vm, out.Name = envOf(c.Env), vmOf(c.Vm), c.Name
 			}
 			out.Clauses = append(out.Clauses, c.Clauses[0])
 		}
@@ -295,9 +296,7 @@ var guardHelper = &Primitive{Name: "guard-helper", MinArgs: 2, MaxArgs: 2,
 			Fn: func(mm *Machine, hargs []Value) {
 				// Escaping from the body must run the after thunks of every
 				// wind frame that is being left, and then the clauses.
-				target := &Continuation{
-					stack: stack, winds: winds, hands: hands, owner: mm,
-				}
+				target := mm.captureContinuationFrom(stack, winds, hands)
 				mm.transferToWith(target, func(mm *Machine) {
 					mm.apply(clauses, hargs)
 				})
@@ -516,16 +515,16 @@ var errNotCompiled = fmt.Errorf("not compiled")
 // applyCompiled applies a compiled clause: the arguments are bound into a
 // frame, with a cell for every parameter that set! can change.
 func (m *Machine) applyCompiled(c *Closure, clause *ClosureClause, args []Value) {
-	vmRun(m, clause.Code, 0, frameFor(c, clause, args), c.Env, nil)
+	vmRun(m, codeOf(clause.Code), 0, frameFor(c, clause, args), envOf(c.Env), nil)
 }
 
 // frameFor binds the arguments of a chosen compiled clause into a fresh frame.
 // The values are copied out of args, so the caller's operand stack is free
 // again the moment this returns.
 func frameFor(c *Closure, clause *ClosureClause, args []Value) *vmEnv {
-	code := clause.Code
+	code := codeOf(clause.Code)
 	params := clause.Params
-	env := newVMEnv(c.Vm, code.NSlots)
+	env := newVMEnv(vmOf(c.Vm), code.NSlots)
 	slots := env.slots
 	for i := range params {
 		if code.Boxed[i] {
@@ -625,7 +624,7 @@ func compiledClause(proc Value, args []Value) (vmCallee, bool) {
 	if cl.Code == nil || !arityMatches(cl, len(args)) {
 		return vmCallee{}, false
 	}
-	return vmCallee{code: cl.Code, env: frameFor(c, cl, args), globals: c.Env}, true
+	return vmCallee{code: codeOf(cl.Code), env: frameFor(c, cl, args), globals: envOf(c.Env)}, true
 }
 
 // syncCall is how a call to a simple primitive (one whose Sync is set) ended.
@@ -657,7 +656,7 @@ func (m *Machine) callSyncPrimitive(proc Value, args []Value) (Value, syncCall) 
 		return nil, syncNone // let the general path report the arity error
 	}
 	m.returning = false
-	p.Fn(m, args)
+	primitiveFn(p)(m, args)
 	if !m.returning {
 		if m.pending == nil {
 			m.Raise(NewError("primitive did not return a value: " + p.Name))
@@ -768,7 +767,7 @@ func vmRun(m *Machine, code *Code, ip int, env *vmEnv, globals *Env, vals []Valu
 				sub.HasRest, env, globals))
 		case opInterpClosure:
 			form := code.Consts[in.arg1]
-			cl, err := makeClosure(car(cdr(form)), mustSlice(cdr(cdr(form))), globals)
+			cl, err := makeClosure(Car(Cdr(form)), mustSlice(Cdr(Cdr(form))), globals)
 			if err != nil {
 				m.RaiseError(err)
 				return
@@ -827,15 +826,14 @@ func vmRun(m *Machine, code *Code, ip int, env *vmEnv, globals *Env, vals []Valu
 			// helper sets up a loop and a slice, and the whole point of this
 			// instruction is that it costs less than the call it replaced.
 			if n == 2 {
-				if x, ok := args[0].(*Integer); ok && x.small {
-					if y, ok := args[1].(*Integer); ok && y.small {
+				if a, ok := smallInt(args[0]); ok {
+					if b, ok := smallInt(args[1]); ok {
 						// Written out rather than called: the instruction loop
 						// is far too large for the compiler to inline anything
 						// into it, so a helper call here would be paid on
 						// every comparison.  That is what the arithmetic
 						// instructions measured slower for, and why only the
 						// comparisons are instructions.
-						a, b := x.i, y.i
 						switch in.op {
 						case opNumLt:
 							vals = append(vals[:base], BooleanOf(a < b))

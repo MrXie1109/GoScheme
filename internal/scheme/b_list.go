@@ -2,6 +2,10 @@
 
 package scheme
 
+import (
+	. "github.com/MrXie1109/GoScheme/internal/re"
+)
+
 func installLists(m *Machine) {
 	m.defSimple("pair?", 1, 1, func(a []Value) (Value, error) {
 		_, ok := a[0].(*Pair)

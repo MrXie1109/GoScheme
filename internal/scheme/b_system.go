@@ -3,6 +3,7 @@
 package scheme
 
 import (
+	. "github.com/MrXie1109/GoScheme/internal/re"
 	"os"
 	"strings"
 	"time"
@@ -87,11 +88,11 @@ func installSystem(m *Machine) {
 			return
 		}
 		before := &Primitive{Name: "install-input-port", Fn: func(mm *Machine, _ []Value) {
-			mm.InParam.push(p)
+			mm.InParam.Push(p)
 			mm.Return(UnspecifiedValue)
 		}}
 		after := &Primitive{Name: "restore-input-port", Fn: func(mm *Machine, _ []Value) {
-			mm.InParam.pop()
+			mm.InParam.Pop()
 			_ = p.Close()
 			mm.Return(UnspecifiedValue)
 		}}
@@ -107,11 +108,11 @@ func installSystem(m *Machine) {
 			return
 		}
 		before := &Primitive{Name: "install-output-port", Fn: func(mm *Machine, _ []Value) {
-			mm.OutParam.push(p)
+			mm.OutParam.Push(p)
 			mm.Return(UnspecifiedValue)
 		}}
 		after := &Primitive{Name: "restore-output-port", Fn: func(mm *Machine, _ []Value) {
-			mm.OutParam.pop()
+			mm.OutParam.Pop()
 			_ = p.Flush()
 			_ = p.Close()
 			mm.Return(UnspecifiedValue)

@@ -2,7 +2,9 @@
 
 package scheme
 
-import "testing"
+import (
+	"testing"
+)
 
 // The benchmarks are the ones the README quotes and the ones the hot paths
 // show up in: a recursive call chain, a tail loop, arithmetic in a loop, list

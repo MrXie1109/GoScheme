@@ -2,7 +2,9 @@
 
 package scheme
 
-import "testing"
+import (
+	"testing"
+)
 
 const fibSrc = `(define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) (fib 20)`
 

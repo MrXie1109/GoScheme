@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-package scheme
+package re
 
 import (
 	"fmt"
@@ -232,8 +232,6 @@ func (p *printer) printRaw(sb *strings.Builder, v Value) {
 		sb.WriteString("#<promise>")
 	case *Port:
 		fmt.Fprintf(sb, "#<%s-port %s>", x.kindName(), x.Name)
-	case *Macro:
-		fmt.Fprintf(sb, "#<syntax %s>", x.Name)
 	case *Record:
 		fmt.Fprintf(sb, "#<%s", x.Type.Name)
 		for i, f := range x.Fields {
@@ -255,38 +253,8 @@ func (p *printer) printRaw(sb *strings.Builder, v Value) {
 			sb.WriteString(WriteToString(ir))
 		}
 		sb.WriteString(">")
-	case *Env:
+	case SchemeEnv:
 		sb.WriteString("#<environment>")
-	case *Hashtable:
-		sb.WriteString("#<hashtable>")
-	case *Channel:
-		state := "open"
-		if x.isClosed() {
-			state = "closed"
-		}
-		fmt.Fprintf(sb, "#<channel cap=%d %s>", x.capacity, state)
-	case *ForeignLibrary:
-		fmt.Fprintf(sb, "#<foreign-library %s>", x.Name)
-	case *Mutex:
-		sb.WriteString("#<mutex>")
-	case *WaitGroup:
-		fmt.Fprintf(sb, "#<waitgroup count=%d>", x.count)
-	case *Once:
-		state := "not run"
-		if x.done {
-			state = "done"
-		}
-		fmt.Fprintf(sb, "#<once %s>", state)
-	case *Atomic:
-		fmt.Fprintf(sb, "#<atomic %d>", x.n.Load())
-	case *TcpListener:
-		fmt.Fprintf(sb, "#<tcp-listener %s>", x.ln.Addr().String())
-	case *HTTPServer:
-		fmt.Fprintf(sb, "#<http-server %s>", x.ln.Addr().String())
-	case *HTTPRequest:
-		fmt.Fprintf(sb, "#<http-request %s %s>", x.method, x.path)
-	case *HTTPResponse:
-		fmt.Fprintf(sb, "#<http-response %d, %d bytes>", x.status, len(x.body))
 	case *MultipleValues:
 		for i, mv := range x.Values {
 			if i > 0 {
@@ -294,16 +262,47 @@ func (p *printer) printRaw(sb *strings.Builder, v Value) {
 			}
 			p.print(sb, mv)
 		}
-	case *Regexp:
-		fmt.Fprintf(sb, "#<regexp %s>", x.re.String())
-	case *Box:
-		sb.WriteString("#<box ")
-		p.print(sb, x.Value)
-		sb.WriteString(">")
 	default:
+		// The interpreter's extension objects — a mutex, a socket, a regexp, a
+		// macro — are declared with the procedures that use them, because
+		// those procedures read their unexported fields and Go allows that only
+		// in the declaring package.  This package cannot name their types, so
+		// it asks: an object that knows how it prints says so, and one that
+		// does not is reported by its Go type as before.
+		if d, ok := v.(Describer); ok {
+			sb.WriteString(d.SchemeDescribe(p))
+			break
+		}
 		fmt.Fprintf(sb, "#<unknown %T>", v)
 	}
 }
+
+// Describer is implemented by a runtime object whose printed form this package
+// cannot know.  The interpreter declares those objects next to the procedures
+// that work on them, and each of them knows the one thing the printer needs.
+//
+// The printer is passed rather than a mode flag because two of these objects
+// print a contained value — a box prints what is inside it, and a
+// multiple-values object prints each of its values — and a contained value has
+// to be printed with the settings the outer call is using, so that display and
+// write differ inside a box exactly as they do outside one.
+type Describer interface {
+	// SchemeDescribe returns the printed form of this object, using p for
+	// anything it contains.
+	SchemeDescribe(p Printer) string
+}
+
+// Printer is what a Describer is handed to print a contained value: this
+// package's printer, as much of it as anything outside needs.  *printer
+// implements it.
+type Printer interface {
+	// Print appends the printed form of v to sb in the current mode.
+	Print(sb *strings.Builder, v Value)
+}
+
+// Print exposes the printer's one method to the interpreter, so that a
+// Describer can print what it contains.
+func (p *printer) Print(sb *strings.Builder, v Value) { p.print(sb, v) }
 
 func (p *printer) printPair(sb *strings.Builder, pr *Pair) {
 	sb.WriteString("(")
@@ -395,6 +394,10 @@ var namedChars = map[rune]string{
 	27:   "escape",
 	127:  "delete",
 }
+
+// NamedChars is the rune-to-name table for the interpreter's tests, which check
+// that every name the printer writes is one the reader accepts.
+func NamedChars() map[rune]string { return namedChars }
 
 func (p *printer) printChar(sb *strings.Builder, r rune) {
 	if p.mode == modeDisplay {

@@ -4,6 +4,7 @@ package scheme
 
 import (
 	"fmt"
+	. "github.com/MrXie1109/GoScheme/internal/re"
 	"os"
 	"path/filepath"
 	"sort"

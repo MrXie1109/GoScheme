@@ -2,6 +2,10 @@
 
 package scheme
 
+import (
+	. "github.com/MrXie1109/GoScheme/internal/re"
+)
+
 // installControl provides the procedure-calling procedures: apply, map,
 // continuations, multiple values, exceptions and promises.
 // continueToken is the condition (continue) raises; a do loop installs a guard
@@ -55,23 +59,13 @@ func installControl(m *Machine) {
 	m.def("call-with-current-continuation", 1, 1, func(m *Machine, a []Value) {
 		proc := wantProcedure("call-with-current-continuation", a[0])
 		m.framesCopied = true
-		k := &Continuation{
-			stack: append([]frame(nil), m.stack...),
-			winds: append([]*windFrame(nil), m.winds...),
-			hands: append([]*handlerFrame(nil), m.hands...),
-			owner: m,
-		}
+		k := m.captureContinuation()
 		m.apply(proc, []Value{k})
 	}, libBase, libR5RS)
 	m.def("call/cc", 1, 1, func(m *Machine, a []Value) {
 		proc := wantProcedure("call/cc", a[0])
 		m.framesCopied = true
-		k := &Continuation{
-			stack: append([]frame(nil), m.stack...),
-			winds: append([]*windFrame(nil), m.winds...),
-			hands: append([]*handlerFrame(nil), m.hands...),
-			owner: m,
-		}
+		k := m.captureContinuation()
 		m.apply(proc, []Value{k})
 	}, libBase, libR5RS)
 
@@ -121,12 +115,12 @@ func installControl(m *Machine) {
 
 	// ------------------------------------------------------- parameters
 	m.def("make-parameter", 1, 2, func(m *Machine, a []Value) {
-		p := &Parameter{Name: "parameter"}
+		p := NewParameter("parameter", nil, false)
 		if len(a) == 2 && !IsFalse(a[1]) {
 			converter := wantProcedure("make-parameter", a[1])
 			p.Converter = converter
 			m.ApplyWith(converter, []Value{a[0]}, func(m *Machine, v Value) {
-				p.values = []Value{v}
+				p.Reset(v)
 				m.Return(p)
 			})
 			return
@@ -134,7 +128,7 @@ func installControl(m *Machine) {
 		if len(a) == 2 {
 			p.Converter = False
 		}
-		p.values = []Value{a[0]}
+		p.Reset(a[0])
 		m.Return(p)
 	}, libBase)
 
@@ -146,7 +140,7 @@ func installControl(m *Machine) {
 		if !ok {
 			panic(errf("%parameter-set-raw!", "expected a parameter but got %s", WriteToString(a[0])))
 		}
-		p.set(a[1])
+		p.Set(a[1])
 		return UnspecifiedValue, nil
 	}, libBase)
 

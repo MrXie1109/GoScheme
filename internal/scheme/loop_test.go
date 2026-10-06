@@ -1,6 +1,7 @@
 package scheme
 
 import (
+	. "github.com/MrXie1109/GoScheme/internal/re"
 	"regexp"
 	"strings"
 	"testing"
@@ -721,7 +722,8 @@ func TestRunMergeAgreesWithASort(t *testing.T) {
 				break
 			}
 			n, _ := pr.Car.(*Integer)
-			listLe = append(listLe, n.i)
+			nv, _ := n.Small()
+			listLe = append(listLe, nv)
 			p = pr.Cdr
 		}
 		sortInts(listLe)

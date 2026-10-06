@@ -2,7 +2,10 @@
 
 package scheme
 
-import "testing"
+import (
+	. "github.com/MrXie1109/GoScheme/internal/re"
+	"testing"
+)
 
 // The REPL evaluates one form at a time through Machine.Run, so a macro defined
 // in one form has to be findable in the next.  This is the bug the corpus cannot
@@ -11,7 +14,7 @@ func TestMacroVisibleToTheNextForm(t *testing.T) {
 	m := NewMachine()
 	out := NewOutputStringPort()
 	m.CurOut = out
-	m.OutParam.values[0] = out
+	m.OutParam.Values()[0] = out
 	forms, err := NewStringReader(`
 		(define-syntax swap!
 		  (syntax-rules () ((_ a b) (let ((tmp a)) (set! a b) (set! b tmp)))))

@@ -5,6 +5,7 @@ package scheme
 import (
 	"encoding/json"
 	"fmt"
+	. "github.com/MrXie1109/GoScheme/internal/re"
 	"io"
 	"math"
 	"math/big"

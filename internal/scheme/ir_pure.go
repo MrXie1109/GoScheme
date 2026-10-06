@@ -4,6 +4,7 @@ package scheme
 
 import (
 	"fmt"
+	. "github.com/MrXie1109/GoScheme/internal/re"
 	"strconv"
 	"strings"
 )
@@ -340,7 +341,7 @@ func (r *pureReport) scanValue(e Value, local map[string]bool, keep bool) {
 		// pointer, so it is listed without a star — with one it matches nothing
 		// and every `#f` in a body looks like something unreadable.
 	default:
-		r.stop("the body contains %s, which is not a literal or a call", typeName(e))
+		r.stop("the body contains %s, which is not a literal or a call", TypeName(e))
 	}
 }
 
@@ -804,10 +805,11 @@ func (f *irFunc) emitExpr(e Value) (irVal, error) {
 		// it is a value that lives as a handle, which is exactly what the tag
 		// is for.  The runtime boxes it once, at entry to the form that uses
 		// it, so the literal still appears in the emitted code as a constant.
-		if !x.small {
+		xv, xSmall := x.Small()
+		if !xSmall {
 			return f.boxedLiteral(x.String())
 		}
-		return irVal{bits: fmt.Sprintf("%d", x.i), tag: tagFixnum}, nil
+		return irVal{bits: fmt.Sprintf("%d", xv), tag: tagFixnum}, nil
 	case Boolean:
 		return boolVal(bool(x)), nil
 	case *Symbol:
@@ -835,7 +837,7 @@ func (f *irFunc) emitExpr(e Value) (irVal, error) {
 		if isSelfEvaluating(e) {
 			return f.boxedLiteral(WriteToString(e))
 		}
-		return irVal{}, fmt.Errorf("ir: cannot emit %s", typeName(e))
+		return irVal{}, fmt.Errorf("ir: cannot emit %s", TypeName(e))
 	}
 }
 
@@ -1187,10 +1189,11 @@ func (f *irFunc) emitLet(args []Value, sequential bool) (irVal, error) {
 func (f *irFunc) emitQuoted(v Value) (irVal, error) {
 	switch x := v.(type) {
 	case *Integer:
-		if !x.small {
+		xv, xSmall := x.Small()
+		if !xSmall {
 			return f.boxedLiteral(x.String())
 		}
-		return fixnumVal(x.i), nil
+		return fixnumVal(xv), nil
 	case Boolean:
 		return boolVal(bool(x)), nil
 	case Empty:

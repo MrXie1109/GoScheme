@@ -4,6 +4,7 @@ package scheme
 
 import (
 	"fmt"
+	. "github.com/MrXie1109/GoScheme/internal/re"
 	"path/filepath"
 	"strings"
 )
@@ -146,12 +147,12 @@ func isAuxSyntax(s *Symbol, env *Env) bool {
 }
 
 func formArgs(form Value) []Value {
-	items, _ := ListToSlice(cdr(form))
+	items, _ := ListToSlice(Cdr(form))
 	return items
 }
 
 func evalBadAux(m *Machine, form Value, env *Env) {
-	m.Raise(NewError("invalid use of auxiliary syntax", car(form)))
+	m.Raise(NewError("invalid use of auxiliary syntax", Car(form)))
 }
 
 // ---------------------------------------------------------------------------
@@ -195,26 +196,26 @@ func expandQQ(tmpl Value, depth int) Value {
 			switch s.Name {
 			case "unquote":
 				if depth == 1 {
-					return cadr(t)
+					return Cadr(t)
 				}
 				return qqList(Intern("cons"), qqQuote(Intern("unquote")),
-					qqList(Intern("cons"), expandQQ(cadr(t), depth-1), qqQuote(Nil)))
+					qqList(Intern("cons"), expandQQ(Cadr(t), depth-1), qqQuote(Nil)))
 			case "quasiquote":
 				return qqList(Intern("cons"), qqQuote(Intern("quasiquote")),
-					qqList(Intern("cons"), expandQQ(cadr(t), depth+1), qqQuote(Nil)))
+					qqList(Intern("cons"), expandQQ(Cadr(t), depth+1), qqQuote(Nil)))
 			case "unquote-splicing":
 				if depth == 1 {
-					return qqList(Intern("append"), cadr(t), qqQuote(Nil))
+					return qqList(Intern("append"), Cadr(t), qqQuote(Nil))
 				}
 				return qqList(Intern("cons"), qqQuote(Intern("unquote-splicing")),
-					qqList(Intern("cons"), expandQQ(cadr(t), depth-1), qqQuote(Nil)))
+					qqList(Intern("cons"), expandQQ(Cadr(t), depth-1), qqQuote(Nil)))
 			}
 		}
 		// Check for splicing in the car.
 		if inner, ok := t.Car.(*Pair); ok {
 			if s, ok := inner.Car.(*Symbol); ok && s.Name == "unquote-splicing" && !s.IsMarked() {
 				if depth == 1 {
-					return qqList(Intern("append"), cadr(inner), expandQQ(t.Cdr, depth))
+					return qqList(Intern("append"), Cadr(inner), expandQQ(t.Cdr, depth))
 				}
 			}
 		}
@@ -593,7 +594,7 @@ func evalBindings(m *Machine, bindings Value, env *Env, fn func(m *Machine, syms
 		case *Pair:
 			name = x.Car
 			if _, isNil := x.Cdr.(Empty); !isNil {
-				init = cadr(x)
+				init = Cadr(x)
 			}
 		default:
 			m.Raise(NewError("malformed binding", b))
@@ -662,7 +663,7 @@ func evalLet(m *Machine, form Value, env *Env) {
 			if _, isNil := p.Cdr.(Empty); isNil {
 				inits = append(inits, UnspecifiedValue)
 			} else {
-				inits = append(inits, cadr(p))
+				inits = append(inits, Cadr(p))
 			}
 		}
 		lam := Cons(Intern("lambda"), Cons(listFromSlice(vars), listFromSlice(args[2:])))
@@ -747,7 +748,7 @@ func evalLetrecCommon(m *Machine, form Value, env *Env, sequential bool) {
 		if _, isNil := p.Cdr.(Empty); isNil {
 			inits = append(inits, UnspecifiedValue)
 		} else {
-			inits = append(inits, cadr(p))
+			inits = append(inits, Cadr(p))
 		}
 	}
 	if err := checkDuplicateVars(syms); err != nil {
@@ -837,7 +838,7 @@ func letValuesForm(name string, args []Value) (Value, error) {
 			}
 			producer := Value(UnspecifiedValue)
 			if _, isNil := p.Cdr.(Empty); !isNil {
-				producer = cadr(p)
+				producer = Cadr(p)
 			}
 			consumer := List(Intern("lambda"), p.Car, expr)
 			expr = List(bindValues,
@@ -853,7 +854,7 @@ func letValuesForm(name string, args []Value) (Value, error) {
 		}
 		producer := Value(UnspecifiedValue)
 		if _, isNil := p.Cdr.(Empty); !isNil {
-			producer = cadr(p)
+			producer = Cadr(p)
 		}
 		fresh, err := freshFormals(p.Car)
 		if err != nil {
@@ -1338,7 +1339,7 @@ func parameterizeExpansion(args []Value) (Value, error) {
 		pSyms = append(pSyms, ps)
 		vSyms = append(vSyms, vs)
 		outerBindings = append(outerBindings, List(ps, p.Car))
-		outerBindings = append(outerBindings, List(vs, cadr(p)))
+		outerBindings = append(outerBindings, List(vs, Cadr(p)))
 		inits = append(inits, ps)
 		inits = append(inits, vs)
 	}
@@ -1399,12 +1400,7 @@ func evalGuard(m *Machine, form Value, env *Env) {
 		cond := hargs[0]
 		// Escaping from the guard's body must run the dynamic-wind after
 		// thunks of every wind frame that is being left.
-		target := &Continuation{
-			stack: append([]frame(nil), guardStack...),
-			winds: append([]*windFrame(nil), guardWinds...),
-			hands: append([]*handlerFrame(nil), guardHands...),
-			owner: m,
-		}
+		target := m.captureContinuationFrom(guardStack, guardWinds, guardHands)
 		m.transferToWith(target, func(m *Machine) {
 			clauseEnv := NewEnv(env)
 			clauseEnv.Define(varSym, cond)
@@ -1545,7 +1541,7 @@ func recordType(args []Value) ([]*Symbol, []Value, error) {
 			Fn: func(m *Machine, a []Value) {
 				r, ok := a[0].(*Record)
 				if !ok || r.Type != rt {
-					m.Raise(wrongTypeName("record of type "+rt.Name, a[0], accName.Name))
+					m.Raise(WrongTypeName("record of type "+rt.Name, a[0], accName.Name))
 					return
 				}
 				m.Return(r.Fields[idx])
@@ -1557,7 +1553,7 @@ func recordType(args []Value) ([]*Symbol, []Value, error) {
 				Fn: func(m *Machine, a []Value) {
 					r, ok := a[0].(*Record)
 					if !ok || r.Type != rt {
-						m.Raise(wrongTypeName("record of type "+rt.Name, a[0], modName.Name))
+						m.Raise(WrongTypeName("record of type "+rt.Name, a[0], modName.Name))
 						return
 					}
 					r.Fields[idx] = a[1]
@@ -1663,9 +1659,9 @@ func evalLetSyntaxCommon(m *Machine, form Value, env *Env, rec bool) {
 			m.Raise(NewError("let-syntax: keyword is not an identifier", p.Car))
 			return
 		}
-		tf, ok := cadr(p).(*Pair)
+		tf, ok := Cadr(p).(*Pair)
 		if !ok {
-			m.Raise(NewError("let-syntax: unsupported transformer", cadr(p)))
+			m.Raise(NewError("let-syntax: unsupported transformer", Cadr(p)))
 			return
 		}
 		kw, _ := tf.Car.(*Symbol)

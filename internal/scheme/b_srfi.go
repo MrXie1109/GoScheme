@@ -2,7 +2,10 @@
 
 package scheme
 
-import "fmt"
+import (
+	"fmt"
+	. "github.com/MrXie1109/GoScheme/internal/re"
+)
 
 // SRFI-1, the list library, as the (srfi 1) builtin library.
 //

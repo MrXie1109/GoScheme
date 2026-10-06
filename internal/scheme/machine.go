@@ -5,6 +5,7 @@ package scheme
 import (
 	"errors"
 	"fmt"
+	. "github.com/MrXie1109/GoScheme/internal/re"
 	"os"
 	"path/filepath"
 	"sort"
@@ -106,9 +107,9 @@ func NewMachine() *Machine {
 	m.CurIn = NewPortFromFile("stdin", os.Stdin, true, true)
 	m.CurOut = NewPortFromFile("stdout", os.Stdout, false, true)
 	m.CurErr = NewPortFromFile("stderr", os.Stderr, false, true)
-	m.InParam = &Parameter{Name: "current-input-port", IsPort: true, values: []Value{m.CurIn}}
-	m.OutParam = &Parameter{Name: "current-output-port", IsPort: true, values: []Value{m.CurOut}}
-	m.ErrParam = &Parameter{Name: "current-error-port", IsPort: true, values: []Value{m.CurErr}}
+	m.InParam = NewParameter("current-input-port", nil, true, m.CurIn)
+	m.OutParam = NewParameter("current-output-port", nil, true, m.CurOut)
+	m.ErrParam = NewParameter("current-error-port", nil, true, m.CurErr)
 	m.Builtin = NewEnvNamed(nil, "builtins")
 	installBuiltins(m)
 	// The arithmetic instructions stand for specific builtins, and the compiler
@@ -556,9 +557,9 @@ func (m *Machine) apply(proc Value, args []Value) {
 			m.raiseErrorf("%s: wrong number of arguments (got %d)", p.Name, len(args))
 			return
 		}
-		p.Fn(m, args)
+		primitiveFn(p)(m, args)
 	case *Continuation:
-		if p.owner != nil && p.owner != m {
+		if p.Owner != nil && p.Owner != m {
 			m.raiseErrorf("continuation invoked from a different interpreter thread")
 			return
 		}
@@ -614,7 +615,7 @@ func (m *Machine) applyClosure(c *Closure, args []Value) {
 		m.applyCompiled(c, clause, args)
 		return
 	}
-	env := NewEnv(c.Env)
+	env := NewEnv(envOf(c.Env))
 	if clause.HasRest {
 		n := len(clause.Params)
 		for i, s := range clause.Params {
@@ -654,54 +655,21 @@ func arityMatches(c *ClosureClause, n int) bool {
 func (m *Machine) applyParameter(p *Parameter, args []Value) {
 	switch len(args) {
 	case 0:
-		m.Return(p.current())
+		m.Return(p.Current())
 	case 1:
 		v := args[0]
 		if p.Converter != nil && p.Converter != Value(False) {
 			m.ApplyWith(p.Converter, []Value{v}, func(m *Machine, cv Value) {
-				p.set(cv)
+				p.Set(cv)
 				m.Return(UnspecifiedValue)
 			})
 			return
 		}
-		p.set(v)
+		p.Set(v)
 		m.Return(UnspecifiedValue)
 	default:
 		m.raiseErrorf("%s: wrong number of arguments", p.Name)
 	}
-}
-
-func (p *Parameter) current() Value {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	if len(p.values) == 0 {
-		return UnspecifiedValue
-	}
-	return p.values[len(p.values)-1]
-}
-
-func (p *Parameter) set(v Value) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if len(p.values) == 0 {
-		p.values = append(p.values, v)
-		return
-	}
-	p.values[len(p.values)-1] = v
-}
-
-func (p *Parameter) push(v Value) {
-	p.mu.Lock()
-	p.values = append(p.values, v)
-	p.mu.Unlock()
-}
-
-func (p *Parameter) pop() {
-	p.mu.Lock()
-	if len(p.values) > 1 {
-		p.values = p.values[:len(p.values)-1]
-	}
-	p.mu.Unlock()
 }
 
 // ---------------------------------------------------------------------------
@@ -719,7 +687,7 @@ func (m *Machine) transferTo(c *Continuation, v Value) {
 // transition has completed (used by guard, which continues evaluating rather
 // than returning a value).
 func (m *Machine) transferToWith(c *Continuation, action func(*Machine)) {
-	cur, tgt := m.winds, c.winds
+	cur, tgt := m.winds, kState(c).winds
 	p := 0
 	for p < len(cur) && p < len(tgt) && cur[p] == tgt[p] {
 		p++
@@ -732,8 +700,8 @@ func (m *Machine) transferToWith(c *Continuation, action func(*Machine)) {
 		thunks = append(thunks, tgt[i].before)
 	}
 	m.winds = append([]*windFrame(nil), tgt...)
-	m.hands = append([]*handlerFrame(nil), c.hands...)
-	m.stack = append([]frame(nil), c.stack...)
+	m.hands = append([]*handlerFrame(nil), kState(c).hands...)
+	m.stack = append([]frame(nil), kState(c).stack...)
 	if len(thunks) == 0 {
 		action(m)
 		return
@@ -857,19 +825,19 @@ func (m *Machine) LookupGlobal(name string) (Value, bool) {
 // SetStandardInput replaces the current input port.
 func (m *Machine) SetStandardInput(p *Port) {
 	m.CurIn = p
-	m.InParam.set(p)
+	m.InParam.Set(p)
 }
 
 // SetStandardOutput replaces the current output port.
 func (m *Machine) SetStandardOutput(p *Port) {
 	m.CurOut = p
-	m.OutParam.set(p)
+	m.OutParam.Set(p)
 }
 
 // SetStandardError replaces the current error port.
 func (m *Machine) SetStandardError(p *Port) {
 	m.CurErr = p
-	m.ErrParam.set(p)
+	m.ErrParam.Set(p)
 }
 
 // AddLoadPath pushes a directory used to resolve include / load.

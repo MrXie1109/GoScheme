@@ -2,6 +2,10 @@
 
 package scheme
 
+import (
+	. "github.com/MrXie1109/GoScheme/internal/re"
+)
+
 func installVectors(m *Machine) {
 	m.defSimple("vector?", 1, 1, func(a []Value) (Value, error) {
 		_, ok := a[0].(*Vector)

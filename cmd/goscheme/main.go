@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MrXie1109/GoScheme/internal/re"
 	"github.com/MrXie1109/GoScheme/internal/scheme"
 )
 
@@ -220,7 +221,7 @@ func runBundled(exe string, info *bundleInfo) int {
 // file format — a packed program is its source, read and run the same way a
 // script is.
 func runPayload(m *scheme.Machine, info *bundleInfo) int {
-	r := scheme.NewStringReader(string(info.Payload))
+	r := re.NewStringReader(string(info.Payload))
 	r.Source = info.Name
 	forms, err := r.ReadAll()
 	if err != nil {
@@ -234,7 +235,7 @@ func runPayload(m *scheme.Machine, info *bundleInfo) int {
 }
 
 func evalString(m *scheme.Machine, src, name string) int {
-	r := scheme.NewStringReader(src)
+	r := re.NewStringReader(src)
 	r.Source = name
 	forms, err := r.ReadAll()
 	if err != nil {
@@ -258,7 +259,7 @@ func loadFile(m *scheme.Machine, path string) int {
 		fmt.Fprintf(os.Stderr, "goscheme: %v\n", err)
 		return 1
 	}
-	r := scheme.NewStringReader(string(data))
+	r := re.NewStringReader(string(data))
 	r.Source = abs
 	forms, err := r.ReadAll()
 	if err != nil {
@@ -325,7 +326,7 @@ func repl(m *scheme.Machine, quiet bool) int {
 	// Everything written to the terminal goes through out, so the REPL knows
 	// where the cursor is even when Scheme code used (display ...).
 	out := newLineTracker(os.Stdout)
-	m.SetStandardOutput(scheme.NewPortFromFile("stdout", out, false, true))
+	m.SetStandardOutput(re.NewPortFromFile("stdout", out, false, true))
 	if !quiet {
 		fmt.Fprintln(out, versionString())
 		fmt.Fprintln(out, "Type (exit) or press Ctrl-D to leave.")
@@ -450,7 +451,7 @@ func replEdited(m *scheme.Machine, ed *lineEditor, stdout, stderr io.Writer, sig
 					return
 				}
 			}
-		case scheme.IsIncomplete(perr):
+		case re.IsIncomplete(perr):
 			prompt = continuationPrompt
 		default:
 			printError(stderr, perr)
@@ -506,7 +507,7 @@ func replOn(m *scheme.Machine, stdin io.Reader, stdout, stderr io.Writer, banner
 					return exitCodeFor(failed)
 				}
 			}
-		case scheme.IsIncomplete(perr):
+		case re.IsIncomplete(perr):
 			// Wait for the rest of the datum.
 			incomplete = true
 		default:
@@ -534,9 +535,9 @@ func replOn(m *scheme.Machine, stdin io.Reader, stdout, stderr io.Writer, banner
 // so means a form that never returns can be abandoned with Ctrl-C, and that a
 // Go panic inside it is reported as one line instead of tearing down the
 // session.  It returns false when the session should end.
-func evalFormInteractive(m *scheme.Machine, form scheme.Value, stdout, stderr io.Writer, sigint <-chan os.Signal) bool {
+func evalFormInteractive(m *scheme.Machine, form re.Value, stdout, stderr io.Writer, sigint <-chan os.Signal) bool {
 	type outcome struct {
-		value scheme.Value
+		value re.Value
 		err   error
 		panic interface{}
 	}
@@ -582,8 +583,8 @@ func evalFormInteractive(m *scheme.Machine, form scheme.Value, stdout, stderr io
 			}
 			printError(stderr, r.err)
 		default:
-			if _, un := r.value.(scheme.Unspecified); !un {
-				fmt.Fprintln(stdout, scheme.WriteToString(r.value))
+			if _, un := r.value.(re.Unspecified); !un {
+				fmt.Fprintln(stdout, re.WriteToString(r.value))
 			}
 		}
 		return true
@@ -608,15 +609,15 @@ func evalFormInteractive(m *scheme.Machine, form scheme.Value, stdout, stderr io
 }
 
 // readForms parses every datum in src.
-func readForms(src string) ([]scheme.Value, error) {
-	r := scheme.NewStringReader(src)
+func readForms(src string) ([]re.Value, error) {
+	r := re.NewStringReader(src)
 	r.Source = "<stdin>"
 	return r.ReadAll()
 }
 
 // evalForm evaluates one datum, reporting its value.  It returns false when
 // the session should end.
-func evalForm(m *scheme.Machine, f scheme.Value, stdout, stderr io.Writer) (keepGoing, failed bool) {
+func evalForm(m *scheme.Machine, f re.Value, stdout, stderr io.Writer) (keepGoing, failed bool) {
 	v, err := m.Run(f, m.Global)
 	if err != nil {
 		if _, ok := err.(*scheme.ExitError); ok {
@@ -625,8 +626,8 @@ func evalForm(m *scheme.Machine, f scheme.Value, stdout, stderr io.Writer) (keep
 		printError(stderr, err)
 		return true, true
 	}
-	if _, un := v.(scheme.Unspecified); !un {
-		fmt.Fprintln(stdout, scheme.WriteToString(v))
+	if _, un := v.(re.Unspecified); !un {
+		fmt.Fprintln(stdout, re.WriteToString(v))
 	}
 	return true, false
 }
@@ -643,7 +644,7 @@ func newREPLLineEditor(m *scheme.Machine, out *lineTracker) *lineEditor {
 	// says no while a form is still open.
 	e.continues = func(text string) bool {
 		_, err := readForms(text)
-		return scheme.IsIncomplete(err)
+		return re.IsIncomplete(err)
 	}
 	return e
 }

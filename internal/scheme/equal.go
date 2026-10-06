@@ -2,7 +2,10 @@
 
 package scheme
 
-import "math"
+import (
+	. "github.com/MrXie1109/GoScheme/internal/re"
+	"math"
+)
 
 // Eq is the eq? predicate.
 func Eq(a, b Value) bool {

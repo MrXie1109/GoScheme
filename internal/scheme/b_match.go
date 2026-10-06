@@ -2,6 +2,10 @@
 
 package scheme
 
+import (
+	. "github.com/MrXie1109/GoScheme/internal/re"
+)
+
 // (goscheme match) — pattern matching.
 //
 // A macro would be the obvious way to write this, and syntax-rules cannot do

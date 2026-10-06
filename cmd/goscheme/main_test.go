@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MrXie1109/GoScheme/internal/re"
 	"github.com/MrXie1109/GoScheme/internal/scheme"
 )
 
@@ -77,7 +78,7 @@ func runREPLWith(t *testing.T, src io.Reader, pending func() bool) (string, stri
 	t.Helper()
 	m := scheme.NewMachine()
 	var out, errOut bytes.Buffer
-	m.SetStandardOutput(scheme.NewPortFromFile("stdout", &out, false, true))
+	m.SetStandardOutput(re.NewPortFromFile("stdout", &out, false, true))
 	replOn(m, src, &out, &errOut, false, pending)
 	return out.String(), errOut.String()
 }
@@ -155,7 +156,7 @@ func editorFor(src string) (*lineEditor, *bytes.Buffer) {
 // what an editor in the REPL is given.
 func incompleteForm(text string) bool {
 	_, err := readForms(text)
-	return scheme.IsIncomplete(err)
+	return re.IsIncomplete(err)
 }
 
 func TestLineEditorBracketedPaste(t *testing.T) {
@@ -251,7 +252,7 @@ func TestREPLCtrlCAbandonsTheExpression(t *testing.T) {
 	m := scheme.NewMachine()
 	var out, errOut bytes.Buffer
 	tracker := newLineTracker(&out)
-	m.SetStandardOutput(scheme.NewPortFromFile("stdout", tracker, false, true))
+	m.SetStandardOutput(re.NewPortFromFile("stdout", tracker, false, true))
 	// "(do" then Enter leaves the reader waiting for more; Ctrl-C gives up on
 	// it; then a complete form, then end of input.
 	ed := newLineEditor(strings.NewReader("(do\n\x03(+ 1 2)\n\x04"), tracker)
@@ -291,7 +292,7 @@ func TestREPLBracketedPasteBlock(t *testing.T) {
 	m := scheme.NewMachine()
 	var out, errOut bytes.Buffer
 	tracker := newLineTracker(&out)
-	m.SetStandardOutput(scheme.NewPortFromFile("stdout", tracker, false, true))
+	m.SetStandardOutput(re.NewPortFromFile("stdout", tracker, false, true))
 	ed := newLineEditor(strings.NewReader("\x1b[200~(+ 1 2)\n(* 3 4)\n\x1b[201~\r\x04"), tracker)
 	ed.continues = incompleteForm
 	replEdited(m, ed, tracker, &errOut, nil)
@@ -390,7 +391,7 @@ func TestREPLPasteWithCarriageReturnsRendersLines(t *testing.T) {
 	m := scheme.NewMachine()
 	var out, errOut bytes.Buffer
 	tracker := newLineTracker(&out)
-	m.SetStandardOutput(scheme.NewPortFromFile("stdout", tracker, false, true))
+	m.SetStandardOutput(re.NewPortFromFile("stdout", tracker, false, true))
 	ed := newLineEditor(strings.NewReader("\x1b[200~(+ 1\r2 3)\x1b[201~\r\x04"), tracker)
 	ed.continues = incompleteForm
 	replEdited(m, ed, tracker, &errOut, nil)
@@ -447,7 +448,7 @@ func TestREPLEvaluationCanBeInterrupted(t *testing.T) {
 	m := scheme.NewMachine()
 	var out, errOut bytes.Buffer
 	tracker := newLineTracker(&out)
-	m.SetStandardOutput(scheme.NewPortFromFile("stdout", tracker, false, true))
+	m.SetStandardOutput(re.NewPortFromFile("stdout", tracker, false, true))
 
 	sigint := make(chan os.Signal, 1)
 	src := "(chan-recv! (make-channel))\n(+ 1 2)\n"
@@ -687,7 +688,7 @@ func TestPackKeepsUnreadableSource(t *testing.T) {
 func runPayloadOnStringPort(t *testing.T, info *bundleInfo) string {
 	t.Helper()
 	m := scheme.NewMachine()
-	out := scheme.NewOutputStringPort()
+	out := re.NewOutputStringPort()
 	m.SetStandardOutput(out)
 	if code := runPayload(m, info); code != 0 {
 		t.Fatalf("runPayload returned %d", code)
@@ -837,7 +838,7 @@ func TestStringEscapes(t *testing.T) {
 	}
 	for src, want := range cases {
 		m := scheme.NewMachine()
-		out := scheme.NewOutputStringPort()
+		out := re.NewOutputStringPort()
 		m.SetStandardOutput(out)
 		if code := evalString(m, "(display "+src+")", "test"); code != 0 {
 			t.Errorf("%s: evalString returned %d", src, code)
@@ -1170,7 +1171,7 @@ func TestCommaCommands(t *testing.T) {
 	m := scheme.NewMachine()
 	var out, errOut bytes.Buffer
 	tracker := newLineTracker(&out)
-	m.SetStandardOutput(scheme.NewPortFromFile("stdout", tracker, false, true))
+	m.SetStandardOutput(re.NewPortFromFile("stdout", tracker, false, true))
 	ed := newLineEditor(strings.NewReader(
 		",help\r,libraries\r,time (+ 1 2)\r,nope\r,quit\r(display 'after)\r"), tracker)
 

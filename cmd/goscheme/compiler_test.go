@@ -5,6 +5,7 @@ package main
 import (
 	"testing"
 
+	"github.com/MrXie1109/GoScheme/internal/re"
 	"github.com/MrXie1109/GoScheme/internal/scheme"
 )
 
@@ -24,7 +25,7 @@ import (
 func runScriptFile(t *testing.T, path string) string {
 	t.Helper()
 	m := scheme.NewMachine()
-	out := scheme.NewOutputStringPort()
+	out := re.NewOutputStringPort()
 	m.SetStandardOutput(out)
 	if code := loadFile(m, path); code != 0 {
 		t.Fatalf("running %s failed with code %d", path, code)

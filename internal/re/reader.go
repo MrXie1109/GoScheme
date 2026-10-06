@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-package scheme
+package re
 
 import (
 	"fmt"

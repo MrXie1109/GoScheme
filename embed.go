@@ -23,13 +23,14 @@ package goscheme
 import (
 	"io"
 
+	"github.com/MrXie1109/GoScheme/internal/re"
 	"github.com/MrXie1109/GoScheme/internal/scheme"
 )
 
 // Value is a Scheme value seen from Go.  It is a small view rather than the
 // interpreter's own value type, so that programs embedding GoScheme do not
 // depend on the interpreter's internals.
-type Value struct{ v scheme.Value }
+type Value struct{ v re.Value }
 
 // Func is a Go function offered to Scheme.  Returning an error raises an
 // ordinary Scheme condition, which the Scheme side may catch with guard.
@@ -75,7 +76,7 @@ func (i *Interp) EvalFile(path string) error {
 
 // Define binds name to a Go function.  maxArgs may be -1 for no limit.
 func (i *Interp) Define(name string, minArgs, maxArgs int, fn Func) {
-	i.m.DefineGoFunc(name, minArgs, maxArgs, func(args []scheme.Value) (scheme.Value, error) {
+	i.m.DefineGoFunc(name, minArgs, maxArgs, func(args []re.Value) (re.Value, error) {
 		converted := make([]Value, len(args))
 		for k, a := range args {
 			converted[k] = Value{a}
@@ -100,7 +101,7 @@ func (i *Interp) Lookup(name string) (Value, bool) {
 // Call applies a Scheme procedure to arguments, from Go.  This is what makes a
 // callback work: a Go function can be handed a Scheme procedure and call it.
 func (i *Interp) Call(proc Value, args ...Value) (Value, error) {
-	internal := make([]scheme.Value, len(args))
+	internal := make([]re.Value, len(args))
 	for k, a := range args {
 		internal[k] = a.v
 	}
@@ -115,7 +116,7 @@ func (i *Interp) Call(proc Value, args ...Value) (Value, error) {
 // SetOutput sends the interpreter's standard output to w, which is how a host
 // program captures what a script displays.
 func (i *Interp) SetOutput(w io.Writer) {
-	i.m.SetStandardOutput(scheme.NewPortFromFile("stdout", w, false, true))
+	i.m.SetStandardOutput(re.NewPortFromFile("stdout", w, false, true))
 }
 
 // SetArgs sets what (command-line) reports, without the program name.
@@ -126,50 +127,50 @@ func (i *Interp) SetArgs(args []string) {
 // ------------------------------------------------------------------- values
 
 // Int builds an exact integer.
-func Int(n int64) Value { return Value{scheme.Int(n)} }
+func Int(n int64) Value { return Value{re.Int(n)} }
 
 // Float builds an inexact number.
-func Float(f float64) Value { return Value{scheme.Float(f)} }
+func Float(f float64) Value { return Value{re.Float(f)} }
 
 // Str builds a string.
-func Str(s string) Value { return Value{scheme.NewString(s)} }
+func Str(s string) Value { return Value{re.NewString(s)} }
 
 // Bool builds a boolean.
-func Bool(b bool) Value { return Value{scheme.BooleanOf(b)} }
+func Bool(b bool) Value { return Value{re.BooleanOf(b)} }
 
 // Nil is the empty list.
-func Nil() Value { return Value{scheme.Nil} }
+func Nil() Value { return Value{re.Nil} }
 
 // List builds a proper list.
 func List(items ...Value) Value {
-	internal := make([]scheme.Value, len(items))
+	internal := make([]re.Value, len(items))
 	for k, it := range items {
 		internal[k] = it.v
 	}
-	return Value{scheme.List(internal...)}
+	return Value{re.List(internal...)}
 }
 
 // String renders the value the way the interpreter's `write` would.
-func (v Value) String() string { return scheme.WriteToString(v.v) }
+func (v Value) String() string { return re.WriteToString(v.v) }
 
 // IsNil reports whether the value is the empty list.
 func (v Value) IsNil() bool {
-	_, ok := v.v.(scheme.Empty)
+	_, ok := v.v.(re.Empty)
 	return ok
 }
 
 // IsFalse reports whether the value is #f, the only false value.
-func (v Value) IsFalse() bool { return scheme.IsFalse(v.v) }
+func (v Value) IsFalse() bool { return re.IsFalse(v.v) }
 
 // Bool reads a boolean.
 func (v Value) Bool() (bool, bool) {
-	b, ok := v.v.(scheme.Boolean)
+	b, ok := v.v.(re.Boolean)
 	return bool(b), ok
 }
 
 // Int reads an exact integer that fits in an int64.
 func (v Value) Int() (int64, bool) {
-	n, ok := v.v.(*scheme.Integer)
+	n, ok := v.v.(*re.Integer)
 	if !ok {
 		return 0, false
 	}
@@ -179,9 +180,9 @@ func (v Value) Int() (int64, bool) {
 // Float reads a number as a float64, accepting exact integers as well.
 func (v Value) Float() (float64, bool) {
 	switch x := v.v.(type) {
-	case scheme.Float:
+	case re.Float:
 		return float64(x), true
-	case *scheme.Integer:
+	case *re.Integer:
 		if n, ok := x.Int64(); ok {
 			return float64(n), true
 		}
@@ -191,7 +192,7 @@ func (v Value) Float() (float64, bool) {
 
 // Str reads a string.
 func (v Value) Str() (string, bool) {
-	s, ok := v.v.(*scheme.String)
+	s, ok := v.v.(*re.String)
 	if !ok {
 		return "", false
 	}
@@ -201,7 +202,7 @@ func (v Value) Str() (string, bool) {
 // Slice reads a proper list as a slice.  An improper list or a non-list reports
 // false, which keeps the caller from having to know about pairs.
 func (v Value) Slice() ([]Value, bool) {
-	items, ok := scheme.ListToSlice(v.v)
+	items, ok := re.ListToSlice(v.v)
 	if !ok {
 		return nil, false
 	}
@@ -216,7 +217,7 @@ func (v Value) Slice() ([]Value, bool) {
 // function checks before using Call.
 func (v Value) IsProcedure() bool {
 	switch v.v.(type) {
-	case *scheme.Primitive, *scheme.Closure, *scheme.Continuation, *scheme.Parameter:
+	case *re.Primitive, *re.Closure, *re.Continuation, *re.Parameter:
 		return true
 	}
 	return false
@@ -225,7 +226,7 @@ func (v Value) IsProcedure() bool {
 // Value returns the interpreter's own value.  It is here for code that already
 // depends on the interpreter package, and for tests; embedding programs should
 // not need it.
-func (v Value) Value() scheme.Value { return v.v }
+func (v Value) Value() re.Value { return v.v }
 
 // From wraps an interpreter value.
-func From(v scheme.Value) Value { return Value{v} }
+func From(v re.Value) Value { return Value{v} }

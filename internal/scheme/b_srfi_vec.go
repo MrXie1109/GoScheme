@@ -2,6 +2,10 @@
 
 package scheme
 
+import (
+	. "github.com/MrXie1109/GoScheme/internal/re"
+)
+
 // SRFI-133, the vector library, as the (srfi 133) builtin library.
 //
 // R7RS already provides vector, make-vector, vector?, vector-length,

@@ -2,6 +2,11 @@
 
 package scheme
 
+import (
+	. "github.com/MrXie1109/GoScheme/internal/re"
+	"strings"
+)
+
 // The small SRFI libraries that are mostly syntax: (srfi 2) and-let*, (srfi 8)
 // receive, (srfi 26) cut and cute, and (srfi 111) boxes — the one of the four
 // that needs a Go object, because a box is a mutable cell.
@@ -88,6 +93,17 @@ const srfi26Source = `
 // Box is the SRFI-111 box: one mutable cell.
 type Box struct {
 	Value Value
+}
+
+// SchemeDescribe prints the box and what is in it, using the printer it is
+// handed so that display and write read the same inside the box as outside;
+// see re.Describer.
+func (b *Box) SchemeDescribe(p Printer) string {
+	var sb strings.Builder
+	sb.WriteString("#<box ")
+	p.Print(&sb, b.Value)
+	sb.WriteString(">")
+	return sb.String()
 }
 
 func installSRFI2(m *Machine, lib string) {

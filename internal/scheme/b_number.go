@@ -3,6 +3,7 @@
 package scheme
 
 import (
+	. "github.com/MrXie1109/GoScheme/internal/re"
 	"math"
 	"math/big"
 )
@@ -195,7 +196,7 @@ func installNumbers(m *Machine) {
 			if IsInexact(v) {
 				inexact = true
 			}
-			acc = intGcd(acc, iv.Big())
+			acc = IntGcd(acc, iv.Big())
 		}
 		res := Value(BigInt(acc))
 		if inexact {
@@ -214,7 +215,7 @@ func installNumbers(m *Machine) {
 			if b.Sign() == 0 {
 				return Int(0), nil
 			}
-			g := intGcd(acc, b)
+			g := IntGcd(acc, b)
 			acc = new(big.Int).Div(new(big.Int).Mul(acc, b), g)
 			acc.Abs(acc)
 		}
@@ -326,7 +327,7 @@ func installNumbers(m *Machine) {
 		lo, _ := ToBigRat(NumSub(xr, absy))
 		hi, _ := ToBigRat(NumAdd(xr, absy))
 		res := simplestRational(lo, hi)
-		v := normRat(res)
+		v := NormRat(res)
 		if inexact {
 			return Inexact(v), nil
 		}
@@ -360,7 +361,7 @@ func installNumbers(m *Machine) {
 		if c, ok := v.(*Complex); ok {
 			return complexExp(c), nil
 		}
-		return Float(math.Exp(asFloat(RealPart(v)))), nil
+		return Float(math.Exp(AsFloat(RealPart(v)))), nil
 	}, libBase, libInexact)
 	m.defSimple("log", 1, 2, func(a []Value) (Value, error) {
 		v := wantNumber("log", a[0])
@@ -368,7 +369,7 @@ func installNumbers(m *Machine) {
 		if c, ok := v.(*Complex); ok {
 			res = complexLog(c)
 		} else {
-			f := asFloat(RealPart(v))
+			f := AsFloat(RealPart(v))
 			if f < 0 || (IsExact(v) && NumSign(v) < 0) {
 				re := math.Log(math.Abs(f))
 				res = NormalizeComplex(Float(re), Float(math.Pi))
@@ -395,8 +396,8 @@ func installNumbers(m *Machine) {
 	m.defSimple("acos", 1, 1, func(a []Value) (Value, error) { return trig("acos", a[0], math.Acos) }, libBase, libInexact)
 	m.defSimple("atan", 1, 2, func(a []Value) (Value, error) {
 		if len(a) == 2 {
-			y := asFloat(wantReal("atan", a[0]))
-			x := asFloat(wantReal("atan", a[1]))
+			y := AsFloat(wantReal("atan", a[0]))
+			x := AsFloat(wantReal("atan", a[1]))
 			return Float(math.Atan2(y, x)), nil
 		}
 		return trig("atan", a[0], math.Atan)
@@ -424,7 +425,7 @@ func installNumbers(m *Machine) {
 				n := new(big.Int).Sqrt(x.R.Num())
 				d := new(big.Int).Sqrt(x.R.Denom())
 				if new(big.Int).Mul(n, n).Cmp(x.R.Num()) == 0 && new(big.Int).Mul(d, d).Cmp(x.R.Denom()) == 0 {
-					return normRat(new(big.Rat).SetFrac(n, d)), nil
+					return NormRat(new(big.Rat).SetFrac(n, d)), nil
 				}
 				f, _ := x.R.Float64()
 				return Float(math.Sqrt(f)), nil
@@ -453,8 +454,8 @@ func installNumbers(m *Machine) {
 		return NormalizeComplex(re, im), nil
 	}, libBase, libComplex)
 	m.defSimple("make-polar", 2, 2, func(a []Value) (Value, error) {
-		mag := asFloat(wantReal("make-polar", a[0]))
-		ang := asFloat(wantReal("make-polar", a[1]))
+		mag := AsFloat(wantReal("make-polar", a[0]))
+		ang := AsFloat(wantReal("make-polar", a[1]))
 		return NormalizeComplex(Float(mag*math.Cos(ang)), Float(mag*math.Sin(ang))), nil
 	}, libBase, libComplex)
 	m.defSimple("real-part", 1, 1, func(a []Value) (Value, error) {
@@ -475,7 +476,7 @@ func installNumbers(m *Machine) {
 	}, libBase, libComplex)
 	m.defSimple("angle", 1, 1, func(a []Value) (Value, error) {
 		re, im := ComplexParts(wantNumber("angle", a[0]))
-		return Float(math.Atan2(asFloat(im), asFloat(re))), nil
+		return Float(math.Atan2(AsFloat(im), AsFloat(re))), nil
 	}, libBase, libComplex)
 
 	// ------------------------------------------------------- number->string
@@ -550,16 +551,16 @@ func divMod(name string, a, b Value, floorMode bool) (Value, Value) {
 // component satisfies it.
 func numAny(v Value, pred func(float64) bool) bool {
 	re, im := ComplexParts(v)
-	if pred(asFloat(re)) {
+	if pred(AsFloat(re)) {
 		return true
 	}
-	return pred(asFloat(im))
+	return pred(AsFloat(im))
 }
 
 // numAll applies pred to every real component.
 func numAll(v Value, pred func(float64) bool) bool {
 	re, im := ComplexParts(v)
-	return pred(asFloat(re)) && pred(asFloat(im))
+	return pred(AsFloat(re)) && pred(AsFloat(im))
 }
 
 // ---------------------------------------------------------------------------
@@ -571,7 +572,7 @@ func roundOp(name string, v Value, ff func(float64) float64, rf func(*big.Rat) *
 	case *Integer:
 		return x, nil
 	case *Rational:
-		return normRat(rf(x.R)), nil
+		return NormRat(rf(x.R)), nil
 	case Float:
 		return Float(ff(float64(x))), nil
 	}
@@ -677,8 +678,8 @@ func numSqrt(v Value) Value {
 }
 
 func complexSqrt(c *Complex) Value {
-	re := asFloat(c.Re)
-	im := asFloat(c.Im)
+	re := AsFloat(c.Re)
+	im := AsFloat(c.Im)
 	mag := math.Hypot(re, im)
 	sr := math.Sqrt((mag + re) / 2)
 	si := math.Sqrt((mag - re) / 2)
@@ -689,20 +690,20 @@ func complexSqrt(c *Complex) Value {
 }
 
 func complexExp(c *Complex) Value {
-	re := asFloat(c.Re)
-	im := asFloat(c.Im)
+	re := AsFloat(c.Re)
+	im := AsFloat(c.Im)
 	e := math.Exp(re)
 	return NormalizeComplex(Float(e*math.Cos(im)), Float(e*math.Sin(im)))
 }
 
 func complexLog(c *Complex) Value {
-	re := asFloat(c.Re)
-	im := asFloat(c.Im)
+	re := AsFloat(c.Re)
+	im := AsFloat(c.Im)
 	return NormalizeComplex(Float(math.Log(math.Hypot(re, im))), Float(math.Atan2(im, re)))
 }
 
 func logOf(v Value) Value {
-	f := asFloat(RealPart(v))
+	f := AsFloat(RealPart(v))
 	if f <= 0 {
 		return Float(math.NaN())
 	}
@@ -729,7 +730,7 @@ func trig(name string, v Value, fn func(float64) float64) (Value, error) {
 			return Int(1), nil
 		}
 	}
-	f := asFloat(rv)
+	f := AsFloat(rv)
 	res := fn(f)
 	if math.IsNaN(res) {
 		panic(errf(name, "result is not a real number"))
@@ -746,18 +747,18 @@ func numExpt(m *Machine, base, exp Value) Value {
 				if IsExact(base) {
 					br, _ := ToBigRat(base)
 					if ex >= 0 {
-						n := exptBig(br.Num(), ex, m)
-						d := exptBig(br.Denom(), ex, m)
-						return normRat(new(big.Rat).SetFrac(n, d))
+						n := ExptBig(br.Num(), ex, m)
+						d := ExptBig(br.Denom(), ex, m)
+						return NormRat(new(big.Rat).SetFrac(n, d))
 					}
 					if br.Sign() == 0 {
 						panic(errf("expt", "zero cannot be raised to a negative power"))
 					}
-					n := exptBig(br.Num(), -ex, m)
-					d := exptBig(br.Denom(), -ex, m)
-					return normRat(new(big.Rat).SetFrac(d, n))
+					n := ExptBig(br.Num(), -ex, m)
+					d := ExptBig(br.Denom(), -ex, m)
+					return NormRat(new(big.Rat).SetFrac(d, n))
 				}
-				f := asFloat(base)
+				f := AsFloat(base)
 				return Float(math.Pow(f, float64(ex)))
 			}
 		}
@@ -774,8 +775,8 @@ func numExpt(m *Machine, base, exp Value) Value {
 	if c, ok := base.(*Complex); ok {
 		return complexExpt(c, exp)
 	}
-	b := asFloat(base)
-	e := asFloat(exp)
+	b := AsFloat(base)
+	e := AsFloat(exp)
 	if b < 0 {
 		// Negative base with fractional exponent: complex result.
 		return NormalizeComplex(Float(math.Pow(-b, e)*math.Cos(math.Pi*e)),
@@ -791,21 +792,21 @@ func complexExpt(base, exp Value) Value {
 	// exp * log(base)
 	re := NumSub(NumMul(er, logB[0]), NumMul(ei, logB[1]))
 	im := NumAdd(NumMul(er, logB[1]), NumMul(ei, logB[0]))
-	if isExactZero(im) {
-		return Float(math.Exp(asFloat(re)))
+	if IsExactZero(im) {
+		return Float(math.Exp(AsFloat(re)))
 	}
 	return complexExpParts(re, im)
 }
 
 func complexLogParts(re, im Value) [2]Value {
-	fr := asFloat(re)
-	fi := asFloat(im)
+	fr := AsFloat(re)
+	fi := AsFloat(im)
 	return [2]Value{Float(math.Log(math.Hypot(fr, fi))), Float(math.Atan2(fi, fr))}
 }
 
 func complexExpParts(re, im Value) Value {
-	fr := asFloat(re)
-	fi := asFloat(im)
+	fr := AsFloat(re)
+	fi := AsFloat(im)
 	e := math.Exp(fr)
 	return NormalizeComplex(Float(e*math.Cos(fi)), Float(e*math.Sin(fi)))
 }

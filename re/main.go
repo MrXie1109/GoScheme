@@ -19,11 +19,11 @@
 package main
 
 import (
-	"github.com/MrXie1109/GoScheme/internal/scheme"
+	"github.com/MrXie1109/GoScheme/internal/re"
 )
 
 func main() {
 	// A main package with no main of its own: the c-archive build mode needs
 	// one, and every entry point is exported to C below.  Nothing calls this.
-	_ = scheme.UnspecifiedValue
+	_ = re.UnspecifiedValue
 }

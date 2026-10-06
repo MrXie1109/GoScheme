@@ -2,7 +2,11 @@
 
 package scheme
 
-import "regexp"
+import (
+	"fmt"
+	. "github.com/MrXie1109/GoScheme/internal/re"
+	"regexp"
+)
 
 // The (goscheme regexp) library puts Go's regexp package — RE2 — behind Scheme.
 // RE2 trades backreferences and lookaround for linear-time matching, so a
@@ -17,6 +21,11 @@ import "regexp"
 // Regexp is a compiled regular expression.
 type Regexp struct {
 	re *regexp.Regexp
+}
+
+// SchemeDescribe prints the pattern; see re.Describer.
+func (x *Regexp) SchemeDescribe(Printer) string {
+	return fmt.Sprintf("#<regexp %s>", x.re.String())
 }
 
 func init() { registerInstaller(installRegexp) }

@@ -13,6 +13,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	. "github.com/MrXie1109/GoScheme/internal/re"
 	"hash/crc32"
 	mathrand "math/rand/v2"
 	"strings"

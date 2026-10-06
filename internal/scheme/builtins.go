@@ -2,7 +2,10 @@
 
 package scheme
 
-import "fmt"
+import (
+	"fmt"
+	. "github.com/MrXie1109/GoScheme/internal/re"
+)
 
 // R7RS library names.
 const (
@@ -41,7 +44,7 @@ func (m *Machine) def(name string, min, max int, fn func(*Machine, []Value), lib
 					m.RaiseError(e)
 				case *PortError:
 					m.RaiseError(NewFileError(e.Msg))
-				case interruptedPanic:
+				case InterruptedPanic:
 					// A computation too long to finish was abandoned.  It is
 					// the same thing as Ctrl-C during a loop, and it is
 					// reported the same way, so the REPL prints ^C and goes on.
@@ -379,11 +382,11 @@ func installCore(m *Machine) {
 	}, libBase)
 	m.defSimple("read-error?", 1, 1, func(a []Value) (Value, error) {
 		e, ok := a[0].(*ErrorObject)
-		return BooleanOf(ok && e.Kind == errRead), nil
+		return BooleanOf(ok && e.IsReadError()), nil
 	}, libBase)
 	m.defSimple("file-error?", 1, 1, func(a []Value) (Value, error) {
 		e, ok := a[0].(*ErrorObject)
-		return BooleanOf(ok && e.Kind == errFile), nil
+		return BooleanOf(ok && e.IsFileError()), nil
 	}, libBase)
 	m.defSimple("error", 1, -1, func(a []Value) (Value, error) {
 		msg := DisplayToString(a[0])

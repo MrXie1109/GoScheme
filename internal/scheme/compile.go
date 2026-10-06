@@ -16,7 +16,10 @@ package scheme
 // expands to something uncompilable, or a form that is not in the table below,
 // makes the enclosing body interpreted.
 
-import "fmt"
+import (
+	"fmt"
+	. "github.com/MrXie1109/GoScheme/internal/re"
+)
 
 // cframe is one activation frame: what the VM will allocate for it.
 type cframe struct {
@@ -108,7 +111,7 @@ func (c *comp) lookupMarked(sym *Symbol) (*Macro, int, int, *cframe, bool) {
 	if def == nil {
 		return nil, 0, 0, nil, false
 	}
-	name := sym.orig
+	name := sym.Orig()
 	if name == nil {
 		name = sym.Base()
 	}
@@ -2008,7 +2011,7 @@ func assignedNames(body []Value) map[*Symbol]bool {
 				case "quote", "quasiquote":
 					return
 				case "set!":
-					if t, ok := car(cdr(x)).(*Symbol); ok {
+					if t, ok := Car(Cdr(x)).(*Symbol); ok {
 						out[t] = true
 					}
 				}

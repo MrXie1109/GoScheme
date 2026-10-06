@@ -55,6 +55,8 @@ import (
 	"unsafe"
 
 	"github.com/MrXie1109/GoScheme/internal/scheme"
+
+	"github.com/MrXie1109/GoScheme/internal/re"
 )
 
 // unsafeAdd moves a pointer by n elements, which is how the argv array is
@@ -84,7 +86,7 @@ func unsafeAdd(p **C.char, n uintptr) unsafe.Pointer {
 
 var (
 	mu      sync.Mutex
-	handles []scheme.Value
+	handles []re.Value
 	mach    *scheme.Machine
 	native  int
 	// natives maps a procedure name to its compiled body, which is what makes
@@ -99,18 +101,18 @@ type nativesEntry struct {
 	arity int
 }
 
-func store(v scheme.Value) int64 {
+func store(v re.Value) int64 {
 	mu.Lock()
 	defer mu.Unlock()
 	handles = append(handles, v)
 	return int64(len(handles) - 1)
 }
 
-func load(h int64) scheme.Value {
+func load(h int64) re.Value {
 	mu.Lock()
 	defer mu.Unlock()
 	if h < 0 || int(h) >= len(handles) {
-		return scheme.UnspecifiedValue
+		return re.UnspecifiedValue
 	}
 	return handles[h]
 }
@@ -140,32 +142,32 @@ func boolean(b bool) C.gs_val {
 // A boolean gets a tag of its own rather than travelling as 0 or 1 because the
 // two are different values: `(= 1 1)` prints as `#t` and 1 prints as `1`, and a
 // comparison result that arrived as a fixnum would print the wrong one.
-func tagged(v scheme.Value) C.gs_val {
-	if n, ok := v.(*scheme.Integer); ok {
+func tagged(v re.Value) C.gs_val {
+	if n, ok := v.(*re.Integer); ok {
 		if small, fits := n.Int64(); fits {
 			return fixnum(small)
 		}
 	}
-	if b, ok := v.(scheme.Boolean); ok {
+	if b, ok := v.(re.Boolean); ok {
 		return boolean(bool(b))
 	}
-	if v == scheme.Value(scheme.Nil) {
+	if v == re.Value(re.Nil) {
 		return C.gs_val{bits: 0, tag: C.GS_NULL}
 	}
 	return handle(store(v))
 }
 
 // untagged recovers the Scheme value a tagged word names.
-func untagged(v C.gs_val) scheme.Value {
+func untagged(v C.gs_val) re.Value {
 	switch int64(v.tag) {
 	case int64(C.GS_HANDLE):
 		return load(int64(v.bits))
 	case int64(C.GS_BOOLEAN):
-		return scheme.BooleanOf(int64(v.bits) != 0)
+		return re.BooleanOf(int64(v.bits) != 0)
 	case int64(C.GS_NULL):
-		return scheme.Nil
+		return re.Nil
 	}
-	return scheme.Value(scheme.Int(int64(v.bits)))
+	return re.Value(re.Int(int64(v.bits)))
 }
 
 func goString(p *C.char, n int64) string {
@@ -195,7 +197,7 @@ func gs_eval_source(src *C.char, n C.longlong, name *C.char) C.longlong {
 	if mach == nil {
 		gs_init(0, nil)
 	}
-	r := scheme.NewStringReader(source)
+	r := re.NewStringReader(source)
 	if name != nil {
 		r.Source = C.GoString(name)
 	}
@@ -230,11 +232,11 @@ func gs_note_native(label *C.char, n C.int) { native = int(n) }
 func gs_box_literal(text *C.char, n C.int64_t) C.int64_t {
 	src := goString(text, int64(n))
 	if src == "" {
-		return C.int64_t(store(scheme.UnspecifiedValue))
+		return C.int64_t(store(re.UnspecifiedValue))
 	}
-	forms, err := scheme.NewStringReader(src).ReadAll()
+	forms, err := re.NewStringReader(src).ReadAll()
 	if err != nil || len(forms) != 1 {
-		return C.int64_t(store(scheme.UnspecifiedValue))
+		return C.int64_t(store(re.UnspecifiedValue))
 	}
 	return C.int64_t(store(forms[0]))
 }
@@ -293,7 +295,7 @@ func gs_countloop(kind C.int32_t, args *C.gs_val, nextra C.int32_t, inclusive C.
 	}
 	n := untagged(*argsAt(args, 0))
 	acc := untagged(*argsAt(args, 1))
-	var extras []scheme.Value
+	var extras []re.Value
 	for i := 0; i < int(nextra); i++ {
 		extras = append(extras, untagged(*argsAt(args, 2+i)))
 	}
@@ -384,10 +386,10 @@ func gs_global(name *C.char) C.gs_val {
 		gs_init(0, nil)
 	}
 	n := C.GoString(name)
-	v, ok := mach.Global.Lookup(scheme.Intern(n))
+	v, ok := mach.Global.Lookup(re.Intern(n))
 	if !ok {
 		report(fmt.Errorf("%s: undefined", n))
-		return handle(store(scheme.UnspecifiedValue))
+		return handle(store(re.UnspecifiedValue))
 	}
 	return tagged(v)
 }
@@ -411,7 +413,7 @@ func gs_call(name *C.char, n C.int64_t, args *C.gs_val, cache *C.int64_t) C.gs_v
 	proc, ok := cachedProc(name, cache)
 	if !ok {
 		report(fmt.Errorf("%s: undefined", C.GoString(name)))
-		return handle(store(scheme.UnspecifiedValue))
+		return handle(store(re.UnspecifiedValue))
 	}
 	// The arguments go into an array on this frame rather than a slice on the
 	// heap.  A compiled loop that calls a builtin once per iteration was
@@ -422,11 +424,11 @@ func gs_call(name *C.char, n C.int64_t, args *C.gs_val, cache *C.int64_t) C.gs_v
 	// a builtin that calls back into Scheme — `map`, `call-with-values` — reaches
 	// a compiled procedure, which calls gs_call again.  A package-level buffer
 	// would be silently corrupted by that, and the saving would not be worth it.
-	var argv [8]scheme.Value
-	var heap []scheme.Value
+	var argv [8]re.Value
+	var heap []re.Value
 	vals := argv[:0]
 	if int(n) > len(argv) {
-		heap = make([]scheme.Value, int(n))
+		heap = make([]re.Value, int(n))
 		vals = heap
 	}
 	for i := 0; i < int(n); i++ {
@@ -435,7 +437,7 @@ func gs_call(name *C.char, n C.int64_t, args *C.gs_val, cache *C.int64_t) C.gs_v
 	v, err := mach.ApplySync(proc, vals)
 	if err != nil {
 		report(err)
-		return handle(store(scheme.UnspecifiedValue))
+		return handle(store(re.UnspecifiedValue))
 	}
 	return tagged(v)
 }
@@ -460,12 +462,12 @@ func gs_call(name *C.char, n C.int64_t, args *C.gs_val, cache *C.int64_t) C.gs_v
 // a generation check on every call to catch it would cost more than it saves —
 // the same trade the interpreter declines and the compiler accepts, which is why
 // the cache is per call site and why it was measured before it was added.
-func cachedProc(name *C.char, cache *C.int64_t) (scheme.Value, bool) {
+func cachedProc(name *C.char, cache *C.int64_t) (re.Value, bool) {
 	if cache != nil && *cache != 0 {
 		return load(int64(*cache) - 1), true
 	}
 	procName := C.GoString(name)
-	proc, ok := mach.Global.Lookup(scheme.Intern(procName))
+	proc, ok := mach.Global.Lookup(re.Intern(procName))
 	if !ok {
 		return nil, false
 	}
@@ -526,11 +528,11 @@ func attachNatives(m *scheme.Machine) {
 		return
 	}
 	for name, e := range pending {
-		v, ok := m.Global.Lookup(scheme.Intern(name))
+		v, ok := m.Global.Lookup(re.Intern(name))
 		if !ok {
 			continue
 		}
-		c, ok := v.(*scheme.Closure)
+		c, ok := v.(*re.Closure)
 		if !ok {
 			continue
 		}
@@ -560,9 +562,9 @@ type nativeFunc struct {
 // runs the body it still has.  Two cases reach that: an argument list that does
 // not match, and a value the runtime cannot unbox — a handle that is not a
 // number, which a pure body cannot produce but a hand-written call can supply.
-func (f nativeFunc) Call(args []scheme.Value) (scheme.Value, bool) {
+func (f nativeFunc) Call(args []re.Value) (re.Value, bool) {
 	if len(args) != f.arity {
-		return scheme.UnspecifiedValue, false
+		return re.UnspecifiedValue, false
 	}
 	boxed := make([]C.gs_val, len(args))
 	for i, a := range args {
@@ -591,16 +593,16 @@ func (f nativeFunc) Call(args []scheme.Value) (scheme.Value, bool) {
 //export gs_arith
 func gs_arith(op C.int32_t, a C.gs_val, b C.gs_val) C.gs_val {
 	av, bv := untagged(a), untagged(b)
-	var out scheme.Value
+	var out re.Value
 	switch int32(op) {
 	case int32(C.GS_ADD):
-		out = scheme.NumAdd(av, bv)
+		out = re.NumAdd(av, bv)
 	case int32(C.GS_SUB):
-		out = scheme.NumSub(av, bv)
+		out = re.NumSub(av, bv)
 	case int32(C.GS_MUL):
-		out = scheme.NumMul(av, bv)
+		out = re.NumMul(av, bv)
 	default:
-		out = scheme.UnspecifiedValue
+		out = re.UnspecifiedValue
 	}
 	return tagged(out)
 }
@@ -613,7 +615,7 @@ func gs_arith(op C.int32_t, a C.gs_val, b C.gs_val) C.gs_val {
 //
 //export gs_truthy
 func gs_truthy(v C.gs_val) C.int64_t {
-	if scheme.IsTrue(untagged(v)) {
+	if re.IsTrue(untagged(v)) {
 		return 1
 	}
 	return 0
@@ -632,17 +634,17 @@ func gs_truthy(v C.gs_val) C.int64_t {
 
 //export gs_num_eq
 func gs_num_eq(a C.gs_val, b C.gs_val) C.int64_t {
-	return boolWord(scheme.NumEq(untagged(a), untagged(b)))
+	return boolWord(re.NumEq(untagged(a), untagged(b)))
 }
 
 //export gs_num_lt
 func gs_num_lt(a C.gs_val, b C.gs_val) C.int64_t {
-	return boolWord(scheme.NumCmp(untagged(a), untagged(b)) < 0)
+	return boolWord(re.NumCmp(untagged(a), untagged(b)) < 0)
 }
 
 //export gs_num_le
 func gs_num_le(a C.gs_val, b C.gs_val) C.int64_t {
-	return boolWord(scheme.NumCmp(untagged(a), untagged(b)) <= 0)
+	return boolWord(re.NumCmp(untagged(a), untagged(b)) <= 0)
 }
 
 func boolWord(b bool) C.int64_t {

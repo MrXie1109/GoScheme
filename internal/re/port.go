@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-package scheme
+package re
 
 import (
 	"bufio"
@@ -238,6 +238,15 @@ func (p *Port) Ready() bool {
 	}
 	return false
 }
+
+// Closed reports whether the port has been closed, which is what the
+// input-port-open? and output-port-open? predicates ask.
+func (p *Port) Closed() bool { return p.IsClosed() }
+
+// Closer returns the io.Closer behind this port, or nil.  The process library
+// needs it to wait on a child's pipes, which is the one thing about a port that
+// is not the port's own business.
+func (p *Port) Closer() io.Closer { return p.closer }
 
 // IsClosed reports whether the port has been closed.
 func (p *Port) IsClosed() bool {

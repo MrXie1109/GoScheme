@@ -3,6 +3,8 @@
 package scheme
 
 import (
+	"fmt"
+	. "github.com/MrXie1109/GoScheme/internal/re"
 	"net"
 	"strconv"
 	"sync"
@@ -19,6 +21,11 @@ type TcpListener struct {
 	mu     sync.Mutex
 	ln     net.Listener
 	closed bool
+}
+
+// SchemeDescribe prints the listener; see re.Describer.
+func (t *TcpListener) SchemeDescribe(Printer) string {
+	return fmt.Sprintf("#<tcp-listener %s>", t.ln.Addr().String())
 }
 
 // dialTimeout bounds (tcp-connect).  Without it a connection attempt to a host

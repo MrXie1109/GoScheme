@@ -3,6 +3,7 @@
 package scheme
 
 import (
+	. "github.com/MrXie1109/GoScheme/internal/re"
 	"math"
 	"math/big"
 	"math/bits"
@@ -56,7 +57,7 @@ func installFastStats(m *Machine, lib string) {
 	// (percentile seq p) is the nearest-rank percentile: the element at rank
 	// ceil(p/100 * n), so p=50 is the median and p=100 the largest element.
 	m.defSimple("percentile", 2, 2, func(a []Value) (Value, error) {
-		p := asFloat(wantNumber("percentile", a[1]))
+		p := AsFloat(wantNumber("percentile", a[1]))
 		if p < 0 || p > 100 {
 			panic(errf("percentile", "the percentile must be between 0 and 100"))
 		}
@@ -129,7 +130,7 @@ func populationVariance(name string, v Value) float64 {
 	var sum, sumSq float64
 	n := 0
 	forEachIn(name, v, func(x Value) bool {
-		f := asFloat(wantNumber(name, x))
+		f := AsFloat(wantNumber(name, x))
 		sum += f
 		sumSq += f * f
 		n++

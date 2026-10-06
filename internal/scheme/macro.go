@@ -5,6 +5,7 @@ package scheme
 import (
 	"errors"
 	"fmt"
+	. "github.com/MrXie1109/GoScheme/internal/re"
 )
 
 // Macro is a syntactic binding created by define-syntax / let-syntax.  Only
@@ -19,6 +20,11 @@ type Macro struct {
 	// IsLetrecSyntax influences nothing at expansion time in this
 	// implementation, but is recorded for error messages.
 	Kind string
+}
+
+// SchemeDescribe prints the macro; see re.Describer.
+func (m *Macro) SchemeDescribe(Printer) string {
+	return fmt.Sprintf("#<syntax %s>", m.Name)
 }
 
 // MacroRule is one pattern/template pair.
@@ -98,8 +104,8 @@ func (m *Macro) Expand(form Value, useEnv *Env) (Value, error) {
 		mt := &matcher{m: m, binds: binds, useEnv: useEnv}
 		// Both the pattern and the form start with the keyword, which is
 		// ignored per R7RS: match the tails.
-		patTail := cdr(rule.Pattern)
-		formTail := cdr(args)
+		patTail := Cdr(rule.Pattern)
+		formTail := Cdr(args)
 		if patTail == nil || formTail == nil {
 			continue
 		}
@@ -502,17 +508,17 @@ func (m *Macro) subBinds(tmpl Value, binds map[*Symbol]*matchVal, i int) map[*Sy
 //
 //	(syntax-rules [ellipsis] (literal ...) (pattern template) ...)
 func ParseSyntaxRules(name string, form Value, env *Env) (*Macro, error) {
-	rest := cdr(form)
+	rest := Cdr(form)
 	if rest == nil {
 		return nil, errors.New("malformed syntax-rules")
 	}
 	ellipsis := Intern("...")
-	if s, ok := car(rest).(*Symbol); ok && s.Name != "(" {
+	if s, ok := Car(rest).(*Symbol); ok && s.Name != "(" {
 		// optional custom ellipsis
 		ellipsis = s
-		rest = cdr(rest)
+		rest = Cdr(rest)
 	}
-	litsVal := car(rest)
+	litsVal := Car(rest)
 	lits, ok := ListToSlice(litsVal)
 	if !ok {
 		return nil, errors.New("syntax-rules: bad literal list")
@@ -526,7 +532,7 @@ func ParseSyntaxRules(name string, form Value, env *Env) (*Macro, error) {
 		literals = append(literals, s)
 	}
 	var rules []MacroRule
-	for _, r := range mustSlice(cdr(rest)) {
+	for _, r := range mustSlice(Cdr(rest)) {
 		items, ok := ListToSlice(r)
 		if !ok || len(items) != 2 {
 			return nil, errors.New("syntax-rules: each rule must be (pattern template)")

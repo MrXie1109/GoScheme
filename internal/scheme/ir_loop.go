@@ -4,6 +4,7 @@ package scheme
 
 import (
 	"fmt"
+	. "github.com/MrXie1109/GoScheme/internal/re"
 	"strings"
 )
 
@@ -250,10 +251,48 @@ func isCarOf(v Value, s *Symbol) bool {
 	return len(args) == 1 && isSameSymbol(args[0], s)
 }
 
+// smallInt returns the value of a small exact integer and whether v is one.
+// The compiler is the one place outside the numeric tower that looks at the
+// representation, because a fixnum literal is what it can fold into machine
+// code; everything else goes through the tower's predicates.
+func smallInt(v Value) (int64, bool) {
+	if n, ok := v.(*Integer); ok {
+		return n.Small()
+	}
+	return 0, false
+}
+
+// isSmallEq reports whether n is the small exact integer k.
+func isSmallEq(n *Integer, k int64) bool {
+	v, ok := n.Small()
+	return ok && v == k
+}
+
+// isSmallNotZero reports whether n is a small exact integer other than zero.
+//
+// It has no callers: the one branch that looked like it wanted this wanted its
+// opposite, and reading it the wrong way round turned `(< i 0)` into a loop the
+// compiler refused.  It is kept beside isSmallZero so the pair can be read
+// together and the distinction cannot be lost again.
+func isSmallNotZero(n *Integer) bool {
+	v, ok := n.Small()
+	return ok && v != 0
+}
+
+// isSmallZero reports whether n is the small exact integer zero.
+//
+// This is the bound a count-down loop written with `<` or `<=` stops at, and
+// the branch that accepts that loop asks for zero — not for a non-zero value,
+// which is what it asked for while the accessors were being introduced.
+func isSmallZero(v Value) bool {
+	n, ok := v.(*Integer)
+	return ok && isSmallEq(n, 0)
+}
+
 // isOne reports whether a value is the literal 1.
 func isOne(v Value) bool {
 	n, ok := v.(*Integer)
-	return ok && n.small && n.i == 1
+	return ok && isSmallEq(n, 1)
 }
 
 // hasParam reports whether a symbol is one of the formals.
@@ -604,10 +643,12 @@ func runVecWalk(kind int, pred predKind, vec, from, end, acc Value) Value {
 	}
 	lo, _ := from.(*Integer)
 	hi, _ := end.(*Integer)
-	if lo == nil || hi == nil || !lo.small || !hi.small {
+	loV, loSmall := smallInt(lo)
+	hiV, hiSmall := smallInt(hi)
+	if lo == nil || hi == nil || !loSmall || !hiSmall {
 		return acc
 	}
-	i, n := lo.i, hi.i
+	i, n := loV, hiV
 	for ; i < n; i++ {
 		if i < 0 || i >= int64(len(v.Items)) {
 			// Out of range: the interpreted (vector-ref v i) would have raised,
@@ -953,8 +994,7 @@ func recogniseCountLoopInv(name string, formals []*Symbol, body []Value, inv map
 		//
 		// What is *not* the same is a bound on the other side: `(> i 0)` stops
 		// before the zero iteration and would drop an element.
-		n, ok := bound.(*Integer)
-		if !ok || !n.small || n.i != 0 {
+		if !isSmallZero(bound) {
 			return none, false
 		}
 		inclusive = true
@@ -996,7 +1036,7 @@ func recogniseCountLoopInv(name string, formals []*Symbol, body []Value, inv map
 // isZeroLiteral reports whether a value is the literal 0.
 func isZeroLiteral(v Value) bool {
 	n, ok := v.(*Integer)
-	return ok && n.small && n.i == 0
+	return ok && isSmallEq(n, 0)
 }
 
 // isMinusOne reports whether a value is (- N 1).
@@ -1125,7 +1165,8 @@ func RunCountLoopExtras(kind int, n, acc Value, extras []Value) Value {
 // iteration is folded.
 func runCountLoop(kind int, n, acc Value, extras []Value, inclusive bool) Value {
 	i, ok := n.(*Integer)
-	if !ok || !i.small || i.i < 0 {
+	iv, isSmall := smallInt(i)
+	if !ok || !isSmall || iv < 0 {
 		return acc
 	}
 	stop := int64(0)
@@ -1133,7 +1174,7 @@ func runCountLoop(kind int, n, acc Value, extras []Value, inclusive bool) Value 
 		// One more iteration, the one that folds the zero.
 		stop = -1
 	}
-	for k := i.i; k > stop; k-- {
+	for k := iv; k > stop; k-- {
 		switch kind {
 		case walkSum:
 			acc = NumAdd(acc, Int(k))
@@ -1215,8 +1256,8 @@ func (g *irGen) emitTopCall(c topCall, formals []*Symbol, body *strings.Builder,
 	for _, a := range c.args {
 		switch v := a.(type) {
 		case *Integer:
-			if v.small {
-				args = append(args, fmt.Sprintf("i64 %d, i64 0", v.i))
+			if vv, isSmall := v.Small(); isSmall {
+				args = append(args, fmt.Sprintf("i64 %d, i64 0", vv))
 			} else {
 				lit := g.module.stringLiteral(v.String(), "toplit")
 				r := reg()
@@ -1974,14 +2015,16 @@ func recogniseUpFold(e Value, accSym, idxSym *Symbol) (loopKind, bool) {
 // case.
 func RunUpLoop(kind int, from, end, acc Value) Value {
 	lo, ok := from.(*Integer)
-	if !ok || !lo.small {
+	loV, loSmall := smallInt(lo)
+	if !ok || !loSmall {
 		return acc
 	}
 	hi, ok := end.(*Integer)
-	if !ok || !hi.small {
+	hiV, hiSmall := smallInt(hi)
+	if !ok || !hiSmall {
 		return acc
 	}
-	for i := lo.i; i < hi.i; i++ {
+	for i := loV; i < hiV; i++ {
 		acc = foldOne(kind, Int(i), acc)
 	}
 	return acc

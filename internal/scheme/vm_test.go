@@ -3,6 +3,7 @@
 package scheme
 
 import (
+	. "github.com/MrXie1109/GoScheme/internal/re"
 	"os"
 	"path/filepath"
 	"testing"
@@ -361,7 +362,7 @@ func runProgramText(t *testing.T, src string, interpret bool) string {
 	m := NewMachine()
 	m.Interpret = interpret
 	m.CurOut = out
-	m.OutParam.values[0] = out
+	m.OutParam.Values()[0] = out
 	// The same call the command line makes: compiled where possible, with a
 	// group the compiler cannot take whole compiled form by form.
 	forms, err := NewStringReader(src).ReadAll()
@@ -467,7 +468,7 @@ func TestVMReallyCompiles(t *testing.T) {
 	out := NewOutputStringPort()
 	run := NewMachine()
 	run.CurOut = out
-	run.OutParam.values[0] = out
+	run.OutParam.Values()[0] = out
 	forms := []Value{
 		mustRead(t, `(display "a")`),
 		mustRead(t, `(eval '(display "b") (interaction-environment))`),
@@ -504,7 +505,7 @@ func TestLoadRunsMixedGroup(t *testing.T) {
 		m := NewMachine()
 		m.Interpret = interpret
 		m.CurOut = out
-		m.OutParam.values[0] = out
+		m.OutParam.Values()[0] = out
 		m.AddLoadPath(dir)
 		// ToSlash: a Windows path in a Scheme string literal would read its
 		// backslashes as escapes.
@@ -536,7 +537,7 @@ func TestVMTailCallsAreProper(t *testing.T) {
 	m := NewMachine()
 	out := NewOutputStringPort()
 	m.CurOut = out
-	m.OutParam.values[0] = out
+	m.OutParam.Values()[0] = out
 	if _, err := m.EvalString(`
 		(define (loop n) (if (= n 0) 'done (loop (- n 1))))
 		(display (loop 1000000))`); err != nil {

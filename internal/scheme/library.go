@@ -3,6 +3,7 @@
 package scheme
 
 import (
+	. "github.com/MrXie1109/GoScheme/internal/re"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -128,7 +129,7 @@ func (m *Machine) resolveImportSet(spec Value) (map[*Symbol]Value, error) {
 						return nil, NewError("import: rename expects (old new) pairs", a)
 					}
 					oldS, ok1 := pair.Car.(*Symbol)
-					newS, ok2 := cadr(pair).(*Symbol)
+					newS, ok2 := Cadr(pair).(*Symbol)
 					if !ok1 || !ok2 {
 						return nil, NewError("import: malformed rename pair", a)
 					}
