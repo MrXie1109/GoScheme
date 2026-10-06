@@ -78,6 +78,63 @@ func (m *irModule) gsValType() {
 	m.typeDecl("%gs.val = type " + gsValStruct)
 }
 
+// notWorthCompiling reports why a body the generator understands should
+// nevertheless be left to the interpreter, or "" when compiling it is worth
+// doing.
+//
+// This is the one place the compiler decides against itself.  It exists because
+// compiling is not free: a value crossing the boundary is boxed on the way out
+// and unboxed on the way back, so a body that calls into the runtime pays that
+// on every call, and if there is nothing else in the body then the interpreter
+// would have made the same call with everything already unboxed.
+//
+// **The rule is narrow on purpose, and narrow is the point.**  It refuses only
+// what cannot gain, and accepts everything else even when the gain is small.
+// That is the opposite of what a cost model would do, and it is a deliberate
+// choice: a model needs to know what each runtime procedure costs, which is a
+// property of the interpreter rather than of this generator, and a rule that
+// guessed wrong would refuse to compile code that is faster compiled.  Refusing
+// something that would have gained is the worse failure, because it is the
+// invisible one — the program still runs, just no faster, and nothing says why.
+//
+// What cannot gain is a body whose only work is the call.  `strings` is the
+// example: its hot procedure is a counter, a test, and `string-append`, and
+// compiled it ran at 0.40× of the interpreter's speed.  `vectors` (0.68×) is the
+// same shape around `vector-ref`.
+//
+// Note what this does *not* claim to catch.  `vectors` still compiles: its body
+// accumulates `(+ acc (vector-ref v i))`, so by the count below it does keep a
+// value, and the count is all this rule can see.  Distinguishing "the accumulator
+// is the work" from "the call is the work and the accumulator merely receives
+// it" needs to know how expensive the call is, which is the cost model this
+// deliberately does not have.  So `vectors` is compiled and is slower for it,
+// and that is written down rather than papered over — see docs/performance.md.
+func notWorthCompiling(r pureReport) string {
+	if r.runtimeCost == 0 {
+		return ""
+	}
+	if r.accumulates == 0 {
+		return "it does no arithmetic of its own, so compiling it would only add " +
+			"the cost of crossing into the runtime"
+	}
+	// Every kept value is something a call produced, so the loop's arithmetic is
+	// only a counter and the work is the call — `(+ acc (vector-ref v i))` is
+	// the shape, and it measured 0.70×.
+	//
+	// This is as far as a rule without a cost model can honestly go.  It reads
+	// whether the arithmetic combines anything of its own with what the call
+	// returned; what it cannot tell is whether the called procedure is cheap
+	// (`vector-ref`) or expensive (`sort`), which is the difference between a
+	// loss and a large win and is a property of the interpreter, not of this
+	// generator.  A body that reaches here and is still compiled is one whose
+	// call the compiler is betting is expensive.
+	if r.accumulates <= r.fromCalls {
+		return "everything it accumulates comes from a call, so compiling it adds " +
+			"the cost of crossing into the runtime without doing the work"
+	}
+	return ""
+}
+
 // pureReport says what a scan of a body found.
 type pureReport struct {
 	// ok is true when the whole body is a pure computation.
@@ -99,9 +156,20 @@ type pureReport struct {
 	globals []string
 	// nativeOps counts the operations this body does in machine code: the
 	// arithmetic and comparisons that are the reason to compile it at all.
-	// Together with runtimeCalls it decides whether compiling is worth doing;
-	// see worthCompiling.
 	nativeOps int
+	// runtimeCost is what the body spends crossing the boundary: each runtime
+	// call's arguments and its result, all of which have to be boxed.  Together
+	// with nativeOps it decides whether compiling is worth doing; see
+	// worthCompiling.
+	runtimeCost int
+	// accumulates counts the arithmetic results the body *keeps*: those passed
+	// to a call or returned, as opposed to those that only decide control flow.
+	// A loop counter is the second kind and an accumulator is the first, and the
+	// difference is whether compiling the loop is worth anything.
+	accumulates int
+	// fromCalls counts the kept values that a runtime call produced, which is
+	// what tells an accumulator the body computes from one it merely passes on.
+	fromCalls int
 	// known is the set of other procedures in the program that are candidates
 	// for native compilation.  A call to one of them is allowed — whether it
 	// ends up native is settled later, when the call graph is closed — while a
@@ -145,10 +213,104 @@ func pureBodyIn(self string, formals []*Symbol, body []Value, known map[string]b
 }
 
 // scan walks one expression.
+//
+// keep says whether the value of this expression is *used* by something that
+// outlives the step — an accumulator, an argument to a recursive call, the
+// result of the procedure — as opposed to only deciding control flow.  It is
+// what distinguishes `(+ acc i)`, which is the reason to compile a loop, from
+// `(- i 1)`, which is a counter.
 func (r *pureReport) scan(e Value, local map[string]bool) {
+	r.scanKeep(e, local, true)
+}
+
+// scanKeep is scan with the caller saying whether the value is kept.
+func (r *pureReport) scanKeep(e Value, local map[string]bool, keep bool) {
+	if keep {
+		if p, ok := e.(*Pair); ok {
+			if sym, ok := p.Car.(*Symbol); ok && pureOperator(sym.Name) && !isCounting(sym.Name, p) {
+				if callsOut(p, r.known, r.self) {
+					r.fromCalls++
+				}
+				// An operation whose *result is kept* is one the machine code
+				// does for a reason.  What is excluded is the loop's own
+				// bookkeeping: `(- i 1)` and `(+ i 1)` step a counter, and a
+				// counter is not the work a loop does — counting it made a body
+				// of pure bookkeeping look like a body worth compiling.
+				r.accumulates++
+			}
+		}
+	}
+	r.scanValue(e, local, keep)
+}
+
+// callsOut reports whether an expression contains a call to something that is
+// not this generator's to emit: a runtime procedure, as opposed to an operator
+// or a recursive call.
+//
+// It is what separates `(+ acc (vector-ref v i))`, whose value comes from
+// outside, from `(+ acc i)`, whose value the machine code computes itself.
+func callsOut(e Value, known map[string]bool, self string) bool {
 	switch x := e.(type) {
 	case *Pair:
-		r.scanCombination(x, local)
+		if sym, ok := x.Car.(*Symbol); ok {
+			if !pureOperator(sym.Name) && sym.Name != self && !known[sym.Name] && !isSyntax(sym.Name) {
+				return true
+			}
+		}
+		items, _ := ListToSlice(x)
+		for _, a := range items {
+			if callsOut(a, known, self) {
+				return true
+			}
+		}
+	case *Vector:
+		for _, a := range x.Items {
+			if callsOut(a, known, self) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isCounting reports whether an operation is a loop counter being stepped: one
+// that combines a single carried value with a constant.
+//
+// The distinction being drawn is between stepping and computing.  `(- i 1)` and
+// `(+ i 1)` move a counter; `(+ acc i)` combines two things the loop carries, and
+// `(* acc acc)` does something with one.  Only the first is bookkeeping, and a
+// body made only of it has nothing for machine code to do.
+func isCounting(op string, p *Pair) bool {
+	args, _ := ListToSlice(p.Cdr)
+	if len(args) != 2 {
+		return false
+	}
+	// A counter step is a name and a *literal*, in either order: `(- i 1)` and
+	// `(+ 1 i)` both move a counter.  The literal has to be a number, which is
+	// what distinguishes it from `(+ n (string-length "hello"))` — that combines
+	// the parameter with a call, and a call is work.
+	_, firstSym := args[0].(*Symbol)
+	_, secondSym := args[1].(*Symbol)
+	if firstSym == secondSym {
+		return false
+	}
+	other := args[0]
+	if firstSym {
+		other = args[1]
+	}
+	switch other.(type) {
+	case *Integer, *Float, *Rational:
+		return true
+	}
+	return false
+}
+
+// scanValue is the walk itself, with keep threaded to the sub-expressions that
+// inherit it.
+func (r *pureReport) scanValue(e Value, local map[string]bool, keep bool) {
+	switch x := e.(type) {
+	case *Pair:
+		r.scanCombination(x, local, keep)
 	case *Symbol:
 		if local[x.Name] {
 			return
@@ -174,7 +336,7 @@ func (r *pureReport) scan(e Value, local map[string]bool) {
 }
 
 // scanCombination handles a call form.
-func (r *pureReport) scanCombination(x *Pair, local map[string]bool) {
+func (r *pureReport) scanCombination(x *Pair, local map[string]bool, keep bool) {
 	head, ok := x.Car.(*Symbol)
 	if !ok {
 		r.stop("the operator is not a name")
@@ -191,8 +353,11 @@ func (r *pureReport) scanCombination(x *Pair, local map[string]bool) {
 			r.stop("if takes two or three parts")
 			return
 		}
-		for _, a := range args {
-			r.scan(a, local)
+		// The test decides control flow and nothing else; the arms inherit
+		// whether the whole `if` is kept.
+		r.scanValue(args[0], local, false)
+		for _, a := range args[1:] {
+			r.scanKeep(a, local, keep)
 		}
 	case "let":
 		r.scanLet(args, local, false)
@@ -203,16 +368,18 @@ func (r *pureReport) scanCombination(x *Pair, local map[string]bool) {
 			r.stop("an empty begin is not a value")
 			return
 		}
-		for _, a := range args {
-			r.scan(a, local)
+		// Only the last part is the value of the `begin`.
+		for _, a := range args[:len(args)-1] {
+			r.scanValue(a, local, false)
 		}
+		r.scanKeep(args[len(args)-1], local, keep)
 	case "quote":
 		if len(args) != 1 {
 			r.stop("quote takes one part")
 		}
 	case "and", "or":
 		for _, a := range args {
-			r.scan(a, local)
+			r.scanKeep(a, local, keep)
 		}
 	default:
 		// A call, in one of three kinds.
@@ -238,15 +405,17 @@ func (r *pureReport) scanCombination(x *Pair, local map[string]bool) {
 			r.stop("%s is a form, not a call this can compile", head.Name)
 			return
 		}
+		// An argument's value is used by the call, whatever becomes of the
+		// call's own result — so it is kept, unless the call is a test.
+		argKeep := !(head.Name == "=" || head.Name == "<" || head.Name == ">" ||
+			head.Name == "<=" || head.Name == ">=")
 		for _, a := range args {
-			r.scan(a, local)
+			r.scanKeep(a, local, argKeep)
 			if !r.ok {
 				return
 			}
 		}
 		if pureOperator(head.Name) {
-			// The operations worth compiling for, counted so that a body made
-			// only of calls out can be recognised and left alone.
 			r.nativeOps += len(args)
 			return
 		}
@@ -260,7 +429,13 @@ func (r *pureReport) scanCombination(x *Pair, local map[string]bool) {
 		// A runtime call.  Its arguments are values this body computed, so they
 		// have to be boxed to cross the boundary — which is what makes it a
 		// call and not a refusal.
+		//
+		// Counted by its operands and its result, because a crossing is what it
+		// costs: two boxed arguments and a boxed answer is three times the work
+		// of the call the interpreter would have made with everything already
+		// unboxed.
 		r.runtimeCalls = append(r.runtimeCalls, head.Name)
+		r.runtimeCost += len(args) + 1
 	}
 }
 
@@ -405,28 +580,39 @@ func (g *irGen) emitPureFunction(name string, formals []*Symbol, body []Value, c
 		calls:        calls,
 		currentBlock: "entry",
 	}
-	// The parameters arrive through an argument array and are loaded at entry.
-	// A parameter is never assigned in Scheme without set!, which a pure body
-	// cannot contain, so each one stays a single SSA pair for the whole
-	// function.
+	// Each argument arrives as two plain integers — its word and its tag —
+	// rather than as one tagged struct.
 	//
-	// The signature is uniform — `%gs.val f(i64 n, %gs.val *args)` for every
-	// arity — because that is what lets one function-pointer type cover every
-	// compiled procedure.  A per-arity signature would need a different pointer
-	// type, and a different bitcast, for each one.
+	// The tagged struct is how a value is *carried*, and it stays that way
+	// everywhere else.  It is the wrong thing to pass, though, because a struct
+	// hides the tag from the optimizer: the callee loads a tag it cannot know
+	// anything about, so every comparison and every branch on truth keeps its
+	// runtime path.  A loop that adds two numbers then called gs_num_eq and
+	// gs_truthy on every iteration to ask a question whose answer was already
+	// known, and it ran slower than the bytecode VM.
+	//
+	// Two integers fix that.  A tag that is passed as its own argument can be
+	// constant-propagated across the call, so `(+ acc i)` in a recursive loop
+	// compiles to an add and the check disappears.  The cost is that the
+	// function-pointer type is now per arity, which gs_register's wrapper
+	// absorbs — see the adapter emitted below.
 	var sig strings.Builder
-	fmt.Fprintf(&sig, "define %s @%s(i64 %%n, %s* %%args) {\n", gsVal, mangle(name), gsVal)
+	fmt.Fprintf(&sig, "define %s @%s(", gsVal, mangle(name))
+	for i, p := range formals {
+		if i > 0 {
+			sig.WriteString(", ")
+		}
+		fmt.Fprintf(&sig, "i64 %%p_%s.bits, i64 %%p_%s.tag", p.Name, p.Name)
+	}
+	sig.WriteString(") {\n")
 	sig.WriteString("entry:\n")
 	m := g.module
 	m.gsValType()
-	for i, p := range formals {
-		reg := fmt.Sprintf("%%p_%s", p.Name)
-		slot := fmt.Sprintf("%%ap_%s", p.Name)
-		fmt.Fprintf(&f.entry, "  %s = getelementptr %s, %s* %%args, i64 %d\n", slot, gsVal, gsVal, i)
-		fmt.Fprintf(&f.entry, "  %s = load %s, %s* %s\n", reg, gsVal, gsVal, slot)
-		v := irVal{bits: f.reg() + ".bits", tag: f.reg() + ".tag"}
-		fmt.Fprintf(&f.entry, "  %s = extractvalue %s %s, 0\n", v.bits, gsVal, reg)
-		fmt.Fprintf(&f.entry, "  %s = extractvalue %s %s, 1\n", v.tag, gsVal, reg)
+	for _, p := range formals {
+		v := irVal{
+			bits: fmt.Sprintf("%%p_%s.bits", p.Name),
+			tag:  fmt.Sprintf("%%p_%s.tag", p.Name),
+		}
 		f.params = append(f.params, v)
 		f.locals[p.Name] = v
 	}
@@ -469,9 +655,45 @@ func (g *irGen) emitPureFunction(name string, formals []*Symbol, body []Value, c
 		fmt.Fprintf(&out, "  ret %s %s\n}\n\n", gsVal, boxed)
 	}
 	g.module.body.WriteString(out.String())
+
+	// The adapter: the uniform entry point the runtime calls, which unpacks the
+	// argument array into the pairs the body takes.
+	//
+	// It exists because two shapes are needed and they are not the same.  The
+	// body's shape is the one the optimizer wants — tags as separate integers,
+	// so they can be constant-propagated across a call.  The runtime's shape is
+	// the one a single function-pointer type can describe, because the runtime
+	// cannot know an arity at compile time.  One forwarding function per
+	// procedure is the whole cost of having both, and it is not on a hot path
+	// that stays compiled: a native-to-native call goes straight to the body.
+	var ad strings.Builder
+	fmt.Fprintf(&ad, "define %s @%s(i64 %%n, %s* %%args) {\n",
+		gsVal, adapterName(name), gsVal)
+	ad.WriteString("entry:\n")
+	var argList []string
+	for i := range formals {
+		elem := fmt.Sprintf("%%e%d", i)
+		word := fmt.Sprintf("%%w%d", i)
+		tag := fmt.Sprintf("%%t%d", i)
+		// The pointer, then the value it points at: a getelementptr alone does
+		// not read anything.
+		fmt.Fprintf(&ad, "  %s = getelementptr %s, %s* %%args, i64 %d\n", elem, gsVal, gsVal, i)
+		fmt.Fprintf(&ad, "  %s = load %s, %s* %s\n", word, gsVal, gsVal, elem)
+		fmt.Fprintf(&ad, "  %s = extractvalue %s %s, 0\n", fmt.Sprintf("%%b%d", i), gsVal, word)
+		fmt.Fprintf(&ad, "  %s = extractvalue %s %s, 1\n", tag, gsVal, word)
+		argList = append(argList, fmt.Sprintf("i64 %%b%d, i64 %s", i, tag))
+	}
+	fmt.Fprintf(&ad, "  %%r = call %s @%s(%s)\n", gsVal, mangle(name), strings.Join(argList, ", "))
+	fmt.Fprintf(&ad, "  ret %s %%r\n}\n\n", gsVal)
+	g.module.body.WriteString(ad.String())
+
 	g.native++
 	return nil
 }
+
+// adapterName is the symbol of the uniform entry point registered for a
+// procedure, which forwards to its body.
+func adapterName(name string) string { return mangle(name) + "_entry" }
 
 // irVal is a Scheme value as the generated code holds it: two SSA registers,
 // one for the word and one for its tag.
@@ -1100,9 +1322,16 @@ func (f *irFunc) loadVal(v string) irVal {
 // signature — `%gs.val f(i64 n, %gs.val *args)` — which is what lets one pointer
 // type stand for all of them.  The array is built in the caller's frame.
 func (f *irFunc) emitNativeCall(op string, vals []irVal) (irVal, error) {
-	slot := f.allocaArray(len(vals))
+	// The arguments go as (word, tag) pairs, which is what lets the tags be
+	// constant-propagated into the callee instead of being hidden inside an
+	// aggregate.  Nothing is boxed and no array is built: a call in a loop
+	// costs the call itself.
+	var args strings.Builder
 	for i, v := range vals {
-		f.storeArg(slot, i, v)
+		if i > 0 {
+			args.WriteString(", ")
+		}
+		fmt.Fprintf(&args, "i64 %s, i64 %s", v.bits, v.tag)
 	}
 	// In tail position the call is a jump: `musttail` tells LLVM the frame can
 	// be reused, which is what makes a loop written as recursion run in constant
@@ -1111,22 +1340,22 @@ func (f *irFunc) emitNativeCall(op string, vals []irVal) (irVal, error) {
 	// call — so a mistake here fails the build instead of the program.
 	//
 	// `tail` alone would be a hint LLVM may ignore, and a hint is not a
-	// guarantee: the loop below overflowed the stack with `tail`.
+	// guarantee: the loop that motivated this overflowed the stack with `tail`.
 	if f.tail {
 		// `musttail` has to be followed immediately by the `ret` that gives its
 		// value back — LLVM is strict about this, and a branch in between is an
 		// error rather than a missed optimization.  So the return is written
-		// here, and the emitter marks the function as already returned.
+		// here, and the emitter records that the function has already returned.
 		out := f.reg()
-		fmt.Fprintf(&f.body, "  %s = musttail call %s @%s(i64 %d, %s* %s)\n",
-			out, gsVal, mangle(op), len(vals), gsVal, slot)
+		fmt.Fprintf(&f.body, "  %s = musttail call %s @%s(%s)\n",
+			out, gsVal, mangle(op), args.String())
 		fmt.Fprintf(&f.body, "  ret %s %s\n", gsVal, out)
 		f.tailReturned = true
 		return irVal{bits: "0", tag: tagFixnum}, nil
 	}
 	out := f.reg()
-	fmt.Fprintf(&f.body, "  %s = call %s @%s(i64 %d, %s* %s)\n",
-		out, gsVal, mangle(op), len(vals), gsVal, slot)
+	fmt.Fprintf(&f.body, "  %s = call %s @%s(%s)\n",
+		out, gsVal, mangle(op), args.String())
 	return f.loadVal(out), nil
 }
 
@@ -1149,6 +1378,15 @@ func (f *irFunc) truthOf(v irVal) (string, error) {
 	// A fixnum whose value is not a literal: only the word needs testing, since
 	// a fixnum is never #f.
 	if v.tag == tagFixnum {
+		out := f.reg()
+		fmt.Fprintf(&f.body, "  %s = icmp ne i64 %s, 0\n", out, v.bits)
+		return out, nil
+	}
+	// A boolean is #f exactly when its word is zero, so the test is the word —
+	// no call needed.  Without this, `(if (= i 0) ...)` asked the runtime whether
+	// the *result of a comparison* was true, once per iteration, which is the
+	// most common shape in any Scheme program.
+	if v.tag == tagBoolean {
 		out := f.reg()
 		fmt.Fprintf(&f.body, "  %s = icmp ne i64 %s, 0\n", out, v.bits)
 		return out, nil
@@ -1332,6 +1570,37 @@ func (f *irFunc) emitCompare(op string, a, b irVal) (string, error) {
 		fmt.Fprintf(&f.body, "  %s = icmp %s i64 %s, %s\n", fast, pred, a.bits, b.bits)
 		return f.zext(fast), nil
 	}
+	// One operand is a literal fixnum and the other may be a handle.
+	//
+	// A handle is never equal to a fixnum: the runtime hands back a handle only
+	// for a value that does not fit a machine word, so a value that *would*
+	// compare equal to a small constant is always a fixnum.  For a comparison
+	// whose answer is therefore decided by the tag — `=` against a constant —
+	// the machine comparison of a handle would be meaningless and the answer is
+	// simply false.
+	//
+	// This is the shape of every loop test in Scheme, `(= i 0)` above all, and
+	// it is the difference between a loop that calls the runtime to ask and one
+	// that does not.
+	if op == "=" {
+		// Whichever side is the literal, the other may be a handle.
+		lit, other := irVal{}, irVal{}
+		switch {
+		case b.isConstFixnum() && a.tag != tagFixnum:
+			lit, other = b, a
+		case a.isConstFixnum() && b.tag != tagFixnum:
+			lit, other = a, b
+		}
+		if lit.bits != "" {
+			fast := f.reg()
+			fmt.Fprintf(&f.body, "  %s = icmp eq i64 %s, %s\n", fast, other.bits, lit.bits)
+			isFixnum := f.reg()
+			fmt.Fprintf(&f.body, "  %s = icmp eq i64 %s, %s\n", isFixnum, other.tag, tagFixnum)
+			out := f.reg()
+			fmt.Fprintf(&f.body, "  %s = and i1 %s, %s\n", out, fast, isFixnum)
+			return f.zext(out), nil
+		}
+	}
 	fast := f.reg()
 	fmt.Fprintf(&f.body, "  %s = icmp %s i64 %s, %s\n", fast, pred, a.bits, b.bits)
 
@@ -1409,19 +1678,30 @@ func (f *irFunc) emitCheckedArith(op string, a, b irVal) (irVal, error) {
 	if intr == "" {
 		return irVal{}, fmt.Errorf("ir: %s is not a checked operation", op)
 	}
-	bitsSlot := f.alloca()
-	tagSlot := f.alloca()
+	// Both operands must be machine words for the intrinsic to mean anything —
+	// unless the tags say they already are, which they do whenever the operands
+	// were computed locally.  Asking anyway is what put an unreachable runtime
+	// check on every arithmetic operation in every loop, and the optimizer could
+	// not remove it because a tag arriving through a phi is not something it can
+	// prove.
+	knownFixnums := a.tag == tagFixnum && b.tag == tagFixnum
+	var bitsSlot, tagSlot string
+	if !knownFixnums {
+		bitsSlot = f.alloca()
+		tagSlot = f.alloca()
+	}
 
 	fastLabel := f.freshLabel("arith.fast")
 	slowLabel := f.freshLabel("arith.slow")
 	doneLabel := f.freshLabel("arith.done")
 
-	// Both operands must be machine words for the intrinsic to mean anything.
-	tags := f.reg()
-	fmt.Fprintf(&f.body, "  %s = or i64 %s, %s\n", tags, a.tag, b.tag)
-	bothFixnum := f.reg()
-	fmt.Fprintf(&f.body, "  %s = icmp eq i64 %s, %s\n", bothFixnum, tags, tagFixnum)
-	fmt.Fprintf(&f.body, "  br i1 %s, label %%%s, label %%%s\n", bothFixnum, fastLabel, slowLabel)
+	if !knownFixnums {
+		tags := f.reg()
+		fmt.Fprintf(&f.body, "  %s = or i64 %s, %s\n", tags, a.tag, b.tag)
+		bothFixnum := f.reg()
+		fmt.Fprintf(&f.body, "  %s = icmp eq i64 %s, %s\n", bothFixnum, tags, tagFixnum)
+		fmt.Fprintf(&f.body, "  br i1 %s, label %%%s, label %%%s\n", bothFixnum, fastLabel, slowLabel)
+	}
 
 	f.block(fastLabel)
 	// The intrinsic returns { i64, i1 }; take it apart with extractvalue.
@@ -1437,6 +1717,11 @@ func (f *irFunc) emitCheckedArith(op string, a, b irVal) (irVal, error) {
 	okLabel := f.freshLabel("arith.ok")
 	fmt.Fprintf(&f.body, "  br i1 %s, label %%%s, label %%%s\n", over, slowLabel, okLabel)
 	f.block(okLabel)
+	if knownFixnums {
+		// Nothing to join: the fast path is the only way here, and the answer is
+		// a machine word by construction.
+		return irVal{bits: val, tag: tagFixnum}, nil
+	}
 	fmt.Fprintf(&f.body, "  store i64 %s, i64* %s\n", val, bitsSlot)
 	fmt.Fprintf(&f.body, "  store i64 %s, i64* %s\n", tagFixnum, tagSlot)
 	fmt.Fprintf(&f.body, "  br label %%%s\n", doneLabel)

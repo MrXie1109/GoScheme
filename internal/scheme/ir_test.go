@@ -143,24 +143,17 @@ func TestIRPartiallyCompilableBodies(t *testing.T) {
 			want: []string{"@gs_lam_f", "@gs_call", "@llvm.smul.with.overflow.i64"},
 		},
 		{
-			name: "a library call as an operand",
+			name: "a library call as an operand of arithmetic",
 			src:  `(define (f n) (+ (* n n) (string-length "abc")))`,
 			want: []string{"@gs_lam_f", "@gs_call", "@llvm.sadd.with.overflow.i64"},
 		},
 		{
-			name: "a procedure that only calls out",
-			src:  `(define (f n) (display n))`,
-			want: []string{"@gs_lam_f", "@gs_call"},
-		},
-		{
-			name: "a call with no arguments",
-			src:  `(define (f) (newline))`,
-			want: []string{"@gs_lam_f", "@gs_call"},
-		},
-		{
-			name: "a string literal is boxed",
-			src:  `(define (f) (string-length "hello"))`,
-			want: []string{"@gs_lam_f", "@gs_box_literal"},
+			// Boxed three times over — the literal on the way in, the argument
+			// and the answer on the way back — which is why a body whose only
+			// kept value is a call's result is not compiled.  See the test below.
+			name: "a literal beside a call",
+			src:  `(define (f n) (begin (display "hello") (* n n)))`,
+			want: []string{"@gs_lam_f", "@gs_box_literal", "@gs_call"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -175,6 +168,58 @@ func TestIRPartiallyCompilableBodies(t *testing.T) {
 				if !strings.Contains(p.IR, want) {
 					t.Errorf("%s is missing from the module:\n%s", want, p.IR)
 				}
+			}
+		})
+	}
+}
+
+// TestIRABodyThatIsOnlyACallIsNotCompiled checks the one case where the compiler
+// decides against itself.
+//
+// A body whose only work is a call into the runtime cannot gain from being
+// compiled: the machine code would box the arguments, cross the boundary, and
+// unbox the answer, which is strictly more work than the interpreter doing the
+// same call with everything already unboxed.  Measured, these were the two
+// programs that ran *slower* compiled — `string-append` and `vector-ref` in a
+// loop, at 0.40× and 0.68× of the interpreter's speed.
+//
+// The rule is narrow on purpose, and this test pins both halves of that: what it
+// refuses, and what it must not refuse even though the gain is small.
+func TestIRABodyThatIsOnlyACallIsNotCompiled(t *testing.T) {
+	for _, tc := range []struct{ name, src string }{
+		{"a body that only displays", `(define (f n) (display n))`},
+		{"a body that only calls out with no arguments", `(define (f) (newline))`},
+		{"a counter around a call", `(define (f i acc) (if (= i 0) acc (f (- i 1) (string-append acc "x"))))`},
+		{"an accumulator fed only by a call", `(define (f i acc) (if (= i 0) acc (f (+ i 1) (+ acc (vector-ref v i)))))`},
+		{"arithmetic whose only operand is a call's result", `(define (f n) (+ n (string-length "hello")))`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := CompileToIR(tc.src, "test")
+			if err != nil {
+				t.Fatalf("compiling %q: %v", tc.src, err)
+			}
+			if p.Native != 0 {
+				t.Errorf("%s was compiled, but there is nothing in it for machine code to do", tc.name)
+			}
+			if len(p.Refused) == 0 {
+				t.Errorf("%s was declined without a reason", tc.name)
+			}
+		})
+	}
+	// The other half: a small gain is still a gain, and refusing to compile
+	// something that would have been faster is the failure that is invisible.
+	for _, tc := range []struct{ name, src string }{
+		{"arithmetic with no runtime call at all", `(define (f n) (+ n 1))`},
+		{"an accumulator beside a call", `(define (f i acc) (if (= i 0) acc (f (- i 1) (+ acc i))))`},
+		{"arithmetic beside a call it does not feed", `(define (f n) (begin (display n) (* n n)))`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := CompileToIR(tc.src, "test")
+			if err != nil {
+				t.Fatalf("compiling %q: %v", tc.src, err)
+			}
+			if p.Native != 1 {
+				t.Errorf("%s was not compiled, though it does work of its own: %v", tc.name, p.Refused)
 			}
 		})
 	}
@@ -231,21 +276,57 @@ func TestIRCheckedArithmeticIsGuarded(t *testing.T) {
 //
 // A machine word is not always enough for a Scheme exact integer, so the word
 // travels with a tag saying what it is; a body that assumed the word was the
-// value would truncate silently.  The tag is a named type so that every
-// signature agrees on it, which is what lets one function-pointer type stand
-// for procedures of every arity.
+// value would truncate silently.
+//
+// The tag is a named type wherever a value is carried, and the arguments of a
+// compiled body are the one place it is *unpacked*: a body takes each argument
+// as its own (word, tag) pair.  That is what lets the optimizer see a tag across
+// a call and drop the runtime checks it would otherwise have to keep — see
+// TestIRKnownFixnumsSkipTheRuntime below.  The array-shaped entry point still
+// exists, as an adapter, because the runtime calls through one uniform shape
+// whatever the arity.
 func TestIRValuesCarryATag(t *testing.T) {
 	ir := irFor(t, `(define (add a b) (+ a b))`)
 	for _, want := range []string{
 		"%gs.val = type { i64, i64 }",
-		"define %gs.val @gs_lam_add(i64 %n, %gs.val* %args)",
-		// The tag decides whether the fast path may run at all.
-		"or i64",
-		"icmp eq i64",
+		// The body, with the arguments unpacked.
+		"define %gs.val @gs_lam_add(i64 %p_a.bits, i64 %p_a.tag, i64 %p_b.bits, i64 %p_b.tag)",
+		// The adapter, which is what the runtime is handed.
+		"define %gs.val @gs_lam_add_entry(i64 %n, %gs.val* %args)",
 	} {
 		if !strings.Contains(ir, want) {
 			t.Errorf("the module does not mention %q:\n%s", want, ir)
 		}
+	}
+}
+
+// TestIRKnownFixnumsSkipTheRuntime checks that arithmetic on values whose tags
+// are known does not ask the runtime whether they are fixnums.
+//
+// This is the difference between the compiler being worth using and not.  With
+// the operands packed into a struct, the callee loaded a tag it could know
+// nothing about, so every addition kept its runtime path and a loop that adds
+// two numbers called gs_num_eq and gs_truthy on every iteration.  Passing the
+// tag as its own argument lets LLVM prove the check is dead.
+//
+// What is asserted is the absence of the *check*, which is what survives
+// optimization and what costs the time; the calls themselves are only emitted
+// on a path that is never taken.
+func TestIRKnownFixnumsSkipTheRuntime(t *testing.T) {
+	// `x` is a parameter, so its tag is unknown — and the body must still say
+	// so rather than assume.
+	ir := irFor(t, `(define (f x) (+ x 1))`)
+	if !strings.Contains(ir, "or i64 %p_x.tag, 0") {
+		t.Errorf("an unknown tag is not checked:\n%s", ir)
+	}
+	// `x` is computed here, so its tag is a literal zero and the comparison
+	// against a literal needs no runtime path at all.
+	ir = irFor(t, `(define (g n) (if (= (* n n) 0) 1 2))`)
+	if strings.Contains(ir, "@gs_num_eq") {
+		t.Errorf("a comparison of two known fixnums still calls the runtime:\n%s", ir)
+	}
+	if strings.Contains(ir, "@gs_truthy") {
+		t.Errorf("the truth of a boolean still calls the runtime:\n%s", ir)
 	}
 }
 

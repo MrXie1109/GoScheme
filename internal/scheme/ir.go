@@ -287,6 +287,10 @@ func (g *irGen) program(forms []Value) error {
 			g.refused = append(g.refused, p.name+": "+r.why)
 			continue
 		}
+		if why := notWorthCompiling(r); why != "" {
+			g.refused = append(g.refused, p.name+": "+why)
+			continue
+		}
 		g.pure[p.name] = &pureProc{name: p.name, formals: p.formals, body: p.body, calls: r.calls}
 	}
 	// Dependency order, with a cycle refused.
@@ -402,10 +406,16 @@ func (g *irGen) program(forms []Value) error {
 	// runtime is told the name and the address, and a procedure call whose name
 	// matches goes to the native body instead of walking the interpreter's
 	// closure.
+	//
+	// What is registered is the *adapter*, not the body: a body takes its
+	// arguments as (word, tag) pairs, which is what lets the optimizer see the
+	// tags, while the runtime calls through one uniform shape whatever the
+	// arity.  The adapter unpacks the array into the pairs the body wants, and
+	// is the single place the two conventions meet.
 	for _, name := range emitted {
 		lit := m.stringLiteral(name, "proc"+name)
 		fmt.Fprintf(&body, "  call void @gs_register(i8* %s, i64 %d, i8* bitcast (%s (i64, %s*)* @%s to i8*))\n",
-			lit, len(g.pure[name].formals), gsVal, gsVal, mangle(name))
+			lit, len(g.pure[name].formals), gsVal, gsVal, adapterName(name))
 	}
 	for i, form := range forms {
 		src := WriteToString(form)
