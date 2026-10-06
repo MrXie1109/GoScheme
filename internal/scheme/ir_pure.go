@@ -74,6 +74,14 @@ const (
 	// accumulator, though, so `(build 5 '())` consed onto the number zero and
 	// produced the improper list `(1 2 3 4 5 . 0)`.
 	tagNull = "3"
+	// The unspecified value needs a tag because the compiler can *produce* one:
+	// `(if TEST THEN)` with no alternative, and a `cond` whose clauses all fail,
+	// are both unspecified in R7RS, and a compiled body that fell off the end of
+	// one used to yield the fixnum 0 — so `(display (cond (#f 1)))` printed `0`
+	// where the interpreter printed `#!unspecified`.  It is not the empty list
+	// and not #f: both of those are values a program can compare against, and
+	// unspecified is what the report says a program must not rely on.
+	tagUnspecified = "4"
 )
 
 // gsValType declares the value type in the module, which has to happen before
@@ -461,10 +469,30 @@ func (r *pureReport) scanCombination(x *Pair, local map[string]bool, keep bool) 
 }
 
 // scanLet handles let and let*, which introduce bindings a body may use.
+//
+// A **named** let is the same syntax with the loop's name before the bindings:
+//
+//	(let loop ((i n) (acc 0)) (if (= i 0) acc (loop (- i 1) (+ acc i))))
+//
+// and it read as malformed here for as long as this function has existed,
+// because `args[0]` is then the name rather than the binding list.  The name is
+// bound to a procedure the body may call, so it joins the locals and the set of
+// known procedures — which is what makes `(let loop ...)` inside an expression
+// compile rather than being refused with a message about bindings.
 func (r *pureReport) scanLet(args []Value, outer map[string]bool, sequential bool) {
 	if len(args) < 1 {
 		r.stop("a let with no bindings")
 		return
+	}
+	// A named let: the name comes first and the bindings after it.
+	named := ""
+	if sym, ok := args[0].(*Symbol); ok {
+		named = sym.Name
+		args = args[1:]
+		if len(args) < 1 {
+			r.stop("a named let with no bindings")
+			return
+		}
 	}
 	bindings, ok := ListToSlice(args[0])
 	if !ok {
@@ -474,6 +502,9 @@ func (r *pureReport) scanLet(args []Value, outer map[string]bool, sequential boo
 	local := map[string]bool{}
 	for k := range outer {
 		local[k] = true
+	}
+	if named != "" {
+		local[named] = true
 	}
 	for _, b := range bindings {
 		p, ok := b.(*Pair)

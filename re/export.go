@@ -21,6 +21,7 @@ typedef struct { int64_t bits; int64_t tag; } gs_val;
 #define GS_HANDLE 1
 #define GS_BOOLEAN 2
 #define GS_NULL 3
+#define GS_UNSPECIFIED 4
 
 // The operations gs_arith knows, matching arithCode in the generator.
 #define GS_ADD 0
@@ -154,6 +155,9 @@ func tagged(v re.Value) C.gs_val {
 	if v == re.Value(re.Nil) {
 		return C.gs_val{bits: 0, tag: C.GS_NULL}
 	}
+	if _, ok := v.(re.Unspecified); ok {
+		return C.gs_val{bits: 0, tag: C.GS_UNSPECIFIED}
+	}
 	return handle(store(v))
 }
 
@@ -166,6 +170,8 @@ func untagged(v C.gs_val) re.Value {
 		return re.BooleanOf(int64(v.bits) != 0)
 	case int64(C.GS_NULL):
 		return re.Nil
+	case int64(C.GS_UNSPECIFIED):
+		return re.UnspecifiedValue
 	}
 	return re.Value(re.Int(int64(v.bits)))
 }

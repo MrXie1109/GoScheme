@@ -303,6 +303,12 @@ func (g *irGen) program(forms []Value) error {
 		}
 	}
 	for _, p := range procs {
+		// The derived syntax is rewritten into the core syntax it means, once,
+		// before anything looks at the body.  Everything downstream — the walk
+		// recognisers, the pure-body scan and the emitter — then sees only core
+		// forms, so `cond`, `case`, `when` and `unless` need no rule anywhere
+		// else.  See ir_derived.go for why the compiler has to do this itself.
+		p.body = expandBody(p.body)
 		// A recognised walk is accepted before the body is scanned, and that
 		// order matters: the scan understands the forms it can emit, and a loop
 		// written as a named let is not one of them — it is `(let NAME (...) ...)`,

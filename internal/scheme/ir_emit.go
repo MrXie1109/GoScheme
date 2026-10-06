@@ -263,6 +263,17 @@ func boolVal(b bool) irVal {
 	return irVal{bits: "0", tag: tagBoolean}
 }
 
+// unspecifiedVal is an irVal holding the unspecified value, which is what a body
+// with nothing to return yields: an `if` with no alternative, or a `cond` whose
+// clauses all failed.
+//
+// It carries no payload, so the bits are zero, and the tag is what makes it
+// distinguishable from the fixnum 0 and from `()`.  Those are both values a
+// program can print and compare; this one is the absence of an answer.
+func unspecifiedVal() irVal {
+	return irVal{bits: "0", tag: tagUnspecified}
+}
+
 // truthVal converts an i1 into a Scheme boolean.
 func (f *irFunc) truthVal(cond string) irVal {
 	return irVal{bits: f.zext(cond), tag: tagBoolean}
@@ -501,12 +512,17 @@ func (f *irFunc) emitIf(args []Value) (irVal, error) {
 			arms = append(arms, arm{elseVal, elseFrom})
 		}
 	} else {
-		// With no else arm the result is unspecified, and #f is as good a
-		// stand-in as any: no accepted body can observe it, because reaching here
-		// means the test was false and the body would have had to branch on it
-		// again.
+		// With no else arm the result is unspecified, which is a value of its
+		// own rather than a stand-in.  This used to yield the fixnum 0, on the
+		// reasoning that "no accepted body can observe it" — and a body can:
+		// `(define (f n) (if (< n 0) 1))` compiled printed `0` where the
+		// interpreter printed `#!unspecified`, and once `cond` was rewritten
+		// into `if`, every `cond` whose clauses all failed printed the same
+		// wrong thing.  The report says a program must not *rely* on the value
+		// of an unspecified result; it does not say the value may be a number
+		// that the program then prints.
 		fmt.Fprintf(&f.body, "  br label %%%s\n", endLabel)
-		arms = append(arms, arm{fixnumVal(0), f.currentBlock})
+		arms = append(arms, arm{unspecifiedVal(), f.currentBlock})
 	}
 
 	f.block(endLabel)
@@ -663,7 +679,25 @@ func (f *irFunc) emitLet(args []Value, sequential bool) (irVal, error) {
 	return last, nil
 }
 
-// emitQuoted emits a quoted literal the accepted body can hold: a number.
+// emitQuoted emits a quoted literal.
+//
+// The three immediate representations are emitted inline, because they cost
+// nothing: a fixnum is a machine word, and a boolean and the empty list are a
+// word with a tag.  Everything else — a string, a character, a symbol, a pair, a
+// vector, a bytevector, an inexact number — is written into the module as source
+// text and boxed once by the runtime, which is what `gs_box_literal` does and
+// what it has always done for an integer too large to be a machine word.
+//
+// This used to accept numbers only, and refused the rest with "a quoted value
+// that is not a number".  That is a hole rather than a design: `'(cond (a b))`
+// is a datum, and a program that carries a list of symbols as a constant is not
+// doing anything the compiler cannot express — it has a reader and the compiler
+// is allowed to use it.  Boxed once per evaluation of the literal rather than
+// once per program, which is the same thing the interpreter does.
+//
+// The text is the written form of the datum, which the reader reads back.  That
+// round trip is already relied on elsewhere — a top-level form is handed to the
+// interpreter as source — so it is a path rather than a new one.
 func (f *irFunc) emitQuoted(v Value) (irVal, error) {
 	switch x := v.(type) {
 	case *Integer:
@@ -677,7 +711,7 @@ func (f *irFunc) emitQuoted(v Value) (irVal, error) {
 	case Empty:
 		return irVal{bits: "0", tag: tagNull}, nil
 	}
-	return irVal{}, fmt.Errorf("ir: a quoted value that is not a number")
+	return f.boxedLiteral(WriteToString(v))
 }
 
 // freshLabel returns a basic-block label unique within this function.
@@ -701,6 +735,26 @@ func (f *irFunc) reg() string {
 // what makes it safe to compile a procedure natively without proving anything
 // about the size of its values.
 func (f *irFunc) emitCall(op string, args []Value) (irVal, error) {
+	// A call whose result is one of its arguments is not emitted at all; see
+	// ir_identity.go.  This comes first because the point is to not generate the
+	// arguments: emitting them and discarding the call would save the crossing
+	// and nothing else, and the crossings are not the bulk of what a loop like
+	// `(car (list acc))` spends its time on — the `alloca`s and `store`s that
+	// box its arguments are.
+	if kept, work, ok := identity(op, args); ok {
+		outerTail := f.tail
+		for _, e := range work {
+			// The elided half's arguments still have to run for their effect,
+			// before the kept value is computed.
+			f.tail = false
+			if _, err := f.emitExpr(e); err != nil {
+				f.tail = outerTail
+				return irVal{}, err
+			}
+		}
+		f.tail = outerTail
+		return f.emitExpr(kept)
+	}
 	// The arguments are not in tail position, even when the call is: their
 	// values are needed *by* this call, so a call of their own has to return
 	// rather than jump.  Leaving the flag set let `(square (square x))` emit the
