@@ -111,7 +111,11 @@ is shared — and the two bracketing runs are the honest answer rather than the
 better-looking one.  Nothing here is the native compiler:
 [that is a separate comparison](#native-compilation-against-the-interpreter)
 against a different engine, and mixing the two would be the easiest way to make
-these numbers mean nothing.
+these numbers mean nothing.  The same applies to the question that follows from
+this table — *where does the compiled program sit relative to C?* — which is
+answered [further down](#how-the-compiled-output-stands-against-c) with the same
+twelve workloads and the same C baseline: **42× slower than C**, against the
+73× this table shows.
 
 The Guile column is the interesting one.  Eight of the twelve rows are within
 2×, and the four that were expected to be worst — the arithmetic and
@@ -412,6 +416,52 @@ does not.  `vectors` calls a *user* procedure once per element, so there is
 nothing to sink: the loop would have to call back into Scheme per iteration, which
 is the crossing the whole arrangement exists to remove.  `mini-eval` is an
 interpreter, and its inner loop dispatches on the shape of a datum — not a walk.
+
+### How the compiled output stands against C
+
+The panel above answers "what does compiling buy".  This answers the question a
+reader arriving from the interpreter table will have next: **where does the
+compiled program sit relative to C?**  Both columns are the same twelve
+workloads, timed the same way, with C's whole-loop rewrites held back (`C kept`
+— see the note at the top of `bench/run.sh` for why that column is the fair one).
+
+| workload | C kept | compiled | compiled ÷ C | interpreted ÷ C |
+|---|---|---|---|---|
+| `tail-loop` | 1.88 ms | 15.65 ms | **8.3×** | 36× |
+| `vectors` | 0.74 ms | 6.85 ms | **9.3×** | 48× |
+| `lists` | 5.29 ms | 60.29 ms | **11.4×** | 16× |
+| `locals` | 1.86 ms | 26.90 ms | **14.5×** | 38× |
+| `sort` | 0.53 ms | 11.73 ms | 22.0× | 29× |
+| `higher-order` | 0.85 ms | 21.64 ms | 25.4× | 31× |
+| `globals` | 1.83 ms | 50.63 ms | 27.6× | 41× |
+| `fib` | 0.025 ms | 2.79 ms | 110.6× | 536× |
+| `callcc` | 0.10 ms | 15.48 ms | 154.6× | 153× |
+| `closures` | 0.15 ms | 23.72 ms | 154.7× | 154× |
+| `strings` | 0.083 ms | 16.89 ms | 203.5× | 164× |
+| `mini-eval` | 0.099 ms | 27.18 ms | 273.9× | 291× |
+
+**Geometric mean: the compiled program is 42× slower than C**, against the
+interpreter's 73×.  So compiling the same twelve programs closes a little over
+half the distance to C, and the shape of what is left is worth reading rather
+than the number.
+
+Four rows are within an order of magnitude — `tail-loop`, `vectors`, `lists` and
+`locals` — and they are the four whose inner loop the recognisers turn into a
+*single* runtime call, so the per-element work happens where the data already is.
+That is the arrangement working as designed.
+
+The rows at the far end are not slow machine code; they are **programs with
+little machine code in them**.  `strings` and `mini-eval` have `native procs = 0`
+in the panel above — every call they make crosses the boundary, and a crossing
+costs ~138 ns however little work is on the other side of it.  `closures` and
+`callcc` are the same story from the other direction: a closure call and a
+continuation are the interpreter's, and a compiled body that makes one per
+iteration is paying the interpreter's dispatch with machine code around it.
+
+Which is the honest summary of the whole hybrid design: **it is not a compiler
+that is 42× off C, it is a compiler for a subset, and the ratio measures how much
+of each program fell inside that subset.**  The panel's `native` column is what
+says which; the ratio on its own does not.
 
 ### Doing the loop in one call, which is where the speed comes from
 
