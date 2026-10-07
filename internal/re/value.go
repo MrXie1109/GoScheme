@@ -4,6 +4,7 @@ package re
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -135,7 +136,7 @@ func FreshSymbol(hint string) *Symbol {
 	markMu.Lock()
 	defer markMu.Unlock()
 	markSeq++
-	s := &Symbol{Name: hint + ".g" + itoa(markSeq), Mark: markSeq}
+	s := &Symbol{Name: hint + ".g" + strconv.FormatUint(markSeq, 10), Mark: markSeq}
 	return s
 }
 
@@ -712,20 +713,6 @@ func typeName(v Value) string {
 // ---------------------------------------------------------------------------
 // Small helpers used across the interpreter
 // ---------------------------------------------------------------------------
-
-func itoa(n uint64) string {
-	if n == 0 {
-		return "0"
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(buf[i:])
-}
 
 // IsTrue implements Scheme truthiness: only #f is false.
 func IsTrue(v Value) bool {

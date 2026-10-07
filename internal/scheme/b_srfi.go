@@ -54,13 +54,29 @@ func (m *Machine) aliasAll(lib string, names ...string) {
 // srfiRows turns the list arguments of a variadic procedure into slices.  SRFI-1
 // requires the lists to have the same length, so a mismatch is an error rather
 // than a silent stop at the shortest.
+// srfiRows reads one or more sequences into rows of equal length, so that the
+// caller can walk them by position.
+//
+// A vector is a sequence here as much as a list is: SRFI-1's procedures take
+// lists, but the compiler's own SRFI-133 lanes take vectors, and both go through
+// this.  Accepting a vector here is what lets the two share one scan loop —
+// before, `srfiPredIndex` and `anyEvery` each carried an inline copy of the loop
+// for a single vector beside the general one for lists, and the two had to be
+// kept in step by hand.
 func srfiRows(name string, lists []Value) [][]Value {
 	rows := make([][]Value, len(lists))
 	n := -1
 	for i, l := range lists {
-		items, ok := ListToSlice(l)
-		if !ok {
-			panic(errf(name, "expected a proper list but got %s", WriteToString(l)))
+		var items []Value
+		switch seq := l.(type) {
+		case *Vector:
+			items = seq.Items
+		default:
+			var ok bool
+			items, ok = ListToSlice(l)
+			if !ok {
+				panic(errf(name, "expected a proper list but got %s", WriteToString(l)))
+			}
 		}
 		if n < 0 {
 			n = len(items)
@@ -206,12 +222,12 @@ func installSRFI1(m *Machine) {
 	// for the elements of every list, and is exported from (goscheme fast) as
 	// well.  A single vector is accepted, as the fast sequences are.
 	m.defSimple("count", 2, -1, func(a []Value) (Value, error) {
-		return srfiPredIndex(m, "count", a, true)
+		return srfiPredIndex(m, "count", a, true, false, false)
 	}, lib, "(goscheme fast)")
 
 	// (list-index pred list ...) is the first such position, or #f.
 	m.defSimple("list-index", 2, -1, func(a []Value) (Value, error) {
-		return srfiPredIndex(m, "list-index", a, false)
+		return srfiPredIndex(m, "list-index", a, false, false, false)
 	}, lib, "(goscheme fast)")
 
 	// (list= elt= list ...) compares the lists element by element and requires
@@ -1023,35 +1039,24 @@ func installSRFI1(m *Machine) {
 // srfiPredIndex is the shared body of count and list-index: it walks one or
 // more lists in parallel, applying the predicate to every element of a
 // position, and either counts the positions that pass or reports the first one.
-func srfiPredIndex(m *Machine, name string, a []Value, countAll bool) (Value, error) {
+func srfiPredIndex(m *Machine, name string, a []Value, countAll, right, skip bool) (Value, error) {
 	pred := wantProcedure(name, a[0])
 	predName := builtinName(pred)
 	caller := newFastCaller(m, pred)
-	if len(a) == 2 {
-		if vec, ok := a[1].(*Vector); ok {
-			found := int64(0)
-			for i, v := range vec.Items {
-				if caller.pred(predName, v) {
-					if !countAll {
-						return Int(int64(i)), nil
-					}
-					found++
-				}
-			}
-			if countAll {
-				return Int(found), nil
-			}
-			return False, nil
-		}
-	}
 	rows := srfiRows(name, a[1:])
-	found := int64(0)
-	for i := range rows[0] {
+	length := len(rows[0])
+	// matches reports whether position i satisfies the test, and `skip` inverts
+	// it so that the same scan serves vector-skip as well as vector-index.
+	//
+	// skip is a parameter rather than a comparison against name.  Deriving it
+	// from the name would make a rename change what the procedure does, silently
+	// and with no test able to see it.
+	matches := func(i int) bool {
 		args := make([]Value, 0, len(rows))
 		for _, row := range rows {
 			args = append(args, row[i])
 		}
-		// With several lists the predicate is applied to the elements of a
+		// With several sequences the predicate is applied to the elements of a
 		// position in one call, the way SRFI-1 says.
 		pass := false
 		if len(args) == 1 {
@@ -1059,7 +1064,15 @@ func srfiPredIndex(m *Machine, name string, a []Value, countAll bool) (Value, er
 		} else {
 			pass = IsTrue(caller.apply(args...))
 		}
-		if pass {
+		return pass != skip
+	}
+	found := int64(0)
+	for step := 0; step < length; step++ {
+		i := step
+		if right {
+			i = length - 1 - step
+		}
+		if matches(i) {
 			if !countAll {
 				return Int(int64(i)), nil
 			}
@@ -1087,25 +1100,6 @@ func anyEvery(m *Machine, name string, a []Value, all bool) (Value, error) {
 		}
 		res := caller.apply(v)
 		return res, IsTrue(res)
-	}
-	if len(a) == 2 {
-		if vec, ok := a[1].(*Vector); ok {
-			var last Value = True
-			for _, v := range vec.Items {
-				res, truth := value(v)
-				if all && !truth {
-					return False, nil
-				}
-				if !all && truth {
-					return res, nil
-				}
-				last = res
-			}
-			if !all {
-				return False, nil
-			}
-			return last, nil
-		}
 	}
 	rows := srfiRows(name, a[1:])
 	var last Value = True

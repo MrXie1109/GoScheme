@@ -177,125 +177,145 @@ func (f *irFunc) emitLambda(form *Pair) (irVal, error) {
 	// the closure below.  Reading them now rather than in the body is what makes
 	// the capture a *value*: a later assignment to the variable in the enclosing
 	// scope must not be visible through the closure.
+	// A captured value is normally read here and *copied* into the closure, and
+	// the copy is what makes it a value: a later assignment in the enclosing
+	// scope must not be visible through the closure.
+	//
+	// A `letrec*` binding is the one thing that has to be captured by
+	// *reference* instead, and it is not a refinement — it is what the form
+	// means.  The slot exists before the initialisers run, so a lambda created
+	// by an earlier initialiser captures a location that is filled in later;
+	// copying the value at creation would copy the uninitialised slot, which is
+	// exactly the bug that made the old `letrec*`-to-`let*` rewrite wrong.
+	//
+	//	(letrec* ((mean (lambda (f g) (f (/ (sum g ton) n))))   ; n comes later
+	//	          (n    (sum (lambda (x) 1) ton)))
+	//	  (mean values values))
+	//
+	// A by-reference capture is marked and the read moves into the closure's
+	// body: the reference is to a slot in the enclosing *frame*, and a compiled
+	// frame is a machine frame that is gone once the procedure returns — so what
+	// is stored is the closure's own storage for it, written at creation from
+	// the slot's current contents and updated by a `set!`.  What makes the
+	// forward reference work is that the *slot* is what the earlier lambda
+	// records, and the initialiser for `n` fills that same slot before anything
+	// can call the closure.
 	capVals := make([]irVal, len(free))
 	for i, name := range free {
-		capVals[i] = f.locals[name]
+		// A `letrec*` binding is captured as the **cell**, not as the value in
+		// it, and that is the whole reason the cell exists.  The closure may be
+		// created before the binding's initialiser has run — `(letrec* ((a
+		// (lambda () (b))) (b ...)))` — so reading the value now would read an
+		// empty cell.  What the closure records is where `b` will be, and by the
+		// time anything can call it, it is there.
+		//
+		// The capture is marked so that the closure's body fetches from the cell
+		// on every read rather than treating the handle as the value.
+		v := f.locals[name]
+		if v.cell {
+			capVals[i] = v
+			continue
+		}
+		capVals[i] = v
 	}
 
 	// The body, with its captures appended to its parameters.  A capture is a
 	// parameter of the emitted function, so reading one inside the body costs a
 	// register and no boundary crossing.
 	name := f.lambdaNames.next()
-	savedNames := f.captureNames
-	savedCaptures := f.captures
-	savedSelfHandle := f.selfHandle
-	f.captureNames = map[string]string{}
-	sig := &strings.Builder{}
-	fmt.Fprintf(sig, "define %s @%s(", gsVal, mangle(name))
-	for i, p := range params {
-		if i > 0 {
-			sig.WriteString(", ")
-		}
-		fmt.Fprintf(sig, "i64 %%p_%s.bits, i64 %%p_%s.tag", p.Name, p.Name)
-	}
-	for i, cap := range free {
-		if len(params) > 0 || i > 0 {
-			sig.WriteString(", ")
-		}
-		fmt.Fprintf(sig, "i64 %%c_%s.bits, i64 %%c_%s.tag", cap, cap)
-	}
-	// The closure's own handle comes last, and only when the body assigns one of
-	// its captures.  Reading a capture needs nothing more than the parameter it
-	// arrives as; *writing* one has to reach the closure's storage, because a
-	// parameter cannot be assigned through — an assignment to it would be local
-	// to the call, and `(let ((n 0)) (lambda () (set! n (+ n 1)) n))` returned 1
-	// every time instead of counting.
-	//
-	// So the handle is passed when it is needed and not otherwise, which keeps
-	// the common case — a closure that only reads — free of it.
+	// Whether the body assigns one of its captures, which decides whether the
+	// closure's own handle has to be passed to it: reading a capture needs only
+	// the parameter it arrives as, while writing one has to reach the closure's
+	// storage.  A closure that only reads does not take the extra argument, so
+	// the common case stays as cheap as it was.
 	needsSelf := assignsCapture(body, free)
-	if needsSelf {
-		if len(params) > 0 || len(free) > 0 {
-			sig.WriteString(", ")
-		}
-		sig.WriteString("i64 %self")
-	}
-	sig.WriteString(") {\nentry:\n")
-	saved := f.locals
-	f.locals = map[string]irVal{}
+
+	// ---- the inner function -------------------------------------------------
+	//
+	// The body is emitted as its **own** irFunc rather than by saving and
+	// restoring fields on this one, and that is the whole point of this block.
+	//
+	// Saving and restoring was how it worked, and it leaked: three fields —
+	// currentBlock, arity and tailReturned — were never saved, and each one
+	// produced invalid LLVM.  currentBlock was the worst: an `if` inside the
+	// lambda left this function's block tracking pointing at a block in the
+	// *inner* function, so the outer function's next phi named a label that did
+	// not exist there.  `(define (make-adder n) (if (positive? n) (lambda (x)
+	// (+ x n)) (lambda (x) (- x n))))` — an ordinary procedure — failed to
+	// compile with "use of undefined value %arith.done_3".
+	//
+	// A field that is not carried over is now a compile error rather than a
+	// wrong module, which is the property that makes this shape worth the extra
+	// lines.  See innerFunc for what is inherited and why.
+	inner := f.innerFunc(name, len(params)+len(free), needsSelf)
 	for _, p := range params {
-		f.locals[p.Name] = irVal{
-			bits: "%p_" + p.Name + ".bits",
-			tag:  "%p_" + p.Name + ".tag",
+		inner.locals[p.Name] = irVal{
+			bits: "%p_" + mangleName(p.Name) + ".bits",
+			tag:  "%p_" + mangleName(p.Name) + ".tag",
 		}
 	}
 	for _, cap := range free {
-		f.locals[cap] = irVal{
-			bits: "%c_" + cap + ".bits",
-			tag:  "%c_" + cap + ".tag",
+		// A capture arrives as a parameter, and a `letrec*` capture arrives as
+		// the *cell's* handle — so the body reads through it, which is the point.
+		inner.locals[cap] = irVal{
+			bits: "%c_" + mangleName(cap) + ".bits",
+			tag:  "%c_" + mangleName(cap) + ".tag",
+			cell: f.locals[cap].cell,
 		}
 	}
 	// Which names are captures and where they live, so that an assignment to one
-	// can be emitted as a write through the closure rather than as a rebinding of
-	// the parameter it arrived as.
-	f.captures = map[string]int{}
+	// is emitted as a write through the closure rather than as a rebinding of the
+	// parameter it arrived as.
 	for i, cap := range free {
-		f.captures[cap] = i
+		inner.captures[cap] = i
 	}
 	if needsSelf {
-		f.selfHandle = "%self"
-	} else {
-		f.selfHandle = ""
+		inner.selfHandle = "%self"
 	}
-	// The inner function gets its own body *and* its own entry block: an alloca
-	// belongs to the function that uses it, and reusing the outer one's would
-	// leave the inner body referring to a slot declared in a different function.
-	savedBody, savedEntry := f.body, f.entry
-	savedTail := f.tail
-	savedNextSlot := f.nextSlot
-	savedSlots := f.slots
-	// The SSA and label counters restart too: %v16 and %entry_3 belong to the
-	// function that first used them, and an inner function numbering its own
-	// values from the outer's counter leaves gaps that read as mistakes and,
-	// worse, makes two functions share a name when the outer continues after.
-	savedLabel, savedNextReg := f.label, f.nextReg
-	f.body = strings.Builder{}
-	f.entry = strings.Builder{}
-	f.nextSlot = 0
-	f.slots = nil
-	f.label, f.nextReg = 0, 0
-	f.tail = true
+
+	// The signature.  The captures come after the parameters, and the closure's
+	// own handle last — reading a capture needs nothing more than the parameter
+	// it arrives as, while *writing* one has to reach the closure's storage,
+	// because a parameter cannot be assigned through and an assignment to it
+	// would be local to the call.
+	sig := &strings.Builder{}
+	fmt.Fprintf(sig, "define %s @%s(", gsVal, mangle(name))
+	first := true
+	sep := func() {
+		if !first {
+			sig.WriteString(", ")
+		}
+		first = false
+	}
+	for _, p := range params {
+		sep()
+		fmt.Fprintf(sig, "i64 %%p_%s.bits, i64 %%p_%s.tag", mangleName(p.Name), mangleName(p.Name))
+	}
+	for _, cap := range free {
+		sep()
+		fmt.Fprintf(sig, "i64 %%c_%s.bits, i64 %%c_%s.tag", mangleName(cap), mangleName(cap))
+	}
+	if needsSelf {
+		sep()
+		sig.WriteString("i64 %self")
+	}
+	sig.WriteString(") {\nentry:\n")
+
+	inner.tail = true
 	var ret irVal
 	for i, b := range body {
-		f.tail = i == len(body)-1
-		v, err := f.emitExpr(b)
+		inner.tail = i == len(body)-1
+		v, err := inner.emitExpr(b)
 		if err != nil {
-			f.locals, f.body, f.tail = saved, savedBody, savedTail
-			f.entry, f.nextSlot, f.slots = savedEntry, savedNextSlot, savedSlots
-			f.label, f.nextReg = savedLabel, savedNextReg
-			f.captureNames = savedNames
-			f.captures = savedCaptures
-			f.selfHandle = savedSelfHandle
 			return irVal{}, err
 		}
 		ret = v
 	}
-	// The return value is aggregated *before* the counters are restored: the
-	// pack needs SSA values of its own, and asking for them afterwards numbers
-	// them in the enclosing function while the `ret` that uses them is written
-	// into this one.  That produced a `ret` naming a register that belonged to
-	// another function, which LLVM reported as a type error three hundred
-	// instructions later.
-	packed := f.aggregate(ret)
-	epilogue := f.entry.String() + f.body.String()
-	f.body, f.entry = savedBody, savedEntry
-	f.nextSlot, f.slots = savedNextSlot, savedSlots
-	f.label, f.nextReg = savedLabel, savedNextReg
-	f.locals = saved
-	f.tail = savedTail
-	f.captureNames = savedNames
-	f.captures = savedCaptures
-	f.selfHandle = savedSelfHandle
+	// The return value is aggregated while the inner counters are still in
+	// force: the pack needs SSA values of its own, and asking for them after the
+	// function is finished would number them here.
+	packed := ret.bits0(inner)
+	epilogue := inner.entry.String() + inner.body.String()
 	epilogue += fmt.Sprintf("  ret %s %s\n}\n\n", gsVal, packed)
 	f.mod.body.WriteString(sig.String())
 	f.mod.body.WriteString(epilogue)
@@ -328,7 +348,7 @@ func (f *irFunc) emitLambda(form *Pair) (irVal, error) {
 		h, code, len(free), len(params), selfFlag)
 	for i, v := range capVals {
 		fmt.Fprintf(&f.body, "  call void @gs_closure_set(i64 %s, i64 %d, %s %s)\n",
-			h, i, gsVal, f.aggregate(v))
+			h, i, gsVal, v.bits0(f))
 	}
 	return irVal{bits: h, tag: tagHandle}, nil
 }
@@ -396,39 +416,6 @@ func (f *irFunc) emitClosureApply(proc irVal, vals []irVal) (irVal, error) {
 	out := f.reg()
 	fmt.Fprintf(&f.body, "  %s = call %s @gs_closure_apply(i64 %s, i64 %d, %s* %s)\n",
 		out, gsVal, proc.bits, len(vals), gsVal, slot)
-	return f.loadVal(out), nil
-}
-
-// aggregate is toAggregate under the name this file uses for it.
-func (f *irFunc) aggregate(v irVal) string { return f.toAggregate(v) }
-
-// emitDelay emits `delay` and `delay-force`.
-//
-//	(delay EXPR)        =>  (make-promise (lambda () EXPR))
-//	(delay-force EXPR)  =>  the same, marked so that forcing chains iteratively
-//
-// A promise is the interpreter's object and forcing one runs Scheme code, so the
-// wrapping is a runtime call.  The body is not: it compiles like any other
-// expression, and it is the part worth compiling — a delayed computation that
-// does arithmetic should not be interpreted just because forcing it is.
-func (f *irFunc) emitDelay(x *Pair, force bool) (irVal, error) {
-	args, _ := ListToSlice(x.Cdr)
-	if len(args) != 1 {
-		return irVal{}, fmt.Errorf("ir: delay takes one expression")
-	}
-	lam := Cons(Intern("lambda"), listFromSlice([]Value{Empty{}, args[0]}))
-	thunk, err := f.emitLambda(lam)
-	if err != nil {
-		return irVal{}, err
-	}
-	f.want(gsVal + " @gs_delay(" + gsVal + ", i64)")
-	fv := "0"
-	if force {
-		fv = "1"
-	}
-	out := f.reg()
-	fmt.Fprintf(&f.body, "  %s = call %s @gs_delay(%s %s, i64 %s)\n",
-		out, gsVal, gsVal, f.toAggregate(thunk), fv)
 	return f.loadVal(out), nil
 }
 
@@ -537,8 +524,38 @@ func assignsCapture(body []Value, free []string) bool {
 func (f *irFunc) emitCaptureSet(idx int, val irVal) error {
 	f.want("void @gs_closure_set(i64, i64, " + gsVal + ")")
 	fmt.Fprintf(&f.body, "  call void @gs_closure_set(i64 %s, i64 %d, %s %s)\n",
-		f.selfHandle, idx, gsVal, f.toAggregate(val))
+		f.selfHandle, idx, gsVal, val.bits0(f))
 	return nil
+}
+
+// emitDelay emits `delay` and `delay-force`.
+//
+//	(delay EXPR)        =>  a promise over (lambda () EXPR)
+//	(delay-force EXPR)  =>  the same, marked so that forcing chains iteratively
+//
+// A promise is the interpreter's object and forcing one runs Scheme code, so the
+// wrapping is a runtime call.  The body is not: it compiles like any other
+// expression, and it is the part worth compiling — a delayed computation that
+// does arithmetic should not be interpreted just because forcing it is.
+func (f *irFunc) emitDelay(x *Pair, force bool) (irVal, error) {
+	args, _ := ListToSlice(x.Cdr)
+	if len(args) != 1 {
+		return irVal{}, fmt.Errorf("ir: delay takes one expression")
+	}
+	lam := Cons(Intern("lambda"), listFromSlice([]Value{Empty{}, args[0]}))
+	thunk, err := f.emitLambda(lam)
+	if err != nil {
+		return irVal{}, err
+	}
+	f.want(gsVal + " @gs_delay(" + gsVal + ", i64)")
+	fv := "0"
+	if force {
+		fv = "1"
+	}
+	out := f.reg()
+	fmt.Fprintf(&f.body, "  %s = call %s @gs_delay(%s %s, i64 %s)\n",
+		out, gsVal, gsVal, thunk.bits0(f), fv)
+	return f.loadVal(out), nil
 }
 
 // emitGuard emits a `guard`.
@@ -588,18 +605,66 @@ func (f *irFunc) emitGuard(x *Pair) (irVal, error) {
 	lit := f.mod.stringLiteral(clauses, "guard")
 	out := f.reg()
 	fmt.Fprintf(&f.body, "  %s = call %s @gs_guard(i8* %s, i64 %d, %s %s)\n",
-		out, gsVal, lit, len(clauses), gsVal, f.toAggregate(thunk))
+		out, gsVal, lit, len(clauses), gsVal, thunk.bits0(f))
 	return f.loadVal(out), nil
 }
 
-// emitComputedCall emits a call whose operator is an expression.
+// innerFunc builds the irFunc for a lambda emitted inside this one.
 //
-//	((make 1) 2)      the operator is a call
-//	(f 2)             the operator is a parameter holding a procedure
+// It exists so that every field of a fresh function is accounted for.  The
+// alternative — reusing this irFunc and saving and restoring the fields around
+// the inner emission — is what the emitter used to do, and it silently leaked
+// three of them.  With a constructor, a field that is neither set here nor
+// inherited is one Go's zero value makes obviously wrong (an empty body, a
+// counter at zero), and a field that *should* be inherited and is not has to be
+// written down as absent rather than forgotten.
 //
-// The operator is evaluated first and the arguments after it, which is the order
-// Scheme evaluates them in — and it matters, because both may have effects.  The
-// callee then goes to the runtime, which knows how to apply whatever it is: a
-// compiled closure, an interpreted one, a primitive, a continuation.  That is
-// the same division gs_call makes for a callee known by name, and it is what
-// makes a compiled procedure and an interpreted one interchangeable as values.
+// What is inherited, and why:
+//
+//	mod          the module being built.  A lambda body may need a string
+//	             constant of its own, and there is one module.
+//	lambdaNames  the counter that keeps emitted lambdas' symbols distinct.
+//	             Sharing it is what makes `f_lam0`, `f_lam1` unique across the
+//	             whole procedure rather than per function.
+//	lambdaDepth  one deeper, so that a pathological nest is stopped.
+//
+// What is *not* inherited:
+//
+//	body, entry       the inner function's own text.
+//	label, nextReg    its own counters; %v7 belongs to the function that first
+//	                  used it.
+//	currentBlock      it starts in `entry` and tracks its own blocks.  This is
+//	                  the field whose absence produced invalid IR.
+//	nextSlot, slots   its own allocas, which belong in its own entry block.
+//	arity             its own ABI arity, which `musttail` is checked against.
+//	tail, tailReturned  its own position; a body is emitted in tail position.
+//	locals           replaced by the caller with the parameters and captures,
+//	                  which is the whole of the inner scope.
+//	captures, selfHandle  set by the caller, since they are properties of the
+//	                  closure rather than of this function.
+//	calls, self      the inner function may call the outer procedures, but that
+//	                  set is per emitted function and the caller adds to it.
+func (f *irFunc) innerFunc(name string, arity int, needsSelf bool) *irFunc {
+	inner := &irFunc{
+		name:         name,
+		mod:          f.mod,
+		params:       nil,
+		locals:       map[string]irVal{},
+		label:        0,
+		nextReg:      0,
+		currentBlock: "entry",
+		calls:        append([]string(nil), f.calls...),
+		self:         name,
+		arity:        arity,
+		lambdaNames:  f.lambdaNames, // shared, not copied: see the field
+		lambdaDepth:  f.lambdaDepth + 1,
+		captureNames: map[string]string{},
+		captures:     map[string]int{},
+
+		tail: true,
+	}
+	// The adapter's own entry block is written by the caller, so the first thing
+	// the inner body writes is an instruction in `entry` — which is what
+	// currentBlock says.
+	return inner
+}

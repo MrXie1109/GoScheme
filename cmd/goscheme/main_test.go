@@ -1619,6 +1619,65 @@ func TestCompiledProgramAgreesWithTheInterpreter(t *testing.T) {
 		want string
 	}{
 		{
+			// A named let whose body is not a walk still has to run.  Its loop
+			// variables exist only as the walk's parameters, so the generic
+			// emitter reported them as undefined: `slow`, `fast` and `acc`,
+			// and the program disagreed with the interpreter on the default
+			// path.
+			name: "a named let that is not a walk",
+			src: `(define (split l)
+  (let loop ((slow l) (fast l) (acc '()))
+    (if (or (null? fast) (null? (cdr fast))) (reverse acc)
+        (loop (cdr slow) (cddr fast) (cons (car slow) acc)))))
+(display (split '(1 2 3 4 5)))`,
+			want: "(1 2)",
+		},
+		{
+			// A procedure that emits no native body must not be called as
+			// though it had one.  `msort` calls `split` through a lambda, and
+			// dropping `split` after the fact left a direct call to
+			// `@gs_lam_split` in the module -- which `opt` rejects, costing
+			// the program every native body it had.
+			name: "a caller of a procedure that is not emitted",
+			src: `(define (split l)
+  (let loop ((slow l) (fast l) (acc '()))
+    (if (or (null? fast) (null? (cdr fast))) (reverse acc)
+        (loop (cdr slow) (cddr fast) (cons (car slow) acc)))))
+(define (msort l)
+  (if (or (null? l) (null? (cdr l))) l
+      (car (split l))))
+(display (msort '(3 1 2)))`,
+			want: "3",
+		},
+		{
+			// A control operator works on the continuation, and a compiled
+			// body has none to give it.  Compiling `count-to` made it apply
+			// `#!unspecified` where the interpreter answered 4, because the
+			// continuation `k` described only the runtime's stack.
+			name: "a body that captures the continuation",
+			src: `(define (count-to n)
+  (define k #f)
+  (define i 0)
+  (define v (call/cc (lambda (c) (set! k c) 0)))
+  (set! i (+ i 1))
+  (if (< i n) (k (+ v 1)) v))
+(display (count-to 5))`,
+			want: "4",
+		},
+		{
+			// A constant that does not fit a machine word is built once, in
+			// main, and read from a global.  Building it where it was written
+			// cost a crossing, a re-read of the source text and an allocation
+			// per iteration; filling the global *after* the forms ran left
+			// every loop reading zero, and string-length answered "expected a
+			// string but got 0".
+			name: "a string constant in a loop",
+			src: `(define (loop i acc)
+  (if (= i 0) acc (loop (- i 1) (+ acc (string-length "hello")))))
+(display (loop 1000 0))`,
+			want: "5000",
+		},
+		{
 			name: "arithmetic inside a machine word",
 			src: `(define (add a b) (+ a b))
 (display (add 20 22))`,
@@ -2330,29 +2389,151 @@ func TestTheStaticFlagIsSpelledTheTraditionalWay(t *testing.T) {
 // test is on the refusal rather than on the output because the program is one
 // R7RS calls an error to run at all.
 func TestALetrecStarWithAForwardReferenceIsNotAReverseLet(t *testing.T) {
-	for _, tc := range []struct{ name, src string }{
+	// The name is the point, and it is still the point: a `letrec*` that refers
+	// forward is **not** a `let*`, and rewriting it as one is wrong.  What
+	// changed is that it is no longer refused — it gets the semantics it
+	// actually has, by giving every binding a cell before any initialiser runs,
+	// so a lambda created by an earlier initialiser captures the location of a
+	// name bound later.
+	//
+	//	(letrec* ((a (lambda () (b)))      ; b comes later
+	//	          (b (lambda () 42)))
+	//	  (a))
+	//
+	// Under a `let*` rewrite, `a` captures a frame that does not yet have `b`
+	// and the compiled program reported "b: undefined" where the interpreter
+	// found it.  Compiling it as a `let*` is still forbidden; compiling it as a
+	// `letrec*` is the fix, and the test below checks both engines agree.
+	for _, tc := range []struct{ name, src, want string }{
 		{"a forward reference inside a lambda",
-			`(define (f n) (letrec* ((a (lambda () (b))) (b (lambda () (+ n 1)))) (+ (* n n) (a))))`},
-		{"a forward reference in an initialiser",
-			`(define (g n) (letrec* ((x (+ y 1)) (y 2)) (* x n)))`},
+			`(define (f n)
+  (letrec* ((a (lambda () (b))) (b (lambda () (+ n 1))))
+    (+ (* n n) (a))))
+(display (f 5))`, "31"},
+		{"a later binding called through an earlier lambda",
+			`(define (g n)
+  (letrec* ((x (lambda (v) (h v))) (h (lambda (v) (+ v n))))
+    (x 1)))
+(display (g 5))`, "6"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p, err := scheme.CompileToIR(tc.src, "test")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if p.Native != 0 {
-				t.Fatal("a letrec* that refers forward was rewritten into a let*, which is not what it means")
+			// Compiled, or declined for cost — but *not refused*, which is what
+			// the old conservative rule did to every forward reference.
+			for _, r := range p.Refused {
+				if strings.Contains(r, "letrec") {
+					t.Fatalf("a letrec* with a forward reference is still refused: %v", p.Refused)
+				}
+			}
+			if testing.Short() {
+				t.Skip("running both engines needs the toolchain")
+			}
+			requireToolchain(t)
+			dir := t.TempDir()
+			path := filepath.Join(dir, "prog.scm")
+			if err := os.WriteFile(path, []byte(tc.src), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if got := runScriptFile(t, path); got != tc.want {
+				t.Fatalf("the interpreter printed %q, want %q", got, tc.want)
+			}
+			bin := filepath.Join(dir, "prog")
+			if code := compileToNative(path, bin, "2", false, false, false, true); code != 0 {
+				t.Fatalf("compiling failed with code %d", code)
+			}
+			if got := runNative(t, bin); got != tc.want {
+				t.Errorf("compiled printed %q, want %q", got, tc.want)
 			}
 		})
 	}
-	// The other half: one that refers only backwards *is* a let*, and compiles.
+	// The other half: one that refers only backwards *is* a let*, and the
+	// rewrite still applies to it.
 	p, err := scheme.CompileToIR(`(define (f n) (letrec* ((a 1) (b (+ a n))) (* b 2)))`, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if p.Native == 0 {
 		t.Errorf("a letrec* that refers only backwards was not compiled: %v", p.NotCompiled())
+	}
+}
+
+// TestCompileAllIsStillCorrectWhenItCannotCompile checks that turning the cost
+// rule off cannot turn a correct program into a wrong one.
+//
+// This is the property the option rests on, and it is not the same property as
+// "the two engines agree": a body may be *refused* under -compile-all and run in
+// the interpreter, and that is a fine outcome -- what is not fine is a body that
+// is emitted and then behaves differently.
+//
+// Each case here was a real disagreement.  `call/cc` in a compiled body was
+// given a continuation describing only the runtime's stack, so `count-to`
+// applied `#!unspecified` where the interpreter answered 4.  A named let whose
+// body is not a walk reported its loop variables -- `slow`, `fast`, `acc` -- as
+// undefined.  And a procedure that failed to emit left its callers calling a
+// symbol that did not exist, which `opt` rejects, costing the program every
+// native body it had.
+func TestCompileAllIsStillCorrectWhenItCannotCompile(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			name: "a body that captures the continuation",
+			src: `(define (count-to n)
+  (define k #f)
+  (define i 0)
+  (define v (call/cc (lambda (c) (set! k c) 0)))
+  (set! i (+ i 1))
+  (if (< i n) (k (+ v 1)) v))
+(display (count-to 5))`,
+			want: "4",
+		},
+		{
+			name: "a named let that is not a walk",
+			src: `(define (split l)
+  (let loop ((slow l) (fast l) (acc '()))
+    (if (or (null? fast) (null? (cdr fast))) (reverse acc)
+        (loop (cdr slow) (cddr fast) (cons (car slow) acc)))))
+(display (split '(1 2 3 4 5)))`,
+			want: "(1 2)",
+		},
+		{
+			name: "a caller of a procedure that is not emitted",
+			src: `(define (split l)
+  (let loop ((slow l) (fast l) (acc '()))
+    (if (or (null? fast) (null? (cdr fast))) (reverse acc)
+        (loop (cdr slow) (cddr fast) (cons (car slow) acc)))))
+(define (msort l)
+  (if (or (null? l) (null? (cdr l))) l (car (split l))))
+(display (msort '(3 1 2)))`,
+			want: "3",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if testing.Short() {
+				t.Skip("running both engines needs the toolchain")
+			}
+			requireToolchain(t)
+			dir := t.TempDir()
+			path := filepath.Join(dir, "prog.scm")
+			if err := os.WriteFile(path, []byte(tc.src), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if got := runScriptFile(t, path); got != tc.want {
+				t.Fatalf("the interpreter printed %q, want %q", got, tc.want)
+			}
+			bin := filepath.Join(dir, "prog")
+			if code := compileToNative(path, bin, "2", false, false, false, true); code != 0 {
+				t.Fatalf("compiling with -compile-all failed with code %d", code)
+			}
+			if got := runNative(t, bin); got != tc.want {
+				t.Errorf("-compile-all printed %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

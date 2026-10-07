@@ -171,10 +171,128 @@ happen.
   still cross-compiles to six targets.
 - **The toolchain must be installed.** `opt`, `llc` and a C compiler, with the
   LLVM version the IR is written for.
+- **Mutual recursion is compiled.** Two procedures that call each other used to
+  be dropped, on the reasoning that "two procedures that call each other cannot
+  both be defined first, and LLVM will not accept either ordering". The premise
+  is false: LLVM resolves a forward reference to a function in the same module,
+  so a cycle emits as functions that call each other with nothing to order. It is
+  worth compiling for the reason tail calls exist — `even2?`/`odd2?` are two tail
+  calls to each other, and 5,000,000 of them run in constant stack in 0.004 s
+  against the interpreter's 0.704 s.
+- **A `letrec*` that refers forward is compiled, with the semantics it has.** It
+  is still *not* rewritten into a `let*` — that was the old bug, and the rewrite
+  is still forbidden for this shape. Instead every binding gets a heap cell
+  before any initialiser runs, so a lambda created by an earlier initialiser
+  captures the *location* of a name bound later:
+
+  ```scheme
+  (letrec* ((mean (lambda (f g) (f (/ (sum g ton) n))))   ; sum and n come later
+            (sum  (lambda (g ton) ...))
+            (n    (sum (lambda (x) 1) ton)))
+    ...)
+  ```
+
+  This is the R7RS test suite's `means`, whose result now matches the interpreter
+  exactly. It is what the interpreter gets for free by sharing one environment
+  frame that later bindings are added to.
+
+  What it is **not** is a relaxation of the check. The old rule refused this
+  shape because a `let*` rewrite really would have been wrong — and it was wrong
+  in a way that crashed rather than a way that was slow. The fix was to give the
+  form its actual semantics, not to accept the rewrite.
+- **Control cannot be unwound through a compiled frame, and the way to do it is
+  known but not implemented.** A compiled body is a machine function with its own
+  frame and no continuation on the interpreter's stack, so a transfer that has to
+  return into it — or escape past several of them — has nothing to return to.
+
+  The mechanism that solves this is LLVM's SJLJ exception handling: *"for each
+  function which does exception processing ... that function registers itself on
+  a global frame list. When exceptions are unwinding, the runtime uses this list
+  to identify which functions need processing"*, and control returns to the
+  function through a **landing pad** — the block that corresponds to the `catch`
+  of a `try`/`catch`. A version of this was built here: each body with a checked
+  call announced itself on entry, checked on the way out, and returned the
+  handler's value from a landing pad.
+
+  It works for a raise that crosses **one** compiled frame and loses the
+  handler's value across three, and the reason is inlining. `opt -O2` merges an
+  inlined chain's checks — one frame where the emitter made three — so a scheme
+  keyed on frames has nothing left to count, and no frame can tell whether it is
+  the last. `noinline` on those bodies did not fix it, which means the
+  interaction is not only inlining and was not diagnosed. The work was reverted
+  rather than left half-working: a refusal is a slower program, and a wrong
+  answer is a wrong one.
+
+  What it would take to finish is either a frame chain the runtime walks (the
+  doc's actual scheme, rather than a count) or exception handling emitted through
+  LLVM's own `invoke`/`landingpad`, which brings a personality function and the
+  Itanium ABI with it.
+- **Control cannot be unwound through a compiled frame.** A compiled body is a
+  machine function with its own frame and no continuation on the interpreter's
+  stack, so a transfer that has to return into it — or escape past several of
+  them — has nothing to return to. A body mentioning `call/cc`,
+  `call-with-current-continuation`, `dynamic-wind`, `with-exception-handler`,
+  `guard`, `raise` or `raise-continuable` is refused and runs in the interpreter.
+
+  This is checked rather than assumed, and the boundary is narrower than the
+  family suggests. A `raise` in **tail position** in a compiled body is correct:
+  it crosses into the runtime to find its handler, and the runtime has the
+  handler stack. A `guard` whose body merely crosses is correct too, because
+  `emitGuard` emits it as a thunk the runtime runs. What fails is a `raise` in
+  **non-tail position** where the handler lies outside more than one compiled
+  frame:
+
+  ```scheme
+  (define (inner n) (if (< n 0) (raise 'deep) (* n 2)))
+  (define (middle n) (+ 1 (inner n)))
+  (define (outer n)  (+ 10 (middle n)))
+  (guard (e (#t e)) (outer -1))
+  ;; interpreter: (caught deep)
+  ;; compiled:     panic: asFloat: not a real number
+  ```
+
+  Unwinding from `inner` past `middle` and `outer` must resume two compiled
+  frames that are not on the interpreter's stack, and the machine's state on the
+  way back is not the state it left. The whole family is refused, which costs the
+  tail-position case that would have worked; telling the two apart needs an
+  escape analysis this generator does not have, and a slower program is not a
+  wrong one.
 - **A continuation cannot escape a compiled caller.** A runtime call made from
   compiled code is synchronous — it has no frame to resume into — so a
-  continuation captured inside such a call cannot outlive it. The procedures the
-  compiler accepts are ones that cannot contain `call/cc`.
+  continuation captured inside such a call cannot outlive it. A compiled body
+  has no interpreter frames at all, so `call/cc` in one is handed a continuation
+  describing only the runtime's stack; invoking it later resumes the interpreter
+  at a point the compiled frame has already left. A body that mentions `call/cc`,
+  `call-with-current-continuation`, `dynamic-wind`, `with-exception-handler`,
+  `raise`, `raise-continuable` or `guard` is therefore **refused**, and runs in
+  the interpreter.
+
+  This is a *soundness* refusal, kept apart from the cost rule that declines a
+  procedure for speed, and the two must not be confused: turning the cost rule
+  off with `-compile-all` is a decision about speed and must never be able to
+  turn a correct program into a wrong one. It could, until this refusal was
+  added — the cost rule happened to decline `count-to` below, so the bug was
+  invisible on the default path:
+
+  ```scheme
+  (define (count-to n)
+    (define k #f)
+    (define v (call/cc (lambda (c) (set! k c) 0)))
+    (if (< i n) (k (+ v 1)) v))   ; compiled: "attempt to apply non-procedure", interpreted: 4
+  ```
+
+  `TestCompileAllIsStillCorrectWhenItCannotCompile` pins it, and it fails if the
+  refusal is removed.
+- **A named let is emitted whole or not at all.** A named let's loop variables
+  exist only as the recognised walk's parameters, so a body that matches no walk
+  shape cannot be handed to the ordinary emitter — doing so reported `slow`,
+  `fast` and `acc` as undefined. It is now an emission failure, which costs that
+  procedure its native body and leaves the rest of the program compiled.
+- **An emission failure cascades.** A body that does not emit leaves no function
+  behind, so anything that called it would call a symbol that does not exist —
+  which is not a slower program but a module `opt` rejects, costing the program
+  every native body it had. The call graph is closed *before* emitting, and a
+  procedure whose callee is dropped is dropped with it.
 - **A big binary, unless it is linked dynamically.** By default the runtime is a
   shared library and a compiled program is **about 16 KB**: it holds its own
   machine code and nothing else, and several programs on one machine share one

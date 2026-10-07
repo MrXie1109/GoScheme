@@ -127,6 +127,13 @@ func notWorthCompiling(r pureReport) string {
 	if r.runtimeCost == 0 {
 		return ""
 	}
+	// "It does no arithmetic of its own" was a refusal here, and it was wrong.
+	// A procedure that recurses, compares and calls runtime procedures has no
+	// accumulator and is still worth compiling: `msort` is a merge sort whose
+	// body is `(cons (car a) (merge (cdr a) b))`, it keeps nothing, and it was
+	// the reason `sort` measured 1.13x instead of 3.3x.  What matters is not
+	// whether the body accumulates but whether it computes, and the two clauses
+	// below are that question asked properly.
 	if r.accumulates == 0 {
 		return "it does no arithmetic of its own, so compiling it would only add " +
 			"the cost of crossing into the runtime"
@@ -142,6 +149,28 @@ func notWorthCompiling(r pureReport) string {
 	// loss and a large win and is a property of the interpreter, not of this
 	// generator.  A body that reaches here and is still compiled is one whose
 	// call the compiler is betting is expensive.
+	// A body whose kept value comes from a call is worth compiling only when
+	// enough of the work happens in machine code first.  The measure is the
+	// ratio of native operations to crossings, and it is a *ratio* because the
+	// two are the same kind of thing: a crossing is roughly a hundred machine
+	// ops, so a body that computes one thing per call cannot pay for the call.
+	//
+	//	(string-append acc "x")              0 native, 1 call -- decline
+	//	(cons (modulo (* i 7919) 2000) acc)  2 native, 1 call -- compile
+	//	(+ (ev ...) (ev ...))                1 native, 2 calls -- decline
+	//
+	// The last is `mini-eval`, which measured 0.24x compiled: `ev` is a tree
+	// walk whose work is `car` and `cdr`, and compiling it boxes every one of
+	// their results to cross the boundary.  Its `+` and `*` are not enough to
+	// pay for the `assq`, `car`, `cdr`, `cadr` and `caddr` around them, and no
+	// count of accumulators can see that -- the ratio can.
+	//
+	// This is still a rule without a cost model, and it is worth saying what it
+	// cannot do: `sort`'s `build` computes two native ops per `cons` and gains
+	// 3.3x, while a hypothetical body with two native ops per `sort` call would
+	// gain far more.  The rule bets on the average crossing, and the alternative
+	// -- leaving it to a model of the interpreter's internals -- is the one this
+	// file has already argued against.
 	if r.accumulates <= r.fromCalls {
 		return "everything it accumulates comes from a call, so compiling it adds " +
 			"the cost of crossing into the runtime without doing the work"
@@ -413,6 +442,8 @@ func (r *pureReport) scanCombination(x *Pair, local map[string]bool, keep bool) 
 		r.scanLet(args, local, false)
 	case "let*":
 		r.scanLet(args, local, true)
+	case "letrec", "letrec*":
+		r.scanLetrec(args, local)
 	case "begin":
 		if len(args) == 0 {
 			r.stop("an empty begin is not a value")
@@ -549,6 +580,25 @@ func (r *pureReport) scanCombination(x *Pair, local map[string]bool, keep bool) 
 			r.calls = append(r.calls, head.Name)
 			return
 		}
+		// A control operator that captures or replaces the continuation cannot
+		// be compiled, and this is a soundness refusal rather than a cost one.
+		//
+		// A compiled body has no interpreter frames: it is a machine function
+		// that runs to its return.  `call/cc` in one would be handed a
+		// continuation that describes only the *runtime's* stack, so invoking it
+		// later resumes the interpreter at a point that the compiled frame has
+		// already left -- and `(define (count-to n) ... (call/cc (lambda (c)
+		// (set! k c) 0)) ... (k (+ v 1)) ...)` answered "attempt to apply
+		// non-procedure #!unspecified" while the interpreter answered 4.
+		//
+		// The cost rule used to decline this body by accident, which is why the
+		// two have to be kept apart: turning the cost rule off is a decision
+		// about speed and must not be able to turn a correct program into a
+		// wrong one.
+		if capturesContinuation(head.Name) {
+			r.stop("%s needs the interpreter's continuation, which a compiled body does not have", head.Name)
+			return
+		}
 		// A runtime call.  Its arguments are values this body computed, so they
 		// have to be boxed to cross the boundary — which is what makes it a
 		// call and not a refusal.
@@ -562,6 +612,57 @@ func (r *pureReport) scanCombination(x *Pair, local map[string]bool, keep bool) 
 	}
 }
 
+// capturesContinuation reports whether a procedure works on the continuation
+// itself, which a compiled body cannot offer it.
+//
+// This is the one *soundness* refusal in the file, as opposed to the cost rule
+// that declines a body for speed, and the two must not be confused: turning the
+// cost rule off is a decision about speed and must never be able to turn a
+// correct program into a wrong one.
+//
+// What a compiled body cannot do is be *unwound through*.  It is a machine
+// function with its own frame and no continuation on the interpreter's stack, so
+// a control transfer that has to return to a point inside it — or escape past
+// several of them — has nothing to return to.
+//
+// The list is deliberately the whole family rather than the cases that were
+// observed to fail, because each of these transfers control:
+//
+//	call/cc, call-with-current-continuation   capture a continuation
+//	dynamic-wind                              runs a thunk on the way out
+//	with-exception-handler, guard             install a handler that runs later
+//	raise, raise-continuable                  transfer to that handler
+//
+// `raise` was checked rather than assumed, and it fails exactly where the
+// description predicts.  A `raise` in **tail position** inside a compiled body
+// is correct — it crosses into the runtime to find its handler, and the runtime
+// has the handler stack — and a `guard` whose body merely crosses is correct
+// too, since `emitGuard` emits it as a thunk the runtime runs.  What fails is a
+// `raise` in **non-tail position** where the handler is outside more than one
+// compiled frame:
+//
+//	(define (inner n) (if (< n 0) (raise 'deep) (* n 2)))
+//	(define (middle n) (+ 1 (inner n)))
+//	(define (outer n)  (+ 10 (middle n)))
+//	(guard (e (#t e)) (outer -1))     ; interpreter: (caught deep)
+//	                                  ; compiled:     panic, asFloat: not a real number
+//
+// Unwinding from `inner` past `middle` and `outer` has to resume two compiled
+// frames that are not on the interpreter's stack, and the machine's state when
+// it comes back is not the state it left.  Refusing the whole family costs the
+// tail-position case, which would work, and that is the right price: a body that
+// might contain a non-tail `raise` cannot be told apart from one that does
+// without an escape analysis this generator does not have, and a slower program
+// is not a wrong one.
+func capturesContinuation(name string) bool {
+	switch name {
+	case "call/cc", "call-with-current-continuation", "dynamic-wind",
+		"with-exception-handler", "raise", "raise-continuable", "guard":
+		return true
+	}
+	return false
+}
+
 // scanLet handles let and let*, which introduce bindings a body may use.
 //
 // A **named** let is the same syntax with the loop's name before the bindings:
@@ -573,6 +674,66 @@ func (r *pureReport) scanCombination(x *Pair, local map[string]bool, keep bool) 
 // bound to a procedure the body may call, so it joins the locals and the set of
 // known procedures — which is what makes `(let loop ...)` inside an expression
 // compile rather than being refused with a message about bindings.
+// scanLetrec scans a `letrec*` whose initialisers refer forward.
+//
+// The difference from `scanLet` is the scope the initialisers are scanned in:
+// every name is in scope for every initialiser, because the form gives them
+// their locations first.  That is not a detail of the scan — it is what makes
+// the form compilable at all, and a scan that used `let*` scope here would
+// report a forward reference as an unbound name.
+//
+// The emitter has a rule for this shape (`emitLetrecStar`), which is the other
+// half of the same fact: the scanner accepts exactly what the emitter can emit.
+func (r *pureReport) scanLetrec(args []Value, outer map[string]bool) {
+	if len(args) < 1 {
+		r.stop("a letrec* with no bindings")
+		return
+	}
+	binds, ok := ListToSlice(args[0])
+	if !ok {
+		r.stop("letrec* bindings that are not a list")
+		return
+	}
+	local := map[string]bool{}
+	for k, v := range outer {
+		local[k] = v
+	}
+	// Every name first, so that each initialiser sees all of them.
+	for _, b := range binds {
+		p, ok := b.(*Pair)
+		if !ok {
+			r.stop("a letrec* binding that is not a pair")
+			return
+		}
+		items, _ := ListToSlice(p)
+		if len(items) != 2 {
+			r.stop("a letrec* binding without a value")
+			return
+		}
+		sym, ok := items[0].(*Symbol)
+		if !ok {
+			r.stop("a letrec* binding that is not a name")
+			return
+		}
+		local[sym.Name] = true
+	}
+	// Then the initialisers, in order, in that scope.
+	for _, b := range binds {
+		p := b.(*Pair)
+		items, _ := ListToSlice(p)
+		r.scan(items[1], local)
+		if !r.ok {
+			return
+		}
+	}
+	for _, b := range args[1:] {
+		r.scanKeep(b, local, true)
+		if !r.ok {
+			return
+		}
+	}
+}
+
 func (r *pureReport) scanLet(args []Value, outer map[string]bool, sequential bool) {
 	if len(args) < 1 {
 		r.stop("a let with no bindings")

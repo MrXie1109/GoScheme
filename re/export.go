@@ -545,6 +545,84 @@ func gs_closure_set(h C.int64_t, i C.int64_t, v C.gs_val) {
 	c.captures[i] = untagged(v)
 }
 
+// Cells: a one-slot mutable box, which is what a `letrec*` binding is.
+//
+// A `letrec*` gives every name its location before any initialiser runs, so that
+// a lambda created by an earlier initialiser can refer to a name bound later.
+// A compiled frame cannot offer that — its slots live on the C stack and are
+// gone when the procedure returns — so the location has to be on the heap, and
+// this is it.
+//
+// The alternative, capturing the *value* at closure creation, is what the old
+// `letrec*`-to-`let*` rewrite did and it is wrong for exactly this shape:
+//
+//	(letrec* ((a (lambda () (b)))
+//	          (b (lambda () 42)))
+//	  (a))                       ; a's capture read b before b existed
+//
+// The cell is created first, both closures capture *it*, and each initialiser
+// stores into its own cell as it runs.  Reading a cell that has not been filled
+// yet is an error the same way the interpreter's is: "variable used before
+// initialization".
+//
+// The handle is a handle like any other, so a cell crosses the boundary as an
+// ordinary tagged value and the collector does not have to know about it.
+
+// cell is one mutable location.  It is a Value so that it can live in the
+// runtime's value table, which is what makes it addressable from generated code.
+type cell struct {
+	v   re.Value
+	set bool
+}
+
+func (c *cell) String() string { return "#<cell>" }
+
+//export gs_cell_new
+func gs_cell_new() C.int64_t {
+	return C.int64_t(store(&cell{}))
+}
+
+//export gs_cell_set
+func gs_cell_set(h C.int64_t, v C.gs_val) {
+	c, ok := load(int64(h)).(*cell)
+	if !ok {
+		report(fmt.Errorf("cell: not a cell"))
+		return
+	}
+	c.v = untagged(v)
+	c.set = true
+}
+
+//export gs_cell_ref
+func gs_cell_ref(h C.int64_t) C.gs_val {
+	c, ok := load(int64(h)).(*cell)
+	if !ok {
+		report(fmt.Errorf("cell: not a cell"))
+		return handle(store(re.UnspecifiedValue))
+	}
+	if !c.set {
+		// The message is the interpreter's wording, so that a compiled program
+		// and an interpreted one say the same thing.  What the interpreter does
+		// beyond saying it — raising a condition the machine can dispatch — is
+		// not reproducible here: a compiled frame has no continuation to unwind,
+		// which is the same limit `raise` has (see ir_pure.go).  A program that
+		// reads a `letrec*` binding before its initialiser is a program in error
+		// by R7RS, and it is reported as one.
+		report(fmt.Errorf("variable used before initialization"))
+		return handle(store(re.UnspecifiedValue))
+	}
+	return tagged(c.v)
+}
+
+//export gs_cell_is_set
+func gs_cell_is_set(h C.int64_t) C.int64_t {
+	c, ok := load(int64(h)).(*cell)
+	if !ok || !c.set {
+		return 0
+	}
+	return 1
+}
+
 //export gs_closure_ref
 func gs_closure_ref(h C.int64_t, i C.int64_t) C.gs_val {
 	c, ok := closureAt(int64(h))

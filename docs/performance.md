@@ -604,6 +604,257 @@ pushes the slot onto `vals []Value` and would box it again immediately.  That is
 a compiler project with type inference, not a simple optimization, and it is the
 honest answer to why this item is still on the list.
 
+### Removing the cost rule, which the panel says not to do
+
+The rule in `notWorthCompiling` is the one place the compiler decides against
+itself: a procedure whose only work is a call into the runtime is left to the
+interpreter, because compiling it pays the boxing on both sides of a boundary
+the interpreter never crosses.  The obvious question is whether the rule earns
+its keep, and the answer is measured rather than argued — the rule was disabled
+outright and the panel run again.
+
+| program | with the rule | without it | native |
+|---|---|---|---|
+| fib | 2.8× | 3.8× | 2 |
+| tail-loop | 4.0× | 4.5× | 2 |
+| closures | 1.0× | 1.1× | 6 |
+| globals | 1.4× | 1.4× | 2 |
+| locals | 2.5× | 2.2× | 2 |
+| lists | 1.4× | 1.6× | 4 |
+| vectors | 4.2× | 4.3× | 2–4 |
+| **strings** | 1.1× | **0.50×** | 0→2 |
+| higher-order | 1.3× | 1.0× | 2 |
+| **mini-eval** | 1.0× | **0.27×** | 0→4 |
+| **sort** | 1.1× | **3.3×** | 4→12 |
+| callcc | 1.1× | 0.73× | 0 |
+
+Seven programs gain and five lose, which reads like an argument for deleting the
+rule until the two losses are looked at: `strings` at half speed and `mini-eval`
+at *a quarter*.  Those are not marginal, and they are the shape the rule exists
+to catch.  `strings`' `build` is `(string-append acc "x")` — the call is the
+entire work, and compiling it boxes `acc`, boxes `"x"`, crosses, boxes the
+answer, then recurses.  `mini-eval`'s `ev` is a tree walk whose work is `car` and
+`cdr`; every one of them becomes a crossing, and its two arithmetic operators
+cannot pay for the five calls around them.
+
+Two attempts were made to keep the wins and drop the losses, and both were
+removed:
+
+1. **A ratio of native operations to crossings.**  The idea is that a crossing
+   costs roughly a hundred machine ops, so a body that computes something per
+   call pays for it while a body that only passes a call's result on does not.
+   It recovered `mini-eval` (0.99×, declined) and held `strings` at 0.80×, but
+   `sort`'s `build` — `(cons (modulo (* i 7919) 2000) acc)`, two native ops per
+   `cons` — was declined too, and `sort` fell from 3.3× to 1.2×.
+2. **Dropping the "it does no arithmetic of its own" clause.**  That clause is
+   what declines `msort`, a merge sort with no accumulator, and removing it
+   looked like the way to get `sort`'s win back.  It made `sort` *worse* — 1.45×
+   down to 0.76× — because `msort`'s body is `(cons (car a) (merge (cdr a) b))`,
+   and compiling it turns three cheap interpreter operations into three
+   crossings.
+
+Then both rules were run seven times each, and the difference between them
+disappeared: every row moved by more than the gap.  The apparent wins were
+run-to-run variance on programs that finish in ten milliseconds.  The revised
+rule was deleted rather than kept, because a rule that cannot be shown to beat
+the simpler one is the simpler one plus forty lines of reasoning.
+
+What the exercise did produce is a real bug.  `-compile-all` on `bench/scheme/callcc.scm`
+failed to assemble at all — `expected instruction opcode` at `arith.fast_1:` —
+and on `bench/scheme/sort.scm` it produced a program that disagreed with the
+interpreter.  Neither was reachable while the cost rule was on, which is exactly
+why the option that overrules the rule has to be tested on its own terms.
+
+### A declined callee is promoted when its caller is compiled
+
+The cost rule asks whether compiling a body pays **for itself**, and for
+
+```scheme
+(define (helper l) (if (null? l) 0 (string-length "x")))
+```
+
+the answer is no: one `null?` and one `string-length`, four crossings' worth of
+work by the rule's own count.  Declining it is right.
+
+But the rule was not only declining `helper`.  A procedure whose callee has no
+native body was **refused** — "it calls helper, which is not compiled natively" —
+so a compiled caller could not exist unless its callee did.  That reasoning is
+sound for a callee the generator *cannot* emit, and wrong for one the rule chose
+not to:
+
+| configuration | `helper` | `caller` | 3,000,000 iterations |
+|---|---|---|---|
+| the rule's answer, taken literally | interpreted | refused | 2.58 s |
+| caller compiled, helper still interpreted | interpreted | compiled | **2.59 s** |
+| both compiled | compiled | compiled | **1.19 s** |
+| no call in the loop, for scale | — | — | 0.10 s |
+
+The middle row is the one that decides it.  Compiling `caller` alone changes
+nothing, because the cost lands on the *caller's* side of the boundary: a
+compiled caller reaching an interpreted callee crosses on every call, and that
+crossing is what the machine code was supposed to avoid.  The pair only wins when
+both are compiled, and the loss is invisible from `helper`'s body — which is
+exactly what the rule looks at.
+
+So a declined procedure is now **postponed** rather than forgotten, and promoted
+if a compiled procedure turns out to call it.  `helper`'s caller goes from 2.58 s
+to 1.19 s on the default path, with no flag.
+
+**Promotion is not unconditional**, and the reason is the counterexample.  `ev` is
+a tree walk crossing on `car`, `cdr`, `assq`, `cadr` and `caddr`; compiling it
+makes *it* slower, and promoting it took `mini-eval` to **0.42×** of the
+interpreter — worse than the 1.0× it had before.  The discriminating number is
+what compiling the callee costs against the one crossing the promotion removes
+(`promotionGain = 8`, in the same unit).  `helper` costs 4 and is promoted; `ev`
+costs 39 and is not.
+
+The first version of this promoted unconditionally, and the panel caught it
+immediately: `mini-eval` dropped to 0.42× with `native=4`.  That is the whole
+argument for keeping the panel and for measuring a rule change rather than
+reasoning about it.
+
+A caller that stays in the interpreter because its callee was declined is now
+reported as **declined**, not refused — nothing is broken, and the message names
+the number that decided it:
+
+```
+ev: everything it accumulates comes from a call, ...
+loop: it calls ev, whose own body costs more to compile (39) than the call
+      it would save, so both stay in the interpreter
+```
+
+`TestADeclinedCalleeIsPromotedForACompiledCaller` pins both directions.
+
+### The Sync-primitive fast path, which measured as nothing
+
+`Primitive.Sync` marks a builtin that always finishes within the call — it
+returns or raises and never pushes a continuation frame.  `car`, `cdr`,
+`string-length`, `vector-ref`, `cons` and most of the standard library carry it.
+The VM has used the flag for a long time (`callSyncPrimitive`), calling such a
+primitive directly instead of building a frame for the caller first.  The
+*compiled* path never did: `gs_call` went through `ApplySync`, which snapshots
+the stack, winds and handlers, applies the procedure, and enters `runLoop` — an
+interrupt check, a pending-error check, a frame pop and a stack comparison, per
+step — to run a body like `wantString(a[0]).Len()`.
+
+That looked like the explanation for the remaining cost of a call, and the fix
+was written: `ApplySync` takes the same shortcut, under the same conditions.
+
+**It changed nothing.**  With the same emitted module linked against a runtime
+built with and without the fast path, five runs each, fastest of five:
+
+| loop body, 3,000,000 iterations | without | with |
+|---|---|---|
+| `(+ acc (string-length "hello"))` | 0.4842 s | 0.4844 s |
+| `(+ acc (car (list 1 2 3)))` | 1.6252 s | 1.6263 s |
+| `(+ acc 1)`, no call at all | 0.071 s | 0.071 s |
+
+The differences are inside the noise.  The fast path was reverted.
+
+What the numbers say is that `runLoop`'s dispatch is **not** where a crossing
+spends its time.  A loop with no call is 0.071 s and one with a single crossing
+is 0.484 s, so a crossing costs about **138 ns** — and essentially all of it is
+the cgo boundary itself: `_cgo_wait_runtime_init_done`, the `crosscall2` into
+`runtime.cgocallback`, the switch onto the `m->curg` stack and back.  There is no
+supported way to skip that from the generated code, which is why the only way to
+remove a crossing is to not make one — which is what the recognisers (one call
+per whole loop) and the constant and cache hoisting above actually do.
+
+**An earlier measurement of this claimed 0.84 s → 0.46 s, and it was wrong.**
+The "before" binary had been linked against a shared runtime that a later edit
+invalidated, so the two numbers came from different code paths and compared
+nothing.  The lesson is the one this file keeps relearning: a comparison is only
+worth what its two sides have in common, and a shared library whose contents can
+change underneath a binary makes that guarantee easy to lose.  Every number in
+the table above was taken with `-static`, from the same `.ll`, changing only the
+runtime.
+
+### The call cache was reset every iteration, so it cached nothing
+
+The constant above was only half of the same problem.  A runtime call site caches
+what its name resolved to, because resolving means a C string conversion, a
+symbol intern under a mutex and a walk up the environment chain — and a call site
+is inside a loop as often as not.  The cache was a **stack slot**:
+
+```llvm
+entry:
+  %cache3 = alloca i64
+  store i64 0, i64* %cache3     ; cleared on every entry
+```
+
+A loop written as tail recursion re-enters its function through `entry` on every
+iteration, so the slot was cleared every iteration and the lookup happened every
+iteration.  It was not merely a wasted lookup.  The runtime caches a resolved
+procedure by *storing it in its value table*, and that table is append-only:
+
+```go
+func store(v re.Value) int64 {
+    handles = append(handles, v)      // never shrinks
+    return int64(len(handles) - 1)
+}
+```
+
+So every iteration appended an entry that could never be reclaimed.  Instrumenting
+`store` and printing the table's size at exit gave the whole story:
+
+| iterations | table size before | after |
+|---|---|---|
+| 300000 | 300002 | **3** |
+| 3000000 | 3000002 | **3** |
+| 3000000, no call in the loop | 1 | 1 |
+
+The table grew one entry per iteration — **65 bytes and one mutex acquisition per
+turn** — for a loop that computes a single number.  What it stored was the
+`string-length` primitive, over and over.
+
+The slot is now a module-level global, which is what "once per site" has to mean
+for a site inside a function entered many times:
+
+```llvm
+@.cache0 = internal global i64 zeroinitializer
+...
+%v26 = call %gs.val @gs_call(i8* @.callstring_2dlength1, i64 1, %gs.val* %arr3, i64* @.cache0)
+```
+
+`TestTheCallCacheIsAGlobal` pins it: it fails if the slot goes back to being a
+stack slot.
+
+This was invisible in every measurement that came before it because the effect is
+proportional to the iteration count and the panel's programs are small.  At three
+million iterations it is the difference between 209 MB and 17 MB.
+
+### A constant is built once, not once per iteration
+
+The rule above exists because a crossing is expensive, and the cheapest crossing
+to remove is one that never needed to happen.  A literal is a *constant*: the
+same `"hello"` denotes the same object for the life of the program.  It was
+being built where it was written, which for a loop meant reading the source text
+back, parsing it and allocating a fresh string **per iteration**:
+
+```scheme
+(define (loop i acc)
+  (if (= i 0) acc (loop (- i 1) (+ acc (string-length "hello")))))
+```
+
+`gs_box_literal` appeared once per turn.  It is now hoisted: `main` builds each
+constant once into a module-level `%gs.val` global, and every use loads two
+words from static storage.  The crossing count in that loop went from four to
+three.
+
+The order in `main` is the whole difficulty.  Emitting a *body* is what
+discovers which literals need a global, so the fill has to come after the bodies
+are emitted — and before the top-level forms, because those are what call the
+bodies.  Written at the end of `main`, after the forms, every body read a
+zero-initialised global and `string-length` answered "expected a string but got
+0" once per iteration.  Written at the beginning it was empty for the same
+reason.
+
+The speedup from this on the panel is **not measurable**: the loop still crosses
+once per turn for `string-length` itself, and one crossing in three is not
+visible above the noise on a 10 ms program.  It is kept because it is strictly
+less work and because it removes an allocation from a loop, not because a
+benchmark says so.
+
 ### The frame allocation, which looked like the easy win
 
 `newVMEnv` allocates 23% of the objects, and 4 slots are kept inline before it

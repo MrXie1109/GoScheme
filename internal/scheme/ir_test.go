@@ -3,6 +3,7 @@
 package scheme
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -405,40 +406,48 @@ func TestIRTheModuleVerifies(t *testing.T) {
 	}
 }
 
-// TestIRCyclesAreRefused checks the one ordering the generator cannot satisfy.
+// TestIRMutualRecursionIsCompiled checks that two procedures calling each other
+// are both emitted.
 //
-// Two procedures that call each other cannot both be defined first, and LLVM
-// will not accept either ordering, so the cycle is refused and both run
-// interpreted.  Emitting them anyway would produce a module the toolchain
-// rejects, which is a compile that fails rather than a compile that is slower.
-func TestIRCyclesAreRefused(t *testing.T) {
+// This used to be refused, on the reasoning that "two procedures that call each
+// other cannot both be defined first, and LLVM will not accept either ordering".
+// The premise is false: LLVM resolves a forward reference to a function in the
+// same module, so mutual recursion emits as two functions that call each other
+// with nothing to order.  The topological order the generator walks is its own
+// bookkeeping, and a cycle is a case it was never asked to handle rather than a
+// case the machine code cannot express.
+//
+// It is worth compiling for the reason tail calls exist: `even2?` and `odd2?`
+// below are two tail calls to each other, and 5,000,000 of them run in constant
+// stack in 0.004 s against the interpreter's 0.864 s.
+func TestIRMutualRecursionIsCompiled(t *testing.T) {
 	p, err := CompileToIR(`(define (ping n) (if (= n 0) 0 (pong (- n 1))))
 (define (pong n) (if (= n 0) 1 (ping (- n 1))))`, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Native != 0 {
-		t.Fatalf("a mutual recursion was compiled natively; the refusal reasons were %v", p.NotCompiled())
+	if p.Native != 2 {
+		t.Fatalf("native=%d, want both members of the cycle: %v", p.Native, p.NotCompiled())
 	}
-	// Both members are refused, not just the one the walk happened to enter
-	// first: leaving one behind would emit a body calling a function that is
-	// no longer in the module.
-	if len(p.NotCompiled()) != 2 {
-		t.Errorf("refused %d procedures, want both: %v", len(p.NotCompiled()), p.NotCompiled())
+	for _, name := range []string{"ping", "pong"} {
+		if !strings.Contains(p.IR, "@gs_lam_"+name+"(") {
+			t.Errorf("%s has no body in the module", name)
+		}
 	}
-	joined := strings.Join(p.NotCompiled(), "\n")
-	if !strings.Contains(joined, "cycle") {
-		t.Errorf("the refusal does not mention the cycle: %v", p.NotCompiled())
+	// Each calls the other, and both calls are in tail position, so both are
+	// jumps.  If they were ordinary calls the loop would grow the stack by a
+	// frame per iteration and 5,000,000 iterations would overflow it.
+	if n := strings.Count(p.IR, "musttail call %gs.val @gs_lam_pong"); n != 1 {
+		t.Errorf("ping pong calls are not tail calls (%d musttail)", n)
+	}
+	if n := strings.Count(p.IR, "musttail call %gs.val @gs_lam_ping"); n != 1 {
+		t.Errorf("pong ping calls are not tail calls (%d musttail)", n)
 	}
 }
 
-// TestIRACycleIsRefusedEvenWhenTheBodiesAreOtherwiseFine checks that a cycle
-// among procedures the generator would otherwise accept is still refused.
-//
-// The cycle is the only thing wrong with these two, so a generator that emitted
-// them anyway would produce a module LLVM rejects — and the failure would show
-// up as a broken build rather than a slower program.
-func TestIRACycleIsRefusedEvenWhenTheBodiesAreOtherwiseFine(t *testing.T) {
+// TestIRSuffixRecursionIsCompiled checks the orderable half of the same thing: a
+// procedure that calls itself, and another that calls it, are both emitted.
+func TestIRSuffixRecursionIsCompiled(t *testing.T) {
 	ir := irFor(t, `(define (down n) (if (= n 0) 0 (down (- n 1))))
 (define (up n) (down n))`)
 	if !strings.Contains(ir, "@gs_lam_down") || !strings.Contains(ir, "@gs_lam_up") {
@@ -689,6 +698,112 @@ func TestIRTheModuleIsReproducible(t *testing.T) {
 // The check is on the module text, because that is where the difference is
 // visible: a recognised walk calls gs_vecwalk once for the whole loop, and the
 // buggy version called nothing and recursed per element instead.
+// TestADeclinedCalleeIsPromotedForACompiledCaller checks that the cost rule's
+// answer about a procedure can be revisited when that procedure has a compiled
+// caller.
+//
+// The rule asks whether compiling a body pays for itself, and for `helper` below
+// the answer is no: it is one `null?` and one `string-length`.  But the caller
+// cannot be compiled without it — a compiled caller reaching an interpreted
+// callee crosses the boundary on every call, and the cost lands on the caller.
+// The pair measured 2.58 s with `helper` declined (and `caller` refused with it)
+// against 1.19 s with both compiled, so the rule's answer was right about
+// `helper` and wrong about the program.
+//
+// The promotion is not unconditional, and the second case is why: `ev` is a tree
+// walk that crosses the boundary on `car`, `cdr`, `assq`, `cadr` and `caddr`,
+// and compiling it makes *it* slower rather than faster.  Promoting it measured
+// 0.42x of the interpreter — worse than leaving the whole program alone — so it
+// stays declined and its caller stays with it.
+func TestADeclinedCalleeIsPromotedForACompiledCaller(t *testing.T) {
+	t.Run("an inexpensive callee is promoted", func(t *testing.T) {
+		const src = `(define (helper l) (if (null? l) 0 (string-length "x")))
+(define (caller n acc)
+  (if (= n 0) acc (caller (- n 1) (+ acc (* n n) (helper '(1))))))
+(caller 10 0)`
+		p, err := CompileToIR(src, "test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Native != 2 {
+			t.Fatalf("native=%d, want 2: both procedures should be compiled. "+
+				"declined=%v refused=%v", p.Native, p.Declined, p.Refused)
+		}
+		if len(p.Declined) != 0 {
+			t.Errorf("promoted procedure is still reported as declined: %v", p.Declined)
+		}
+		if len(p.Refused) != 0 {
+			t.Errorf("nothing is broken here, so nothing should be refused: %v", p.Refused)
+		}
+	})
+
+	t.Run("an expensive callee is not", func(t *testing.T) {
+		const src = `(define (ev e env) (cond ((number? e) e) ((symbol? e) (cdr (assq e env)))
+((eq? (car e) 'add) (+ (ev (cadr e) env) (ev (caddr e) env)))
+(else (ev (cadddr e) (cons (cons (cadr e) (ev (caddr e) env)) env)))))
+(define (loop i acc) (if (= i 0) acc (loop (- i 1) (+ acc (ev '(add 1 2) '())))))
+(loop 10 0)`
+		p, err := CompileToIR(src, "test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// `ev` stays in the interpreter -- promoting it measured 0.42x -- and
+		// `loop` no longer has to join it.  The two were refused together while
+		// a cycle was refused outright, because `ev` is self-recursive and the
+		// cycle rule dropped it and its caller both.
+		if len(p.Declined) == 0 || !strings.Contains(p.Declined[0], "ev") {
+			t.Fatalf("ev should still be declined: %v", p.Declined)
+		}
+		if p.Native != 1 {
+			t.Fatalf("native=%d, want 1: loop should compile even though ev does "+
+				"not.  declined=%v refused=%v", p.Native, p.Declined, p.Refused)
+		}
+		// A cost decision is not a defect, and the report has to say so.
+		if len(p.Refused) != 0 {
+			t.Errorf("a cost decision is not a refusal: %v", p.Refused)
+		}
+	})
+}
+
+// TestTheCallCacheIsAGlobal checks that a call site's "what did this name
+// resolve to" slot outlives the function it is in.
+//
+// The slot was a stack slot, and the loop below is written as tail recursion:
+// `musttail` re-enters the function through `entry`, the `store i64 0` there
+// reset the slot, and every iteration resolved the name again.  The runtime
+// caches a resolved procedure by *storing it in its value table*, and that table
+// is append-only, so the cost was not just a lookup: 300000 iterations left
+// 300000 entries nobody could reclaim, and a loop that computes one number used
+// 209 MB.
+//
+// The IR is what the test can see, and it is enough: the slot has to be a global
+// and the function's entry block must not clear it.
+func TestTheCallCacheIsAGlobal(t *testing.T) {
+	const src = `(define (loop i acc)
+  (if (= i 0) acc (loop (- i 1) (+ acc (string-length "hello")))))`
+	p, err := CompileToIRWith(src, "test", Options{CompileEverything: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Native == 0 {
+		t.Fatalf("nothing was compiled: %v", p.NotCompiled())
+	}
+	call := regexp.MustCompile(`call %gs\.val @gs_call\(i8\* @\.[a-z0-9_]+, i64 1, %gs\.val\* %[a-z0-9]+, i64\* (@\.[a-z0-9_]+)\)`)
+	m := call.FindStringSubmatch(p.IR)
+	if m == nil {
+		t.Fatalf("no gs_call found in the module:\n%s", p.IR)
+	}
+	slot := m[1]
+	if !strings.Contains(p.IR, slot+" = internal global i64 zeroinitializer") {
+		t.Errorf("the cache slot %s is not a module-level global", slot)
+	}
+	// And nothing in the function may clear it, which is what a stack slot
+	// forces: `%cacheN = alloca i64` followed by `store i64 0`.
+	if strings.Contains(p.IR, "store i64 0, i64* "+slot) {
+		t.Errorf("the cache slot %s is cleared, so it never survives a call", slot)
+	}
+}
+
 func TestIRAVectorWalkIsActuallyEmitted(t *testing.T) {
 	for _, tc := range []struct{ name, src string }{
 		{"the two-parameter spelling",

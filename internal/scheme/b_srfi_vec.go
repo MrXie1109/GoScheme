@@ -166,35 +166,35 @@ func installSRFI133(m *Machine) {
 	// (vector-count pred vec ...) counts the positions where every element
 	// passes.
 	m.defSimple("vector-count", 2, -1, func(a []Value) (Value, error) {
-		return vectorPredIndex(m, "vector-count", a, true, false, false)
+		return srfiPredIndex(m, "vector-count", a, true, false, false)
 	}, lib)
 
 	// -------------------------------------------------------------- searching
 	m.defSimple("vector-index", 2, -1, func(a []Value) (Value, error) {
-		return vectorPredIndex(m, "vector-index", a, false, false, false)
+		return srfiPredIndex(m, "vector-index", a, false, false, false)
 	}, lib)
 
 	m.defSimple("vector-index-right", 2, -1, func(a []Value) (Value, error) {
-		return vectorPredIndex(m, "vector-index-right", a, false, true, false)
+		return srfiPredIndex(m, "vector-index-right", a, false, true, false)
 	}, lib)
 
 	m.defSimple("vector-skip", 2, -1, func(a []Value) (Value, error) {
-		return vectorPredIndex(m, "vector-skip", a, false, false, true)
+		return srfiPredIndex(m, "vector-skip", a, false, false, true)
 	}, lib)
 
 	m.defSimple("vector-skip-right", 2, -1, func(a []Value) (Value, error) {
-		return vectorPredIndex(m, "vector-skip-right", a, false, true, true)
+		return srfiPredIndex(m, "vector-skip-right", a, false, true, true)
 	}, lib)
 
 	// (vector-any pred vec ...) is the first true value the predicate
 	// returns, and (vector-every pred vec ...) the last one, or #f; both take
 	// the elements of a position in one call.
 	m.defSimple("vector-any", 2, -1, func(a []Value) (Value, error) {
-		return vectorAnyEvery(m, "vector-any", a, false)
+		return anyEvery(m, "vector-any", a, false)
 	}, lib)
 
 	m.defSimple("vector-every", 2, -1, func(a []Value) (Value, error) {
-		return vectorAnyEvery(m, "vector-every", a, true)
+		return anyEvery(m, "vector-every", a, true)
 	}, lib)
 
 	// (vector-partition pred vec) returns two values: a new vector holding the
@@ -316,111 +316,6 @@ func vectorFold(m *Machine, name string, a []Value, right bool) (Value, error) {
 		acc = caller.apply(args...)
 	}
 	return acc, nil
-}
-
-// vectorPredIndex is the shared body of vector-count, vector-index,
-// vector-index-right, vector-skip and vector-skip-right.
-//
-// countAll scans the whole vector and counts; otherwise the first match is
-// returned.  right scans from the other end.  skip inverts the test, so the
-// procedure finds the first element that *fails* the predicate.
-//
-// skip is a parameter rather than a comparison against name.  Deriving it from
-// the name would make a rename change what the procedure does, silently and
-// with no test able to see it; every caller says which behaviour it wants, and
-// the two booleans beside it already worked that way.
-func vectorPredIndex(m *Machine, name string, a []Value, countAll, right, skip bool) (Value, error) {
-	pred := wantProcedure(name, a[0])
-	predName := builtinName(pred)
-	caller := newFastCaller(m, pred)
-	rows := make([][]Value, len(a)-1)
-	length := -1
-	for i, v := range a[1:] {
-		rows[i] = wantVector(name, v).Items
-		if length < 0 {
-			length = len(rows[i])
-		} else if len(rows[i]) != length {
-			panic(errf(name, "vectors of different lengths"))
-		}
-	}
-	matches := func(i int) bool {
-		args := make([]Value, 0, len(rows))
-		for _, row := range rows {
-			args = append(args, row[i])
-		}
-		pass := false
-		if len(args) == 1 {
-			pass = caller.pred(predName, args[0])
-		} else {
-			pass = IsTrue(caller.apply(args...))
-		}
-		return pass != skip
-	}
-	found := int64(0)
-	for step := 0; step < length; step++ {
-		i := step
-		if right {
-			i = length - 1 - step
-		}
-		if matches(i) {
-			if !countAll {
-				return Int(int64(i)), nil
-			}
-			found++
-		}
-	}
-	if countAll {
-		return Int(found), nil
-	}
-	return False, nil
-}
-
-// vectorAnyEvery is the shared body of vector-any and vector-every.
-func vectorAnyEvery(m *Machine, name string, a []Value, all bool) (Value, error) {
-	pred := wantProcedure(name, a[0])
-	predName := builtinName(pred)
-	caller := newFastCaller(m, pred)
-	rows := make([][]Value, len(a)-1)
-	length := -1
-	for i, v := range a[1:] {
-		rows[i] = wantVector(name, v).Items
-		if length < 0 {
-			length = len(rows[i])
-		} else if len(rows[i]) != length {
-			panic(errf(name, "vectors of different lengths"))
-		}
-	}
-	var last Value = True
-	for i := 0; i < length; i++ {
-		args := make([]Value, 0, len(rows))
-		for _, row := range rows {
-			args = append(args, row[i])
-		}
-		var res Value
-		var truth bool
-		if len(args) == 1 && predName != "" {
-			if quick, ok := fastPred(predName, args[0]); ok {
-				res, truth = BooleanOf(quick), quick
-			} else {
-				res = caller.apply(args...)
-				truth = IsTrue(res)
-			}
-		} else {
-			res = caller.apply(args...)
-			truth = IsTrue(res)
-		}
-		if all && !truth {
-			return False, nil
-		}
-		if !all && truth {
-			return res, nil
-		}
-		last = res
-	}
-	if !all {
-		return False, nil
-	}
-	return last, nil
 }
 
 func init() { registerInstaller(installSRFI133) }

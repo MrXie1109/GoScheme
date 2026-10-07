@@ -177,13 +177,6 @@ func TestQuotedDerivedSyntaxIsLeftAlone(t *testing.T) {
 // working as intended.
 var knownGaps = []struct{ name, body string }{
 	{"a dotted parameter list", `(lambda (x . rest) (+ x n))`},
-	// Internal definitions that call each other are a `letrec*` with a forward
-	// reference, which is the one shape the rewrite into a `let*` cannot take:
-	// `let*` binds each name in its own frame, so `b` does not exist while `a` is
-	// being defined.  Refusing is correct — accepting produced a program that
-	// reported "b: undefined" where the interpreter found it.  Emitting it would
-	// need a real `letrec` in the emitter, which is a feature rather than a rule.
-	{"mutually recursive internal definitions", `(define (a k) (if (= k 0) (+ n 1) (b (- k 1)))) (define (b k) (if (= k 0) (* n 2) (a (- k 1)))) (+ (* n n) (a n))`},
 }
 
 func TestTheKnownGapsAreStillGaps(t *testing.T) {
@@ -207,6 +200,13 @@ func TestTheKnownGapsAreStillGaps(t *testing.T) {
 func TestTheFormerGapsNowCompile(t *testing.T) {
 	for _, tc := range []struct{ name, body string }{
 		{"letrec binding a procedure", `(letrec ((loop (lambda (i acc) (if (= i 0) acc (loop (- i 1) (+ acc i)))))) (loop n 0))`},
+		// Internal definitions that call each other are a `letrec*` with a
+		// forward reference, which is the one shape the rewrite into a `let*`
+		// cannot take: `let*` binds each name in its own frame, so `b` does not
+		// exist while `a` is being defined.  It needs a real `letrec` in the
+		// emitter, and now there is one — a cell per binding, created before any
+		// initialiser runs.  See emitLetrecStar.
+		{"mutually recursive internal definitions", `(define (a k) (if (= k 0) (+ n 1) (b (- k 1)))) (define (b k) (if (= k 0) (* n 2) (a (- k 1)))) (+ (* n n) (a n))`},
 		{"set! of a local", `(let ((x n)) (set! x (+ x 1)) (* x 2))`},
 		{"set! of a global", `(begin (set! k n) (* n n))`},
 		{"cond", `(cond ((< n 0) (+ n 1)) (else (* n 2)))`},

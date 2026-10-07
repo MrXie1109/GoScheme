@@ -5,7 +5,6 @@ package scheme
 import (
 	"fmt"
 	. "github.com/MrXie1109/GoScheme/internal/re"
-	"strconv"
 	"strings"
 )
 
@@ -54,7 +53,13 @@ type irFunc struct {
 	// lambdaNames gives each `lambda` emitted inside this function a distinct
 	// symbol to be emitted under, and lambdaDepth bounds how deep they may nest.
 	// See ir_closure.go.
-	lambdaNames lambdaNamer
+	//
+	// It is a *pointer* because the counter is shared with every function
+	// emitted inside this one.  Copying it by value gave an inner function a
+	// counter starting at the outer's current value, so a lambda nested in a
+	// lambda emitted the same symbol twice and LLVM rejected the module with
+	// "invalid redefinition of function".
+	lambdaNames *lambdaNamer
 	lambdaDepth int
 	// captureNames is the rename in force while a lambda body is being emitted:
 	// a captured variable arrives as a parameter whose name is the original, so
@@ -107,7 +112,7 @@ func (g *irGen) emitPureFunction(name string, formals []*Symbol, body []Value, c
 		locals:       map[string]irVal{},
 		calls:        calls,
 		currentBlock: "entry",
-		lambdaNames:  lambdaNamer{owner: name},
+		lambdaNames:  &lambdaNamer{owner: name},
 	}
 	// Each argument arrives as two plain integers — its word and its tag —
 	// rather than as one tagged struct.
@@ -179,7 +184,20 @@ func (g *irGen) emitPureFunction(name string, formals []*Symbol, body []Value, c
 		}
 		f.emitWalkCall(name, formals, body, args, nil, nil)
 	} else if nl, isLet := parseNamedLet(body); isLet {
-		f.emitNamedLetLoop(nl)
+		// A named let is emitted whole or not at all.  It is the one form
+		// whose bindings exist only as the walk's parameters, so letting the
+		// generic path below emit it produced references to names nothing had
+		// bound -- `slow`, `fast` and `acc` reported undefined, and the
+		// compiled program disagreed with the interpreter.
+		//
+		// Failing here costs this procedure its native body.  That is the
+		// right price: the same procedure was left to the interpreter before
+		// this recogniser existed, and a slower program is not a wrong one.
+		if err := f.emitNamedLetLoop(nl); err != nil {
+			return err
+		}
+		// emitWalkCall records the loop's value where every other walk leaves
+		// it, so the tail of this function picks it up unchanged.
 	}
 
 	// The body is in tail position: whatever it evaluates to is what the
@@ -210,10 +228,11 @@ func (g *irGen) emitPureFunction(name string, formals []*Symbol, body []Value, c
 	out.WriteString(f.entry.String())
 	out.WriteString(f.body.String())
 	if tailReturned {
-		out.WriteString("  unreachable\n}\n\n")
+		out.WriteString("  unreachable\n")
 	} else {
-		fmt.Fprintf(&out, "  ret %s %s\n}\n\n", gsVal, boxed)
+		fmt.Fprintf(&out, "  ret %s %s\n", gsVal, boxed)
 	}
+	out.WriteString("}\n\n")
 	g.module.body.WriteString(out.String())
 
 	// The adapter: the uniform entry point the runtime calls, which unpacks the
@@ -266,6 +285,33 @@ func adapterName(name string) string { return mangle(name) + "_entry" }
 type irVal struct {
 	bits string // the number, or the handle
 	tag  string // tagFixnum or tagHandle, as an i64
+	// cell marks a value that lives in a heap cell — `bits` is the cell's handle
+	// — rather than in a register.  Every reader fetches from the cell.
+	//
+	// Only a `letrec*` binding produces one, and it needs it: the name has to
+	// have a location before its initialiser runs, so that a closure created by
+	// an earlier initialiser can refer to it.  A register cannot be written
+	// after the closure that reads it was created, which is the whole difference
+	// between `letrec*` and `let*`.
+	cell bool
+}
+
+// deref reads a value out of its cell when it lives in one, and returns it
+// unchanged otherwise.  Every use of a local goes through this, so the two
+// representations cannot drift apart.
+//
+// The read is a call into the runtime, which is what makes it an *error* to read
+// a `letrec*` binding before its initialiser has run — the interpreter raises
+// there, and a compiled program has to raise too rather than return whatever the
+// cell happened to hold.
+func (f *irFunc) deref(v irVal) irVal {
+	if !v.cell {
+		return v
+	}
+	f.want(gsVal + " @gs_cell_ref(i64)")
+	out := f.reg()
+	fmt.Fprintf(&f.body, "  %s = call %s @gs_cell_ref(i64 %s)\n", out, gsVal, v.bits)
+	return f.loadVal(out)
 }
 
 // fixnumVal is an irVal holding a constant machine integer.
@@ -322,7 +368,7 @@ func (f *irFunc) emitExpr(e Value) (irVal, error) {
 		return boolVal(bool(x)), nil
 	case *Symbol:
 		if v, ok := f.locals[x.Name]; ok {
-			return v, nil
+			return f.deref(v), nil
 		}
 		// Not a parameter or a let binding, so it is a global: read it now,
 		// where it is used, because anything between here and the last read may
@@ -434,6 +480,18 @@ func (f *irFunc) emitForm(x *Pair) (irVal, error) {
 		return f.emitIf(args)
 	case "let", "let*":
 		return f.emitLet(args, head.Name == "let*")
+	case "letrec*":
+		// Only the forward-referencing kind reaches here: `expandLetrecToLet`
+		// rewrites the rest into the `let*` it is equivalent to, and a
+		// forward reference is exactly the case where it is not equivalent.
+		return f.emitLetrecStar(args)
+	case "letrec":
+		// `letrec` evaluates its initialisers in an unspecified order, so a
+		// body that depends on that order is a program whose meaning this does
+		// not define.  `letrec*` is the ordered form and the one the compiler
+		// emits; a bare `letrec` gets the ordered behaviour, which is what every
+		// implementation does and what R7RS permits.
+		return f.emitLetrecStar(args)
 	case "and", "or":
 		return f.emitAndOr(args, head.Name == "and")
 	case "quote":
@@ -713,6 +771,142 @@ func (f *irFunc) emitLet(args []Value, sequential bool) (irVal, error) {
 	return last, nil
 }
 
+// emitLetrecStar emits a `letrec*` whose initialisers refer forward.
+//
+// The rewrite to `let*` handles every `letrec*` that does not, and this is the
+// one that does.  What the two differ on is *when a name acquires its location*:
+// `let*` creates each binding's frame as its initialiser finishes, so a name
+// bound later does not exist while an earlier initialiser runs; `letrec*` gives
+// every name its location first and then evaluates the initialisers in order.
+// A lambda that mentions a later name is the observable difference — it captures
+// the frame when it is created, so under `let*` it captures a frame that does not
+// yet have the later binding, and under `letrec*` it captures the location that
+// is filled in afterwards.
+//
+//	(letrec* ((mean (lambda (f g) (f (/ (sum g ton) n))))   ; sum and n come later
+//	          (sum  (lambda (g ton) ...))
+//	          (n    (sum (lambda (x) 1) ton)))
+//	  ...)
+//
+// This is `means` from the R7RS test suite, and it is the shape the old textual
+// check declined.  The check was right about `let*`: the rewrite really would
+// have been wrong, and it was wrong in a way that crashed rather than a way that
+// was slow.  Giving the form its actual semantics is the fix, rather than
+// loosening the check.
+//
+// Each binding gets a slot in the entry block before any initialiser runs.  A
+// lambda that mentions a later name then captures the *slot*, which is what
+// `letrec*` means; the slot is filled by the time anything can call the closure,
+// because the closures only become reachable once the initialisers have run.
+// Actually reading a later name directly in an initialiser — `(n (sum ...))`
+// above calls `sum` before `n`, which is fine, but `(a b)` before `b` is plain
+// would be an error in Scheme too — reads an uninitialised slot and is left to
+// the interpreter by the caller, which is why this returns an error for a name
+// that is neither a lambda nor already filled.
+func (f *irFunc) emitLetrecStar(args []Value) (irVal, error) {
+	if len(args) < 1 {
+		return irVal{}, fmt.Errorf("ir: a letrec* with no bindings")
+	}
+	bindings, ok := ListToSlice(args[0])
+	if !ok {
+		return irVal{}, fmt.Errorf("ir: letrec* bindings that are not a list")
+	}
+	names := make([]string, 0, len(bindings))
+	inits := make([]Value, 0, len(bindings))
+	for _, b := range bindings {
+		p, ok := b.(*Pair)
+		if !ok {
+			return irVal{}, fmt.Errorf("ir: a letrec* binding that is not a pair")
+		}
+		items, _ := ListToSlice(p)
+		if len(items) != 2 {
+			return irVal{}, fmt.Errorf("ir: a letrec* binding without a value")
+		}
+		sym, ok := items[0].(*Symbol)
+		if !ok {
+			return irVal{}, fmt.Errorf("ir: a letrec* binding that is not a name")
+		}
+		names = append(names, sym.Name)
+		inits = append(inits, items[1])
+	}
+	saved := map[string]irVal{}
+	for k, v := range f.locals {
+		saved[k] = v
+	}
+	defer func() { f.locals = saved }()
+
+	// Every name gets a **cell** — one slot on the heap — before any initialiser
+	// runs, and the name is bound to the cell for the whole form.
+	//
+	// A cell rather than a stack slot, and the reason is the shape `letrec*`
+	// exists for:
+	//
+	//	(letrec* ((a (lambda () (b)))
+	//	          (b (lambda () 42)))
+	//	  (a))
+	//
+	// `a`'s body reads `b`, so the closure has to record where `b` will be
+	// written.  A compiled frame's slots are on the C stack and are gone when
+	// the procedure returns, so a closure cannot hold one; the heap can, and the
+	// handle is what crosses.  This is what the interpreter gets for free by
+	// sharing one environment frame that later bindings are added to, which is
+	// the sentence in the old comment that named this bug.
+	//
+	// Reading a cell that has not been filled is the interpreter's error, and
+	// `gs_cell_ref` reports it in the interpreter's words.
+	f.want("i64 @gs_cell_new()")
+	cells := make([]irVal, len(names))
+	for i := range names {
+		out := f.reg()
+		fmt.Fprintf(&f.body, "  %s = call i64 @gs_cell_new()\n", out)
+		cells[i] = irVal{bits: out, tag: tagHandle, cell: true}
+		f.locals[names[i]] = cells[i]
+	}
+	// The initialisers, in order, each stored into its own cell as it runs.
+	// R7RS gives `letrec*` a left-to-right order, so an initialiser that *calls*
+	// a later name is a program error in the interpreter too and is not something
+	// this has to arrange.
+	f.want("void @gs_cell_set(i64, " + gsVal + ")")
+	for i, init := range inits {
+		v, err := f.emitExpr(init)
+		if err != nil {
+			return irVal{}, err
+		}
+		fmt.Fprintf(&f.body, "  call void @gs_cell_set(i64 %s, %s %s)\n",
+			cells[i].bits, gsVal, f.asVal(v))
+	}
+	body := args[1:]
+	var last irVal
+	var err error
+	for i, b := range body {
+		bodySaved := f.tail
+		if i != len(body)-1 {
+			f.tail = false
+		}
+		last, err = f.emitExpr(b)
+		f.tail = bodySaved
+		if err != nil {
+			return irVal{}, err
+		}
+	}
+	return last, nil
+}
+
+// asVal turns an irVal into a %gs.val for a call that takes a tagged value.
+func (f *irFunc) asVal(v irVal) string {
+	if v.bits == "" {
+		return "undef"
+	}
+	// A value already in a slot is read first; the pair of insertvalue
+	// instructions that follow would otherwise name the slot itself.
+	v = f.deref(v)
+	a := f.reg()
+	fmt.Fprintf(&f.body, "  %s = insertvalue %s undef, i64 %s, 0\n", a, gsVal, v.bits)
+	b := f.reg()
+	fmt.Fprintf(&f.body, "  %s = insertvalue %s %s, i64 %s, 1\n", b, gsVal, a, v.tag)
+	return b
+}
+
 // emitSet emits `(set! NAME VALUE)`.
 //
 // A local that is assigned is still an SSA value: rebinding the name to the new
@@ -786,22 +980,10 @@ func (f *irFunc) emitSet(args []Value) (irVal, error) {
 func (f *irFunc) emitGlobalSet(name string, val irVal) error {
 	f.want("void @gs_set_global(i8*, i64, " + gsVal + ")")
 	lit := f.mod.stringLiteral(name, "set"+name)
-	agg := f.toAggregate(val)
+	agg := val.bits0(f)
 	fmt.Fprintf(&f.body, "  call void @gs_set_global(i8* %s, i64 %d, %s %s)\n",
 		lit, len(name), gsVal, agg)
 	return nil
-}
-
-// toAggregate packs a (word, tag) pair into the %gs.val struct an entry point
-// takes by value.  Callers that pass an argument array use storeArg instead,
-// which writes the two words into the array directly and skips the intermediate
-// aggregate.
-func (f *irFunc) toAggregate(v irVal) string {
-	first := f.reg()
-	fmt.Fprintf(&f.body, "  %s = insertvalue %s undef, i64 %s, 0\n", first, gsVal, v.bits)
-	second := f.reg()
-	fmt.Fprintf(&f.body, "  %s = insertvalue %s %s, i64 %s, 1\n", second, gsVal, first, v.tag)
-	return second
 }
 
 // emitQuoted emits a quoted literal.
@@ -901,7 +1083,21 @@ func (f *irFunc) emitCall(op string, args []Value) (irVal, error) {
 	// the runtime that would otherwise catch it.  A call to anything else may
 	// have any number of arguments, including none — `(newline)` is a call like
 	// any other.
+	// `+` and `*` are the two operators with a value at zero arguments — the
+	// additive and multiplicative identities, which R7RS defines and which a
+	// recursive sum over an empty list is written around:
+	//
+	//	(if (null? ton) (+) ...)
+	//
+	// Every other operator does need an argument, and an arity the runtime would
+	// have reported is reported here instead.
 	if pureOperator(op) && len(vals) == 0 {
+		switch op {
+		case "+":
+			return fixnumVal(0), nil
+		case "*":
+			return fixnumVal(1), nil
+		}
 		return irVal{}, fmt.Errorf("ir: %s takes at least one argument", op)
 	}
 	switch op {
@@ -1000,7 +1196,7 @@ func (f *irFunc) emitCall(op string, args []Value) (irVal, error) {
 	// interpreter answered.  A local that holds a procedure is applied as the
 	// value it is.
 	if local, ok := f.locals[op]; ok {
-		return f.emitClosureApply(local, vals)
+		return f.emitClosureApply(f.deref(local), vals)
 	}
 	// A call to another procedure: native when that procedure was compiled,
 	// and a call into the runtime when it was not.  The runtime call is what
@@ -1027,10 +1223,21 @@ func (f *irFunc) emitCall(op string, args []Value) (irVal, error) {
 // arguments and the call and nothing else.  The slot is per site and not per
 // name because a program may rebind a global between two sites, and each site
 // has to see the binding in effect when it first runs.
+//
+// **The slot is a module-level global, and it has to be.**  It was a function
+// stack slot, which made the cache useless in exactly the case it exists for:
+// a loop written as tail recursion re-enters the function through `entry`, the
+// `store i64 0` at the top reset the slot, and every iteration resolved the
+// name again.  Measured on `(string-length "hello")` in a loop, that was one
+// `store` into the runtime's value table per iteration -- 300000 entries after
+// 300000 iterations, a table that is append-only and therefore never reclaimed,
+// and 209 MB of memory for a loop that computes one number.  As a global the
+// slot survives calls, which is what "once per site" has to mean for a site
+// inside a function that is entered many times.
 func (f *irFunc) emitRuntimeCall(op string, vals []irVal) (irVal, error) {
 	f.want(gsVal + " @gs_call(i8*, i64, " + gsVal + "*, i64*)")
 	name := f.mod.stringLiteral(op, "call"+op)
-	cache := f.allocaPtr()
+	cache := f.mod.callCache(op)
 	slot := f.allocaArray(len(vals))
 	for i, v := range vals {
 		f.storeArg(slot, i, v)
@@ -1144,394 +1351,6 @@ func (f *irFunc) emitNativeCall(op string, vals []irVal) (irVal, error) {
 	return f.loadVal(out), nil
 }
 
-// truthOf turns a tagged value into an i1 a branch can use.
-//
-// Scheme's only false value is #f, and an accepted body produces numbers, so a
-// fixnum is always true — but "always true" is not the same as "known at
-// compile time".  A comparison is itself a fixnum, and its *value* decides the
-// branch, so a value whose tag is a constant still has to be tested.  Getting
-// that wrong made every comparison test as true, which turned `(if (= n 0) ...)`
-// into a branch that was always taken.
-func (f *irFunc) truthOf(v irVal) (string, error) {
-	// A literal: the answer is known here.
-	if v.isConstFixnum() {
-		if v.bits == "0" {
-			return "false", nil
-		}
-		return "true", nil
-	}
-	// A fixnum whose value is not a literal: only the word needs testing, since
-	// a fixnum is never #f.
-	if v.tag == tagFixnum {
-		out := f.reg()
-		fmt.Fprintf(&f.body, "  %s = icmp ne i64 %s, 0\n", out, v.bits)
-		return out, nil
-	}
-	// A boolean is #f exactly when its word is zero, so the test is the word —
-	// no call needed.  Without this, `(if (= i 0) ...)` asked the runtime whether
-	// the *result of a comparison* was true, once per iteration, which is the
-	// most common shape in any Scheme program.
-	if v.tag == tagBoolean {
-		out := f.reg()
-		fmt.Fprintf(&f.body, "  %s = icmp ne i64 %s, 0\n", out, v.bits)
-		return out, nil
-	}
-	f.want("i64 @gs_truthy(" + gsVal + ")")
-	isFixnum := f.reg()
-	fmt.Fprintf(&f.body, "  %s = icmp eq i64 %s, %s\n", isFixnum, v.tag, tagFixnum)
-	askLabel := f.freshLabel("truth.ask")
-	okLabel := f.freshLabel("truth.ok")
-	doneLabel := f.freshLabel("truth.done")
-	fmt.Fprintf(&f.body, "  br i1 %s, label %%%s, label %%%s\n", isFixnum, okLabel, askLabel)
-
-	f.block(okLabel)
-	okFrom := f.currentBlock
-	fmt.Fprintf(&f.body, "  br label %%%s\n", doneLabel)
-
-	f.block(askLabel)
-	asked := f.reg()
-	fmt.Fprintf(&f.body, "  %s = call i64 @gs_truthy(%s %s)\n", asked, gsVal, v.bits0(f))
-	askedBool := f.reg()
-	fmt.Fprintf(&f.body, "  %s = icmp ne i64 %s, 0\n", askedBool, asked)
-	fmt.Fprintf(&f.body, "  br label %%%s\n", doneLabel)
-
-	f.block(doneLabel)
-	out := f.reg()
-	fmt.Fprintf(&f.body, "  %s = phi i1 [ true, %%%s ], [ %s, %%%s ]\n",
-		out, okFrom, askedBool, askLabel)
-	return out, nil
-}
-
-// bits0 rebuilds a whole gs_val from an irVal, which a runtime call that takes
-// one needs.
-func (v irVal) bits0(f *irFunc) string {
-	first := f.reg()
-	fmt.Fprintf(&f.body, "  %s = insertvalue %s undef, i64 %s, 0\n", first, gsVal, v.bits)
-	second := f.reg()
-	fmt.Fprintf(&f.body, "  %s = insertvalue %s %s, i64 %s, 1\n", second, gsVal, first, v.tag)
-	return second
-}
-
-// numericTest asks a question whose answer a fixnum can give directly, and
-// hands it to the runtime when the value is a handle.
-//
-// The two answers are computed in separate blocks and joined, rather than
-// asking the runtime and ignoring the result — a handle and a fixnum are both
-// reachable, and a program that only ever uses small numbers must not pay for
-// the other case.
-func (f *irFunc) numericTest(v irVal, pred, other string) (irVal, error) {
-	if v.isConstFixnum() && other == "0" {
-		// A literal against zero is decided here rather than at run time.  The
-		// answer depends on the literal's *value*, not on the fact that it is
-		// one, and reading only the tag is what made `(zero? 5)` true.
-		zero, err := strconv.ParseInt(v.bits, 10, 64)
-		if err != nil {
-			return irVal{}, fmt.Errorf("ir: %s is not a machine integer", v.bits)
-		}
-		yes := map[string]bool{
-			"eq":  zero == 0,
-			"sgt": zero > 0,
-			"slt": zero < 0,
-		}[pred]
-		return boolVal(yes), nil
-	}
-	fast := f.reg()
-	switch pred {
-	case "eq":
-		fmt.Fprintf(&f.body, "  %s = icmp eq i64 %s, %s\n", fast, v.bits, other)
-	case "sgt":
-		fmt.Fprintf(&f.body, "  %s = icmp sgt i64 %s, %s\n", fast, v.bits, other)
-	case "slt":
-		fmt.Fprintf(&f.body, "  %s = icmp slt i64 %s, %s\n", fast, v.bits, other)
-	}
-	isFixnum := f.reg()
-	fmt.Fprintf(&f.body, "  %s = icmp eq i64 %s, %s\n", isFixnum, v.tag, tagFixnum)
-	slowLabel := f.freshLabel("numtest.slow")
-	doneLabel := f.freshLabel("numtest.done")
-	// The block the fast answer comes from, which the phi has to name: the
-	// branch is about to leave it.
-	fastFrom := f.currentBlock
-	fmt.Fprintf(&f.body, "  br i1 %s, label %%%s, label %%%s\n", isFixnum, doneLabel, slowLabel)
-
-	f.block(slowLabel)
-	// A handle: the runtime compares it.  `zero?` and friends are the same
-	// question as a comparison against zero.
-	var asked string
-	switch pred {
-	case "eq":
-		f.want("i64 @gs_num_eq(" + gsVal + ", " + gsVal + ")")
-		asked = f.callNumCompare("gs_num_eq", v, fixnumVal(0))
-	case "sgt":
-		// x > 0 is 0 < x, and only `<` is an entry point.
-		f.want("i64 @gs_num_lt(" + gsVal + ", " + gsVal + ")")
-		asked = f.callNumCompare("gs_num_lt", fixnumVal(0), v)
-	case "slt":
-		f.want("i64 @gs_num_lt(" + gsVal + ", " + gsVal + ")")
-		asked = f.callNumCompare("gs_num_lt", v, fixnumVal(0))
-	}
-	askedBool := f.reg()
-	fmt.Fprintf(&f.body, "  %s = icmp ne i64 %s, 0\n", askedBool, asked)
-	fmt.Fprintf(&f.body, "  br label %%%s\n", doneLabel)
-
-	f.block(doneLabel)
-	out := f.reg()
-	fmt.Fprintf(&f.body, "  %s = phi i1 [ %s, %%%s ], [ %s, %%%s ]\n",
-		out, fast, fastFrom, askedBool, slowLabel)
-	return f.truthVal(out), nil
-}
-
-// callNumCompare calls one of the runtime's comparisons on two tagged values.
-func (f *irFunc) callNumCompare(fn string, a, b irVal) string {
-	out := f.reg()
-	fmt.Fprintf(&f.body, "  %s = call i64 @%s(%s %s, %s %s)\n",
-		out, fn, gsVal, a.bits0(f), gsVal, b.bits0(f))
-	return out
-}
-
-// compareTagged is a comparison of two tagged values, as 0 or 1.
-func (f *irFunc) compareTagged(op string, a, b irVal) (string, error) {
-	return f.emitCompare(op, a, b)
-}
-
-// boxedLiteral turns a constant too large for a machine word into a handle.
-//
-// The literal is written as a Scheme number and handed to the runtime, which
-// builds the value: reproducing bignum construction in the generated code would
-// mean the code knowing how a bignum is stored.
-func (f *irFunc) boxedLiteral(text string) (irVal, error) {
-	f.want("i64 @gs_box_literal(i8*, i64)")
-	lit := f.mod.stringLiteral(text, "lit")
-	out := f.reg()
-	fmt.Fprintf(&f.body, "  %s = call i64 @gs_box_literal(i8* %s, i64 %d)\n",
-		out, lit, len(text))
-	return irVal{bits: out, tag: tagHandle}, nil
-}
-
-// known reports whether a name is one the generated code can call directly.
-func (f *irFunc) known(name string) bool {
-	for _, c := range f.calls {
-		if c == name {
-			return true
-		}
-	}
-	return false
-}
-
-// zext widens an i1 to the i64 a Scheme value is.
-func (f *irFunc) zext(cmp string) string {
-	out := f.reg()
-	fmt.Fprintf(&f.body, "  %s = zext i1 %s to i64\n", out, cmp)
-	return out
-}
-
-// emitCompare emits an ordering comparison as 0 or 1.
-//
-// Two fixnums are compared directly, which is the whole fast path.  Anything
-// else goes to the runtime, because a handle's number may be larger than a
-// machine word and the comparison has to be the exact one — and because the
-// operands may not even be integers.
-//
-// `>` and `>=` are not runtime entry points: they are `<` and `<=` with the
-// operands swapped, which is why the swap is written out here rather than left
-// to each caller.
-func (f *irFunc) emitCompare(op string, a, b irVal) (string, error) {
-	pred := map[string]string{
-		"=": "eq", "<": "slt", ">": "sgt", "<=": "sle", ">=": "sge",
-	}[op]
-	if pred == "" {
-		return "", fmt.Errorf("ir: %s is not a comparison", op)
-	}
-	// Both operands are known to be machine words, so the machine comparison is
-	// the whole answer and there is nothing to branch for.
-	//
-	// This matters more than it looks.  A tag that is a literal zero is the
-	// common case — every value a compiled body computes locally is one — and
-	// emitting the runtime path anyway put a call to gs_num_eq and a call to
-	// gs_truthy inside the loop of `(define (loop i acc) (if (= i 0) ...))`.
-	// The optimizer could not remove them, because the tag arrives through a phi
-	// and it cannot prove which branch reaches the test.
-	if a.tag == tagFixnum && b.tag == tagFixnum {
-		fast := f.reg()
-		fmt.Fprintf(&f.body, "  %s = icmp %s i64 %s, %s\n", fast, pred, a.bits, b.bits)
-		return f.zext(fast), nil
-	}
-	// One operand is a literal fixnum and the other may be a handle.
-	//
-	// A handle is never equal to a fixnum: the runtime hands back a handle only
-	// for a value that does not fit a machine word, so a value that *would*
-	// compare equal to a small constant is always a fixnum.  For a comparison
-	// whose answer is therefore decided by the tag — `=` against a constant —
-	// the machine comparison of a handle would be meaningless and the answer is
-	// simply false.
-	//
-	// This is the shape of every loop test in Scheme, `(= i 0)` above all, and
-	// it is the difference between a loop that calls the runtime to ask and one
-	// that does not.
-	if op == "=" {
-		// Whichever side is the literal, the other may be a handle.
-		lit, other := irVal{}, irVal{}
-		switch {
-		case b.isConstFixnum() && a.tag != tagFixnum:
-			lit, other = b, a
-		case a.isConstFixnum() && b.tag != tagFixnum:
-			lit, other = a, b
-		}
-		if lit.bits != "" {
-			fast := f.reg()
-			fmt.Fprintf(&f.body, "  %s = icmp eq i64 %s, %s\n", fast, other.bits, lit.bits)
-			isFixnum := f.reg()
-			fmt.Fprintf(&f.body, "  %s = icmp eq i64 %s, %s\n", isFixnum, other.tag, tagFixnum)
-			out := f.reg()
-			fmt.Fprintf(&f.body, "  %s = and i1 %s, %s\n", out, fast, isFixnum)
-			return f.zext(out), nil
-		}
-	}
-	fast := f.reg()
-	fmt.Fprintf(&f.body, "  %s = icmp %s i64 %s, %s\n", fast, pred, a.bits, b.bits)
-
-	// The fast answer only stands when both operands are machine words.
-	bothFixnum := f.reg()
-	tags := f.reg()
-	fmt.Fprintf(&f.body, "  %s = or i64 %s, %s\n", tags, a.tag, b.tag)
-	fmt.Fprintf(&f.body, "  %s = icmp eq i64 %s, %s\n", bothFixnum, tags, tagFixnum)
-
-	slowLabel := f.freshLabel("cmp.slow")
-	doneLabel := f.freshLabel("cmp.done")
-	// The block the fast answer comes from, which the phi has to name: the
-	// branch is about to leave it.
-	fastFrom := f.currentBlock
-	fmt.Fprintf(&f.body, "  br i1 %s, label %%%s, label %%%s\n", bothFixnum, doneLabel, slowLabel)
-
-	f.block(slowLabel)
-	f.want("i64 @gs_num_eq(" + gsVal + ", " + gsVal + ")")
-	f.want("i64 @gs_num_lt(" + gsVal + ", " + gsVal + ")")
-	f.want("i64 @gs_num_le(" + gsVal + ", " + gsVal + ")")
-	// The table is indexed into a variable first, and deliberately so: written
-	// as `fn, swap := map[...]{...}[op]` the two-result form of a map index
-	// takes over, so `swap` would be the *presence* of the key — always true
-	// here — rather than the field.  That silently reversed every `>` and `>=`.
-	compare := map[string]struct {
-		name string
-		swap bool
-	}{
-		"=":  {"gs_num_eq", false},
-		"<":  {"gs_num_lt", false},
-		">":  {"gs_num_lt", true},
-		"<=": {"gs_num_le", false},
-		">=": {"gs_num_le", true},
-	}[op]
-	lhs, rhs := a, b
-	if compare.swap {
-		lhs, rhs = b, a
-	}
-	asked := f.callNumCompare(compare.name, lhs, rhs)
-	askedBool := f.reg()
-	fmt.Fprintf(&f.body, "  %s = icmp ne i64 %s, 0\n", askedBool, asked)
-	fmt.Fprintf(&f.body, "  br label %%%s\n", doneLabel)
-
-	f.block(doneLabel)
-	out := f.reg()
-	fmt.Fprintf(&f.body, "  %s = phi i1 [ %s, %%%s ], [ %s, %%%s ]\n",
-		out, fast, fastFrom, askedBool, slowLabel)
-	// A plain 0 or 1: the caller chains comparisons with `and i64` and wraps the
-	// finished chain in a boolean tag.
-	return f.zext(out), nil
-}
-
-// emitCheckedArith emits a +, - or * that falls back to the runtime when the
-// machine-word result would not be the Scheme result.
-//
-// The check is LLVM's own overflow intrinsic, which sets a flag rather than
-// trapping: `llvm.sadd.with.overflow.i64` returns the sum and a boolean, and the
-// generated code tests the boolean.  Without it, `(* 1000000000000
-// 1000000000000)` would produce a wrapped negative number where Scheme produces
-// 10^24, and a compiled program would disagree with the interpreter — which is
-// the one thing a compiler must never do.
-//
-// The operands are not assumed to be machine words: if either carries a handle
-// tag the runtime does the arithmetic, which is what makes an exact integer of
-// any size reachable from compiled code.  The two results are two words each,
-// so they are spilled to slots and the join loads them — a phi node over four
-// values would have to name the right predecessor for each, and the alloca is
-// folded away again on the fast path.
-func (f *irFunc) emitCheckedArith(op string, a, b irVal) (irVal, error) {
-	intr := map[string]string{
-		"+": "llvm.sadd.with.overflow.i64",
-		"-": "llvm.ssub.with.overflow.i64",
-		"*": "llvm.smul.with.overflow.i64",
-	}[op]
-	if intr == "" {
-		return irVal{}, fmt.Errorf("ir: %s is not a checked operation", op)
-	}
-	// Both operands must be machine words for the intrinsic to mean anything —
-	// unless the tags say they already are, which they do whenever the operands
-	// were computed locally.  Asking anyway is what put an unreachable runtime
-	// check on every arithmetic operation in every loop, and the optimizer could
-	// not remove it because a tag arriving through a phi is not something it can
-	// prove.
-	knownFixnums := a.tag == tagFixnum && b.tag == tagFixnum
-	var bitsSlot, tagSlot string
-	if !knownFixnums {
-		bitsSlot = f.alloca()
-		tagSlot = f.alloca()
-	}
-
-	fastLabel := f.freshLabel("arith.fast")
-	slowLabel := f.freshLabel("arith.slow")
-	doneLabel := f.freshLabel("arith.done")
-
-	if !knownFixnums {
-		tags := f.reg()
-		fmt.Fprintf(&f.body, "  %s = or i64 %s, %s\n", tags, a.tag, b.tag)
-		bothFixnum := f.reg()
-		fmt.Fprintf(&f.body, "  %s = icmp eq i64 %s, %s\n", bothFixnum, tags, tagFixnum)
-		fmt.Fprintf(&f.body, "  br i1 %s, label %%%s, label %%%s\n", bothFixnum, fastLabel, slowLabel)
-	}
-
-	f.block(fastLabel)
-	// The intrinsic returns { i64, i1 }; take it apart with extractvalue.
-	pair := f.reg()
-	fmt.Fprintf(&f.body, "  %s = call { i64, i1 } @%s(i64 %s, i64 %s)\n",
-		pair, intr, a.bits, b.bits)
-	val := f.reg()
-	over := f.reg()
-	fmt.Fprintf(&f.body, "  %s = extractvalue { i64, i1 } %s, 0\n", val, pair)
-	fmt.Fprintf(&f.body, "  %s = extractvalue { i64, i1 } %s, 1\n", over, pair)
-	// No overflow: the word is the answer.  Overflow: the runtime's, which is
-	// the same block a handle operand goes to.
-	okLabel := f.freshLabel("arith.ok")
-	fmt.Fprintf(&f.body, "  br i1 %s, label %%%s, label %%%s\n", over, slowLabel, okLabel)
-	f.block(okLabel)
-	if knownFixnums {
-		// Nothing to join: the fast path is the only way here, and the answer is
-		// a machine word by construction.
-		return irVal{bits: val, tag: tagFixnum}, nil
-	}
-	fmt.Fprintf(&f.body, "  store i64 %s, i64* %s\n", val, bitsSlot)
-	fmt.Fprintf(&f.body, "  store i64 %s, i64* %s\n", tagFixnum, tagSlot)
-	fmt.Fprintf(&f.body, "  br label %%%s\n", doneLabel)
-
-	f.block(slowLabel)
-	f.want(gsVal + " @gs_arith(i32, " + gsVal + ", " + gsVal + ")")
-	slow := f.reg()
-	fmt.Fprintf(&f.body, "  %s = call %s @gs_arith(i32 %d, %s %s, %s %s)\n",
-		slow, gsVal, arithCode(op), gsVal, a.bits0(f), gsVal, b.bits0(f))
-	slowBits := f.reg()
-	fmt.Fprintf(&f.body, "  %s = extractvalue %s %s, 0\n", slowBits, gsVal, slow)
-	slowTag := f.reg()
-	fmt.Fprintf(&f.body, "  %s = extractvalue %s %s, 1\n", slowTag, gsVal, slow)
-	fmt.Fprintf(&f.body, "  store i64 %s, i64* %s\n", slowBits, bitsSlot)
-	fmt.Fprintf(&f.body, "  store i64 %s, i64* %s\n", slowTag, tagSlot)
-	fmt.Fprintf(&f.body, "  br label %%%s\n", doneLabel)
-
-	f.block(doneLabel)
-	outBits := f.reg()
-	fmt.Fprintf(&f.body, "  %s = load i64, i64* %s\n", outBits, bitsSlot)
-	outTag := f.reg()
-	fmt.Fprintf(&f.body, "  %s = load i64, i64* %s\n", outTag, tagSlot)
-	return irVal{bits: outBits, tag: outTag}, nil
-}
-
 // block starts a basic block and records it as the one being written.
 //
 // The emitter has to know which block it is in, because a phi node names its
@@ -1546,6 +1365,7 @@ func (f *irFunc) block(label string) {
 
 // alloca makes a slot.  LLVM requires the alloca instruction to be in the entry
 // block, so the declaration is collected here and written out when the function
+// is assembled — the body is generated before the entry block is final.
 // is assembled — the body is generated before the entry block is final.
 func (f *irFunc) alloca() string {
 	f.nextSlot++

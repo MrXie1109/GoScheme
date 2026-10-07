@@ -619,13 +619,23 @@ func (f *irFunc) emitVecWalkArgs(kind loopKind, pred predKind, args []irVal) {
 // has to be the recognised shape.  That split matters: `(let ((a (* 2 3))) ...)`
 // is fine because evaluating `a` is something the compiler can already do, while
 // the loop body is what has to match.
-func (f *irFunc) emitNamedLetLoop(nl namedLetForm) {
+func (f *irFunc) emitNamedLetLoop(nl namedLetForm) error {
 	inv := map[string]bool{}
 	for _, s := range nl.outer {
 		inv[s.Name] = true
 	}
 	if _, _, shape, ok := recogniseAnyWalkInv(nl.loop, nl.vars, nl.body, inv); !ok || shape == shapeNone {
-		return
+		// Not a walk after all.  This *must* be an error and not a return:
+		// the caller emits this form by other means when no walk was found,
+		// and a named let is precisely the form those other means do not
+		// understand -- its loop variables exist only as the walk's
+		// parameters, so the generic path reported `slow`, `fast` and `acc`
+		// as undefined and the program disagreed with the interpreter.
+		//
+		// Refusing costs the procedure its native body, which is what would
+		// have happened had nothing been recognised in the first place.  It
+		// is the same outcome, reached honestly.
+		return fmt.Errorf("a named let whose body is not a recognised walk")
 	}
 	// The enclosing bindings first, then the loop's own parameters: the loop
 	// body may mention both, and the enclosing ones are the invariants.
@@ -633,7 +643,7 @@ func (f *irFunc) emitNamedLetLoop(nl namedLetForm) {
 	for _, e := range nl.outerInit {
 		v, err := f.emitExpr(e)
 		if err != nil {
-			return
+			return err
 		}
 		outerVals = append(outerVals, v)
 	}
@@ -641,14 +651,16 @@ func (f *irFunc) emitNamedLetLoop(nl namedLetForm) {
 	for _, e := range nl.init {
 		v, err := f.emitExpr(e)
 		if err != nil {
-			return
+			return err
 		}
 		vals = append(vals, v)
 	}
 	if len(vals) != len(nl.vars) {
-		return
+		return fmt.Errorf("a named let with %d variables and %d starting values",
+			len(nl.vars), len(vals))
 	}
 	f.emitWalkCall(nl.loop, nl.vars, nl.body, vals, outerVals, inv)
+	return nil
 }
 
 // ---------------------------------------------------------------------------

@@ -458,6 +458,9 @@ docs/srfi/                one reference page per (srfi N) library
 docs/ffi-design.md        the design notes behind (goscheme ffi)
 docs/compile.md           the native compiler: what it compiles, the ABI, the
                           tagged-value boundary, and what it cannot do
+docs/compiler-notes.md    the working record behind compile.md and
+                          performance.md: what was measured, what was thrown
+                          away, and what is understood but not done
 docs/development.md       building, testing and cross-compiling locally
 Makefile                  build, test and dist targets
 ```

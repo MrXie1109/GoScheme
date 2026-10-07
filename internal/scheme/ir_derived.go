@@ -3,6 +3,8 @@
 package scheme
 
 import (
+	"strconv"
+
 	. "github.com/MrXie1109/GoScheme/internal/re"
 )
 
@@ -202,23 +204,7 @@ var condGenCounter int
 // test's value would be handed to the inner receiver.
 func freshCondVar() *Symbol {
 	condGenCounter++
-	return Intern("%cond" + itoa(condGenCounter))
-}
-
-// itoa is a small integer formatter, kept local so that this file needs no
-// formatting package for one call.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(buf[i:])
+	return Intern("%cond" + strconv.Itoa(condGenCounter))
 }
 
 func expandCondClauses(clauses []Value, depth int) (Value, bool) {
